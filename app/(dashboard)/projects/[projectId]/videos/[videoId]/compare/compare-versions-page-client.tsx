@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { isPlayableVideoUrl, resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
 import { cn } from '@/lib/utils';
 
 interface Version {
@@ -91,6 +92,11 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Panels drifting past this from the source player read as out-of-sync playback.
+const MAX_PANEL_DRIFT_SECONDS = 0.35;
+// Minimum gap between two corrective seeks of the same panel.
+const RESYNC_COOLDOWN_MS = 4000;
+
 const isSafeUrl = (url: string) => {
   try {
     const parsed = new URL(url);
@@ -99,21 +105,6 @@ const isSafeUrl = (url: string) => {
     return false;
   }
 };
-
-// Mirrors the playback-url resolution the main video page uses for direct
-// R2 uploads: media streams through the app's upload route.
-function resolveR2PlaybackUrl(version: Version): string {
-  if (version.originalUrl.startsWith('/api/upload/video/')) {
-    return version.originalUrl;
-  }
-  if (version.originalUrl.startsWith('videos/')) {
-    return `/api/upload/video/${version.originalUrl.slice('videos/'.length)}`;
-  }
-  if (version.videoId.startsWith('videos/')) {
-    return `/api/upload/video/${version.videoId.slice('videos/'.length)}`;
-  }
-  return version.originalUrl;
-}
 
 export default function CompareVersionsPageClient({
   projectId,
@@ -158,6 +149,7 @@ export default function CompareVersionsPageClient({
   const durationRef = useRef(0);
   const lastCommitRef = useRef(0);
   const lastSyncRef = useRef(0);
+  const resyncCooldownRef = useRef(new WeakMap<YT.Player | PlayerAdapter, number>());
 
   // Direct DOM refs for progress bar / playhead / timecode — updated in the RAF loop
   const progressBarRef = useRef<HTMLDivElement>(null);
@@ -279,13 +271,19 @@ export default function CompareVersionsPageClient({
 
             // Re-sync followers that drift from the source player — providers
             // buffer at different speeds and drift past ~350ms reads as
-            // out-of-sync playback.
+            // out-of-sync playback. The per-player cooldown keeps a follower
+            // that simply cannot keep up (slow network, HLS rebuffering) from
+            // being seeked every second, which would stutter rather than correct.
             if (playing && t !== undefined && timestamp - lastSyncRef.current >= 1000) {
               lastSyncRef.current = timestamp;
+              const cooldowns = resyncCooldownRef.current;
               for (let i = 1; i < players.length; i += 1) {
+                const follower = players[i];
+                if (timestamp - (cooldowns.get(follower) ?? 0) < RESYNC_COOLDOWN_MS) continue;
                 try {
-                  if (Math.abs(players[i].getCurrentTime() - t) > 0.35) {
-                    players[i].seekTo(t, true);
+                  if (Math.abs(follower.getCurrentTime() - t) > MAX_PANEL_DRIFT_SECONDS) {
+                    cooldowns.set(follower, timestamp);
+                    follower.seekTo(t, true);
                   }
                 } catch {
                   // Player not ready
@@ -1058,6 +1056,14 @@ function R2Panel({
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
+    // Same guard the rest of the page applies before putting a URL in the DOM:
+    // proxy paths must be a well-formed upload route, anything else http(s).
+    const playbackUrl = resolveR2PlaybackUrl(version);
+    if (!isPlayableVideoUrl(playbackUrl)) {
+      console.error('Unsafe R2 playback URL, panel not registered:', playbackUrl);
+      return;
+    }
+
     let cachedTime = 0;
     let cachedDuration = 0;
     let isPlaying = false;
@@ -1128,7 +1134,7 @@ function R2Panel({
     videoEl.addEventListener('pause', onPause);
     videoEl.addEventListener('ended', onEnded);
 
-    videoEl.src = resolveR2PlaybackUrl(version);
+    videoEl.src = playbackUrl;
     videoEl.load();
 
     onRegister(version.id, adapter);
