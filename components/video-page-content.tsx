@@ -91,6 +91,7 @@ export function VideoPageContent({
   const timelineRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
+  const scrubReadoutRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
   const scheduleWatchProgressSaveRef = useRef<
@@ -312,6 +313,7 @@ export function VideoPageContent({
     isMuted,
     isFrameMode,
     frameStepLabel,
+    showScrubReadout,
     playbackSpeed,
     qualityOptions,
     selectedQualityLevel,
@@ -347,8 +349,10 @@ export function VideoPageContent({
     timelineRef,
     progressRef,
     playheadRef,
+    scrubReadoutRef,
     hlsRef,
     playerRef,
+    formatTime,
     formatBunnyQualityLabel,
     speedOptions: SPEED_OPTIONS,
     scheduleWatchProgressSaveRef,
@@ -773,7 +777,9 @@ export function VideoPageContent({
             timelineRef={timelineRef}
             progressRef={progressRef}
             playheadRef={playheadRef}
+            scrubReadoutRef={scrubReadoutRef}
             videoContainerRef={videoContainerRef}
+            showScrubReadout={showScrubReadout}
             isFullscreenMode={isFullscreenMode}
             cursorIdle={cursorIdle}
             isPlaying={isPlaying}
