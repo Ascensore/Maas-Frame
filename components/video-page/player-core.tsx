@@ -43,7 +43,9 @@ interface PlayerCoreProps {
   timelineRef: RefObject<HTMLDivElement | null>;
   progressRef: RefObject<HTMLDivElement | null>;
   playheadRef: RefObject<HTMLDivElement | null>;
+  scrubReadoutRef: RefObject<HTMLDivElement | null>;
   videoContainerRef: RefObject<HTMLDivElement | null>;
+  showScrubReadout: boolean;
   isFullscreenMode: boolean;
   cursorIdle: boolean;
   isPlaying: boolean;
@@ -109,7 +111,9 @@ export const PlayerCore = memo(function PlayerCore({
   timelineRef,
   progressRef,
   playheadRef,
+  scrubReadoutRef,
   videoContainerRef,
+  showScrubReadout,
   isFullscreenMode,
   cursorIdle,
   isPlaying,
@@ -516,6 +520,19 @@ export const PlayerCore = memo(function PlayerCore({
           <div
             ref={playheadRef}
             className="absolute top-0 left-0 h-full w-1 bg-primary rounded pointer-events-none will-change-[left]"
+          />
+
+          {/* Timecode + frame counter, shown while scrubbing and flashed on
+              keyboard/button seeks. Kept mounted (only faded) so it already
+              holds the right text the instant it appears; its position and
+              content come from the same rAF loop that drives the playhead. */}
+          <div
+            ref={scrubReadoutRef}
+            aria-hidden={!showScrubReadout}
+            className={cn(
+              'absolute bottom-full left-0 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs font-medium tabular-nums text-popover-foreground shadow-md pointer-events-none will-change-[left] transition-opacity duration-150',
+              showScrubReadout ? 'opacity-100' : 'opacity-0'
+            )}
           />
 
           {commentMarkers.map((comment) => {

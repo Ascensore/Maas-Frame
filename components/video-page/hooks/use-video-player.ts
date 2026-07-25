@@ -21,6 +21,17 @@ import type {
 } from '@/components/video-page/types';
 import { validateAnnotationStrokes } from '@/lib/validation';
 
+// A frame number is only meaningful against a stable rate: a raw measurement
+// drifts (29.94, 30.07, ...) and would slide the count by whole frames late in a
+// long video. Snap to the nearest broadcast standard when we are close enough.
+const STANDARD_FRAME_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120];
+
+function normalizeFrameRate(rate: number | undefined): number | null {
+  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 12 || rate > 120) return null;
+  const standard = STANDARD_FRAME_RATES.find((value) => Math.abs(rate - value) / value < 0.015);
+  return standard ?? rate;
+}
+
 interface UseVideoPlayerParams {
   activeVersion: Version | undefined;
   activeVersionId: string | null;
@@ -33,8 +44,10 @@ interface UseVideoPlayerParams {
   timelineRef: RefObject<HTMLDivElement | null>;
   progressRef: RefObject<HTMLDivElement | null>;
   playheadRef: RefObject<HTMLDivElement | null>;
+  scrubReadoutRef: RefObject<HTMLDivElement | null>;
   hlsRef: RefObject<Hls | null>;
   playerRef: RefObject<YT.Player | PlayerAdapter | null>;
+  formatTime: (seconds: number) => string;
   formatBunnyQualityLabel: (level: { height?: number; bitrate?: number }, index: number) => string;
   speedOptions: number[];
   scheduleWatchProgressSaveRef: RefObject<
@@ -55,8 +68,10 @@ export function useVideoPlayer({
   timelineRef,
   progressRef,
   playheadRef,
+  scrubReadoutRef,
   hlsRef,
   playerRef,
+  formatTime,
   formatBunnyQualityLabel,
   speedOptions,
   scheduleWatchProgressSaveRef,
@@ -101,6 +116,22 @@ export function useVideoPlayer({
   const [isFullscreenMode, setIsFullscreenMode] = useState(false);
   const [showComments, setShowComments] = useState(true);
   const [isMobileCommentsOpen, setIsMobileCommentsOpen] = useState(false);
+  // Keyboard/button seeks have no drag to key the readout off, so flash it for a
+  // moment instead — stepping frame by frame is exactly when the count matters.
+  const [isSeekReadoutVisible, setIsSeekReadoutVisible] = useState(false);
+  const seekReadoutTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flashSeekReadout = useCallback(() => {
+    setIsSeekReadoutVisible(true);
+    if (seekReadoutTimerRef.current) clearTimeout(seekReadoutTimerRef.current);
+    seekReadoutTimerRef.current = setTimeout(() => setIsSeekReadoutVisible(false), 1200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (seekReadoutTimerRef.current) clearTimeout(seekReadoutTimerRef.current);
+    };
+  }, []);
 
   const frameStepSeconds = useMemo(() => {
     if (estimatedFrameRate && Number.isFinite(estimatedFrameRate) && estimatedFrameRate > 0) {
@@ -142,12 +173,14 @@ export function useVideoPlayer({
         presentedFrames: metadata.presentedFrames,
       };
 
-      if (previousSample) {
+      // Samples that straddle a seek compare frames from two different points in
+      // the media timeline, so the ratio is meaningless — skip them.
+      if (previousSample && !videoEl.seeking) {
         const deltaFrames = metadata.presentedFrames - previousSample.presentedFrames;
         const deltaTime = metadata.mediaTime - previousSample.mediaTime;
         if (deltaFrames > 0 && deltaTime > 0) {
-          const nextFrameRate = deltaFrames / deltaTime;
-          if (Number.isFinite(nextFrameRate) && nextFrameRate >= 12 && nextFrameRate <= 120) {
+          const nextFrameRate = normalizeFrameRate(deltaFrames / deltaTime);
+          if (nextFrameRate !== null) {
             setEstimatedFrameRate(nextFrameRate);
           }
         }
@@ -496,6 +529,16 @@ export function useVideoPlayer({
         videoEl.addEventListener('error', onVideoError);
 
         const configureHlsLevels = (levels: Level[]) => {
+          // The manifest usually declares FRAME-RATE, which gives us a frame
+          // count before playback ever starts; measurement refines it later.
+          for (const level of levels) {
+            const manifestFrameRate = normalizeFrameRate(level.frameRate);
+            if (manifestFrameRate !== null) {
+              setEstimatedFrameRate(manifestFrameRate);
+              break;
+            }
+          }
+
           setQualityOptions(
             levels.map((level, index) => ({
               level: index,
@@ -894,17 +937,41 @@ export function useVideoPlayer({
     durationRef.current = duration;
   }, [duration]);
 
-  // Position the progress fill + playhead directly on the DOM (no React state /
-  // re-render) so scrubbing and playback stay smooth at the display's refresh
-  // rate instead of stepping ~4x/sec.
+  // Read through a ref so the rAF loop below is not torn down and rebuilt every
+  // time the measured frame rate is re-published.
+  const frameRateRef = useRef<number | null>(null);
+  useEffect(() => {
+    frameRateRef.current = estimatedFrameRate;
+  }, [estimatedFrameRate]);
+
+  // Position the progress fill + playhead + scrub readout directly on the DOM
+  // (no React state / re-render) so scrubbing and playback stay smooth at the
+  // display's refresh rate instead of stepping ~4x/sec.
   const applyPlayhead = useCallback(
     (time: number) => {
       const d = durationRef.current;
       const percent = d > 0 ? Math.max(0, Math.min(100, (time / d) * 100)) : 0;
       if (progressRef.current) progressRef.current.style.width = `${percent}%`;
       if (playheadRef.current) playheadRef.current.style.left = `calc(${percent}% - 2px)`;
+
+      const readoutEl = scrubReadoutRef.current;
+      if (readoutEl) {
+        // Clamp in CSS rather than JS so the badge stays inside the timeline at
+        // either end without measuring it on every frame.
+        readoutEl.style.left = `clamp(3rem, ${percent}%, calc(100% - 3rem))`;
+        const rate = frameRateRef.current;
+        if (rate === null) {
+          readoutEl.textContent = formatTime(time);
+        } else {
+          // Frame N covers [N/rate, (N+1)/rate); the epsilon keeps a time that
+          // lands exactly on a boundary from floating-point-ing down to N-1.
+          const lastFrame = d > 0 ? Math.max(0, Math.ceil(d * rate) - 1) : 0;
+          const frame = Math.min(Math.floor(time * rate + 1e-6), lastFrame);
+          readoutEl.textContent = `${formatTime(time)} · f${frame}`;
+        }
+      }
     },
-    [progressRef, playheadRef]
+    [progressRef, playheadRef, scrubReadoutRef, formatTime]
   );
 
   // Live-preview seek for the HTML5 video element (Bunny/R2/direct). Coalesced:
@@ -1053,8 +1120,9 @@ export function useVideoPlayer({
     (seconds: number) => {
       const newTime = Math.max(0, Math.min(duration, currentTime + resolveSkipAmount(seconds)));
       handleSeekToTimestamp(newTime);
+      flashSeekReadout();
     },
-    [currentTime, duration, handleSeekToTimestamp, resolveSkipAmount]
+    [currentTime, duration, flashSeekReadout, handleSeekToTimestamp, resolveSkipAmount]
   );
 
   useEffect(() => {
@@ -1149,6 +1217,7 @@ export function useVideoPlayer({
             const newTime = Math.max(0, currentTime - 10);
             playerRef.current.seekTo(newTime, true);
             setCurrentTime(newTime);
+            flashSeekReadout();
           }
           break;
         case 'KeyL':
@@ -1157,6 +1226,7 @@ export function useVideoPlayer({
             const newTime = Math.min(duration, currentTime + 10);
             playerRef.current.seekTo(newTime, true);
             setCurrentTime(newTime);
+            flashSeekReadout();
           }
           break;
         case 'KeyF':
@@ -1175,6 +1245,7 @@ export function useVideoPlayer({
     isMuted,
     playbackSpeed,
     speedOptions,
+    flashSeekReadout,
     handleSkip,
     toggleFullscreen,
     playerRef,
@@ -1329,6 +1400,7 @@ export function useVideoPlayer({
     frameStepSeconds,
     frameStepLabel,
     isDragging,
+    showScrubReadout: isDragging || isSeekReadoutVisible,
     playbackSpeed,
     qualityOptions,
     selectedQualityLevel,
