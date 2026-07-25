@@ -24,6 +24,8 @@ interface RegisterPageClientProps {
   googleEnabled: boolean;
   githubEnabled: boolean;
   invitation?: RegisterInvitation | null;
+  /** Preview lookup was rate-limited, so `invitation` says nothing about its validity. */
+  invitationLookupThrottled?: boolean;
 }
 
 export default function RegisterPageClient({
@@ -31,6 +33,7 @@ export default function RegisterPageClient({
   googleEnabled,
   githubEnabled,
   invitation = null,
+  invitationLookupThrottled = false,
 }: RegisterPageClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -244,6 +247,11 @@ export default function RegisterPageClient({
                   <p className="text-muted-foreground">
                     Create your account below — you&apos;ll be taken straight to it.
                   </p>
+                </div>
+              ) : isInvitationFlow && invitationLookupThrottled ? (
+                <div className="p-3 rounded-md bg-amber-500/10 text-sm">
+                  We couldn&apos;t check this invitation right now. Please wait a few minutes and
+                  open the link again.
                 </div>
               ) : isInvitationFlow ? (
                 <div className="p-3 rounded-md bg-amber-500/10 text-sm">

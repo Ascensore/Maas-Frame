@@ -2,7 +2,12 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { acceptInvitationTokenForUser, getInvitationPreviewByToken } from '@/lib/invitations';
-import { InvitationAccountMismatch, InvitationLanding } from './invitation-landing';
+import { isInvitationPreviewAllowed } from '@/lib/invitation-preview-limit';
+import {
+  InvitationAccountMismatch,
+  InvitationLanding,
+  InvitationRateLimited,
+} from './invitation-landing';
 
 interface InvitationAcceptPageProps {
   searchParams: Promise<{
@@ -21,7 +26,12 @@ export default async function InvitationAcceptPage({ searchParams }: InvitationA
   const session = await auth();
   if (!session?.user?.id) {
     // Signed-out visitors get the invitation itself instead of a bare login form:
-    // most of them have no account yet and need to be told to create one.
+    // most of them have no account yet and need to be told to create one. This is the
+    // only unauthenticated read of invitation data, so it is IP-throttled.
+    if (!(await isInvitationPreviewAllowed(token))) {
+      return <InvitationRateLimited />;
+    }
+
     const preview = await getInvitationPreviewByToken(token);
     return <InvitationLanding token={token} preview={preview} />;
   }

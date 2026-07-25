@@ -1,5 +1,6 @@
 import { isInviteCodeRequired } from '@/lib/feature-flags';
 import { getInvitationPreviewByToken } from '@/lib/invitations';
+import { isInvitationPreviewAllowed } from '@/lib/invitation-preview-limit';
 import RegisterPageClient from './register-page-client';
 
 interface RegisterPageProps {
@@ -11,7 +12,11 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
   const githubEnabled = Boolean(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
 
   const token = (await searchParams)?.invitationToken?.trim();
-  const preview = token ? await getInvitationPreviewByToken(token) : null;
+
+  // Unauthenticated invitation lookup — throttled per IP (and per token) before it can
+  // touch the database. When throttled we skip the lookup instead of guessing at a verdict.
+  const previewAllowed = token ? await isInvitationPreviewAllowed(token) : false;
+  const preview = token && previewAllowed ? await getInvitationPreviewByToken(token) : null;
   const invitation =
     preview && preview.status === 'PENDING' && !preview.isExpired
       ? {
@@ -29,6 +34,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
       googleEnabled={googleEnabled}
       githubEnabled={githubEnabled}
       invitation={invitation}
+      invitationLookupThrottled={Boolean(token) && !previewAllowed}
     />
   );
 }

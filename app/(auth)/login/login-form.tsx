@@ -9,7 +9,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { signIn } from 'next-auth/react';
-import { getSafeCallbackUrl, isInvitationCallbackUrl } from '@/lib/safe-redirect';
+import {
+  getSafeCallbackUrl,
+  isInvitationCallbackUrl,
+  isSafeRelativePath,
+} from '@/lib/safe-redirect';
 
 /**
  * Sign-up link that carries the pending destination — and, when that destination is an
@@ -88,8 +92,10 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
         return;
       }
 
+      // `result.url` is whatever next-auth resolved, so it is sanitized again here — and
+      // re-checked at the sink, because `router.push` happily leaves the origin.
       const destination = getSafeCallbackUrl(result?.url || callbackUrl);
-      router.push(destination);
+      router.push(isSafeRelativePath(destination) ? destination : '/dashboard');
       router.refresh();
     } catch {
       setError('Something went wrong. Please try again.');

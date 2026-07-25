@@ -19,10 +19,26 @@ export function getSafeCallbackUrl(
   try {
     const parsed = new URL(value, baseOrigin);
     if (parsed.origin !== baseOrigin) return fallback;
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    // The origin check alone is not enough: an attacker can smuggle their own host into
+    // the path of an otherwise same-origin URL. `new URL('https://app.example.com//evil.com')`
+    // has our origin but a pathname of `//evil.com`, which every navigation sink below
+    // resolves as protocol-relative and follows off-site.
+    return isSafeRelativePath(path) ? path : fallback;
   } catch {
     return fallback;
   }
+}
+
+/**
+ * True when a path is safe to hand to a navigation sink (`router.push`, `<Link href>`,
+ * `NextResponse.redirect`): rooted at a single `/`, so it can only ever stay on this origin.
+ *
+ * `//evil.com` and `/\evil.com` are protocol-relative — browsers fill in the current
+ * scheme and navigate to `evil.com`.
+ */
+export function isSafeRelativePath(value: string): boolean {
+  return value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\');
 }
 
 /** True when a sanitized path points at the invitation acceptance route. */

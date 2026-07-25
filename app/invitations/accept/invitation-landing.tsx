@@ -47,6 +47,16 @@ function UnusableInvitation({ title, message }: { title: string; message: string
   );
 }
 
+/** Too many unauthenticated invitation lookups from this client — nothing was queried. */
+export function InvitationRateLimited() {
+  return (
+    <UnusableInvitation
+      title="Too many attempts"
+      message="We couldn't check this invitation right now. Please wait a few minutes and open the link again."
+    />
+  );
+}
+
 /** Signed in, but with an account whose address the invitation was not issued to. */
 export function InvitationAccountMismatch({
   invitedEmail,
