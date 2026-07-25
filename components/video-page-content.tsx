@@ -14,6 +14,7 @@ import { VideoPageError } from '@/components/video-page/video-page-error';
 import { GuestNameGate } from '@/components/video-page/guest-name-gate';
 import { useCommentMedia } from '@/components/video-page/hooks/use-comment-media';
 import { validateAnnotationStrokes } from '@/lib/validation';
+import { resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
 import { useVersionActions } from '@/components/video-page/hooks/use-version-actions';
 import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progress';
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
@@ -288,18 +289,7 @@ export function VideoPageContent({
       return `https://${bunnyCdnHostname}/${activeVersion.videoId}/playlist.m3u8`;
     }
     if (activeVersion.providerId === 'r2') {
-      if (activeVersion.originalUrl.startsWith('/api/upload/video/')) {
-        return activeVersion.originalUrl;
-      }
-      if (activeVersion.originalUrl.startsWith('videos/')) {
-        const filename = activeVersion.originalUrl.slice('videos/'.length);
-        return `/api/upload/video/${filename}`;
-      }
-      if (activeVersion.videoId.startsWith('videos/')) {
-        const filename = activeVersion.videoId.slice('videos/'.length);
-        return `/api/upload/video/${filename}`;
-      }
-      return activeVersion.originalUrl;
+      return resolveR2PlaybackUrl(activeVersion);
     }
     try {
       const url = new URL(activeVersion.originalUrl);

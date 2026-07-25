@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { isPlayableVideoUrl, resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
 import { cn } from '@/lib/utils';
 
 interface Version {
@@ -91,6 +92,11 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+// Panels drifting past this from the source player read as out-of-sync playback.
+const MAX_PANEL_DRIFT_SECONDS = 0.35;
+// Minimum gap between two corrective seeks of the same panel.
+const RESYNC_COOLDOWN_MS = 4000;
+
 const isSafeUrl = (url: string) => {
   try {
     const parsed = new URL(url);
@@ -142,6 +148,8 @@ export default function CompareVersionsPageClient({
   const currentTimeRef = useRef(0);
   const durationRef = useRef(0);
   const lastCommitRef = useRef(0);
+  const lastSyncRef = useRef(0);
+  const resyncCooldownRef = useRef(new WeakMap<YT.Player | PlayerAdapter, number>());
 
   // Direct DOM refs for progress bar / playhead / timecode — updated in the RAF loop
   const progressBarRef = useRef<HTMLDivElement>(null);
@@ -241,7 +249,11 @@ export default function CompareVersionsPageClient({
           try {
             const t = sourcePlayer.getCurrentTime();
             const d = sourcePlayer.getDuration();
-            const playing = sourcePlayer.getPlayerState() === window.YT?.PlayerState?.PLAYING;
+            // PLAYING is 1 in the YouTube API; the numeric fallback keeps
+            // state detection working when the YT script never loads
+            // (bunny/r2-only comparisons, ad blockers).
+            const playing =
+              sourcePlayer.getPlayerState() === (window.YT?.PlayerState?.PLAYING ?? 1);
 
             // Update refs immediately — zero React overhead
             if (t !== undefined) currentTimeRef.current = t;
@@ -254,6 +266,28 @@ export default function CompareVersionsPageClient({
               if (playheadRef.current) playheadRef.current.style.left = `calc(${pct}% - 2px)`;
               if (timecodeRef.current) {
                 timecodeRef.current.textContent = `${formatTime(t)} / ${formatTime(dur)}`;
+              }
+            }
+
+            // Re-sync followers that drift from the source player — providers
+            // buffer at different speeds and drift past ~350ms reads as
+            // out-of-sync playback. The per-player cooldown keeps a follower
+            // that simply cannot keep up (slow network, HLS rebuffering) from
+            // being seeked every second, which would stutter rather than correct.
+            if (playing && t !== undefined && timestamp - lastSyncRef.current >= 1000) {
+              lastSyncRef.current = timestamp;
+              const cooldowns = resyncCooldownRef.current;
+              for (let i = 1; i < players.length; i += 1) {
+                const follower = players[i];
+                if (timestamp - (cooldowns.get(follower) ?? 0) < RESYNC_COOLDOWN_MS) continue;
+                try {
+                  if (Math.abs(follower.getCurrentTime() - t) > MAX_PANEL_DRIFT_SECONDS) {
+                    cooldowns.set(follower, timestamp);
+                    follower.seekTo(t, true);
+                  }
+                } catch {
+                  // Player not ready
+                }
               }
             }
 
@@ -296,7 +330,7 @@ export default function CompareVersionsPageClient({
     try {
       const firstPlayer = players[0];
       const state = firstPlayer.getPlayerState();
-      const playing = state === window.YT?.PlayerState?.PLAYING;
+      const playing = state === (window.YT?.PlayerState?.PLAYING ?? 1);
 
       if (playing) {
         players.forEach((p) => {
@@ -728,6 +762,13 @@ export default function CompareVersionsPageClient({
                     onRegister={registerPlayer}
                     onUnregister={unregisterPlayer}
                   />
+                ) : version.providerId === 'r2' ? (
+                  <R2Panel
+                    key={versionId}
+                    version={version}
+                    onRegister={registerPlayer}
+                    onUnregister={unregisterPlayer}
+                  />
                 ) : isSafeUrl(version.originalUrl) ? (
                   <iframe
                     src={version.originalUrl}
@@ -975,6 +1016,168 @@ function YouTubePanel({
   }, [version.id, version.videoId, isApiLoaded, onRegister, onUnregister]);
 
   return <div ref={containerRef} className="w-full h-full pointer-events-none" />;
+}
+
+// Isolated R2 direct-upload panel: a plain <video> over the app's upload
+// route, mapped to the shared adapter interface. Kept separate from
+// BunnyPanel, whose HLS processing-retry logic does not apply to R2 files.
+function R2Panel({
+  version,
+  onRegister,
+  onUnregister,
+}: {
+  version: Version;
+  onRegister: (versionId: string, player: YT.Player | PlayerAdapter) => void;
+  onUnregister: (versionId: string) => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [portraitFrameWidth, setPortraitFrameWidth] = useState<number>(0);
+  const [isPortraitSource, setIsPortraitSource] = useState(false);
+
+  useEffect(() => {
+    const panelEl = panelRef.current;
+    if (!panelEl || typeof ResizeObserver === 'undefined') return;
+
+    const updateFrameWidth = () => {
+      const panelWidth = panelEl.clientWidth;
+      const panelHeight = panelEl.clientHeight;
+      if (panelWidth <= 0 || panelHeight <= 0) return;
+      setPortraitFrameWidth(Math.min(panelWidth, panelHeight * (9 / 16)));
+    };
+
+    updateFrameWidth();
+    const observer = new ResizeObserver(updateFrameWidth);
+    observer.observe(panelEl);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    // Same guard the rest of the page applies before putting a URL in the DOM:
+    // proxy paths must be a well-formed upload route, anything else http(s).
+    const playbackUrl = resolveR2PlaybackUrl(version);
+    if (!isPlayableVideoUrl(playbackUrl)) {
+      console.error('Unsafe R2 playback URL, panel not registered:', playbackUrl);
+      return;
+    }
+
+    let cachedTime = 0;
+    let cachedDuration = 0;
+    let isPlaying = false;
+
+    const onLoadedMetadata = () => {
+      if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+        cachedDuration = videoEl.duration;
+      }
+      if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+        setIsPortraitSource(videoEl.videoHeight > videoEl.videoWidth);
+      }
+    };
+    const onTimeUpdate = () => {
+      cachedTime = videoEl.currentTime || 0;
+    };
+    const onPlay = () => {
+      isPlaying = true;
+    };
+    const onPause = () => {
+      isPlaying = false;
+    };
+    const onEnded = () => {
+      isPlaying = false;
+    };
+
+    const adapter: PlayerAdapter = {
+      playVideo: () => {
+        videoEl.play().catch((err) => console.error('Error playing R2 panel video:', err));
+      },
+      pauseVideo: () => videoEl.pause(),
+      seekTo: (time: number) => {
+        cachedTime = time;
+        videoEl.currentTime = time;
+      },
+      mute: () => {
+        videoEl.muted = true;
+      },
+      unMute: () => {
+        videoEl.muted = false;
+      },
+      isMuted: () => videoEl.muted,
+      getCurrentTime: () => videoEl.currentTime || cachedTime,
+      getDuration: () => {
+        if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+          cachedDuration = videoEl.duration;
+        }
+        return cachedDuration;
+      },
+      getPlayerState: () =>
+        isPlaying ? (window.YT?.PlayerState?.PLAYING ?? 1) : (window.YT?.PlayerState?.PAUSED ?? 2),
+      setPlaybackRate: (rate: number) => {
+        videoEl.playbackRate = rate;
+      },
+      destroy: () => {
+        videoEl.removeEventListener('loadedmetadata', onLoadedMetadata);
+        videoEl.removeEventListener('timeupdate', onTimeUpdate);
+        videoEl.removeEventListener('play', onPlay);
+        videoEl.removeEventListener('pause', onPause);
+        videoEl.removeEventListener('ended', onEnded);
+        videoEl.removeAttribute('src');
+        videoEl.load();
+      },
+    };
+
+    videoEl.addEventListener('loadedmetadata', onLoadedMetadata);
+    videoEl.addEventListener('timeupdate', onTimeUpdate);
+    videoEl.addEventListener('play', onPlay);
+    videoEl.addEventListener('pause', onPause);
+    videoEl.addEventListener('ended', onEnded);
+
+    videoEl.src = playbackUrl;
+    videoEl.load();
+
+    onRegister(version.id, adapter);
+
+    return () => {
+      onUnregister(version.id);
+      adapter.destroy();
+    };
+  }, [version, onRegister, onUnregister]);
+
+  return (
+    <div
+      ref={panelRef}
+      className="relative w-full h-full group flex items-center justify-center bg-black"
+    >
+      <div
+        className={cn(
+          'relative flex items-center justify-center bg-black',
+          isPortraitSource ? 'h-full overflow-hidden' : 'w-full h-full'
+        )}
+        style={
+          isPortraitSource && portraitFrameWidth > 0
+            ? { width: `${portraitFrameWidth}px` }
+            : undefined
+        }
+      >
+        <video
+          ref={videoRef}
+          className="w-full h-full object-contain pointer-events-none border-0 bg-black"
+          style={{
+            pointerEvents: 'none',
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            objectPosition: 'center',
+            backgroundColor: 'black',
+          }}
+          preload="metadata"
+          playsInline
+        />
+      </div>
+    </div>
+  );
 }
 
 // Isolated Bunny Stream player component per panel mapped to the shared adapter interface
