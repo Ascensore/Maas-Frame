@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { acceptInvitationTokenForUser } from '@/lib/invitations';
+import { acceptInvitationTokenForUser, getInvitationPreviewByToken } from '@/lib/invitations';
+import { InvitationAccountMismatch, InvitationLanding } from './invitation-landing';
 
 interface InvitationAcceptPageProps {
   searchParams: Promise<{
@@ -19,14 +20,17 @@ export default async function InvitationAcceptPage({ searchParams }: InvitationA
 
   const session = await auth();
   if (!session?.user?.id) {
-    const callbackUrl = `/invitations/accept?token=${encodeURIComponent(token)}`;
-    redirect(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
+    // Signed-out visitors get the invitation itself instead of a bare login form:
+    // most of them have no account yet and need to be told to create one.
+    const preview = await getInvitationPreviewByToken(token);
+    return <InvitationLanding token={token} preview={preview} />;
   }
 
   const invitation = await db.invitation.findUnique({
     where: { token },
     select: {
       id: true,
+      email: true,
       status: true,
       scope: true,
       workspaceId: true,
@@ -63,7 +67,14 @@ export default async function InvitationAcceptPage({ searchParams }: InvitationA
     redirect('/dashboard?invite=expired');
   }
   if (result === 'forbidden') {
-    redirect('/dashboard?invite=wrong_account');
+    // Signed in with a different address than the one invited — say so instead of
+    // dropping the user on the dashboard with no explanation.
+    return (
+      <InvitationAccountMismatch
+        invitedEmail={invitation?.email ?? 'another address'}
+        signedInEmail={userEmail}
+      />
+    );
   }
 
   if (result === 'not_found' && invitation?.status === 'ACCEPTED') {

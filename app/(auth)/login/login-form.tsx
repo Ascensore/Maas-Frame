@@ -9,17 +9,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { signIn } from 'next-auth/react';
+import { getSafeCallbackUrl, isInvitationCallbackUrl } from '@/lib/safe-redirect';
 
-function getSafeCallbackUrl(value: string | null): string {
-  if (!value) return '/dashboard';
-  try {
-    const baseOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
-    const parsed = new URL(value, baseOrigin);
-    if (parsed.origin !== baseOrigin) return '/dashboard';
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-  } catch {
-    return '/dashboard';
+/**
+ * Sign-up link that carries the pending destination — and, when that destination is an
+ * invitation, the invitation token itself so the new account is bound to the invite.
+ */
+function buildRegisterHref(callbackUrl: string): string {
+  if (callbackUrl === '/dashboard') return '/register';
+
+  const params = new URLSearchParams({ callbackUrl });
+  if (isInvitationCallbackUrl(callbackUrl)) {
+    const token = new URLSearchParams(callbackUrl.split('?')[1] ?? '').get('token');
+    if (token) params.set('invitationToken', token);
   }
+  return `/register?${params.toString()}`;
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -50,6 +54,8 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
   const [showSuccess, setShowSuccess] = useState(false);
   const [showVerifiedSuccess, setShowVerifiedSuccess] = useState(false);
   const callbackUrl = getSafeCallbackUrl(searchParams.get('callbackUrl'));
+  const isInvitationFlow = isInvitationCallbackUrl(callbackUrl);
+  const registerHref = buildRegisterHref(callbackUrl);
 
   useEffect(() => {
     if (searchParams.get('registered') === 'true') {
@@ -105,7 +111,11 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
     <Card>
       <CardHeader className="text-center">
         <CardTitle>Welcome back</CardTitle>
-        <CardDescription>Sign in to your account to continue</CardDescription>
+        <CardDescription>
+          {isInvitationFlow
+            ? 'Sign in to accept your invitation'
+            : 'Sign in to your account to continue'}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {showSuccess && (
@@ -242,7 +252,7 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
 
         <p className="text-center text-sm text-muted-foreground mt-6">
           Don&apos;t have an account?{' '}
-          <Link href="/register" className="text-primary hover:underline">
+          <Link href={registerHref} className="text-primary hover:underline">
             Sign up
           </Link>
         </p>

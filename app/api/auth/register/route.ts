@@ -135,7 +135,13 @@ export async function POST(request: NextRequest) {
     // Send verification email if SMTP is configured
     if (emailVerificationRequired) {
       const verificationToken = await createVerificationToken(normalizedEmail);
-      await sendVerificationEmail(normalizedEmail, verificationToken);
+      // Invited users are sent back to the invitation after verifying, which forwards them
+      // to the workspace/project they joined instead of the generic dashboard.
+      await sendVerificationEmail(normalizedEmail, verificationToken, {
+        next: validatedInvitationToken
+          ? `/invitations/accept?token=${encodeURIComponent(validatedInvitationToken)}`
+          : undefined,
+      });
     }
 
     const message = emailVerificationRequired
