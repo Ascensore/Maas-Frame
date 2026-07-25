@@ -3,8 +3,11 @@ import { Prisma, BillingSubscriptionStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auth } from '@/lib/auth';
 import { isBunnyUploadsFeatureEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
-import { getBillingStatusLabel, hasBillingAccess } from '@/lib/billing';
-import { hasCollaboratorBillingBackedAccess } from '@/lib/route-access';
+import {
+  buildBillingAccessWhereInput,
+  getBillingStatusLabel,
+  hasBillingAccess,
+} from '@/lib/billing';
 import { redirect } from 'next/navigation';
 import {
   getCachedBunnyStorageStats,
@@ -16,6 +19,7 @@ import { Film, HardDrive } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -94,6 +98,30 @@ type SortBy =
 
 type SortDirection = 'asc' | 'desc';
 
+type StatusFilter = 'ALL' | BillingSubscriptionStatus;
+type AccessFilter = 'ALL' | 'ACTIVE' | 'NONE';
+
+// Order the badges the way an admin scans them: paying first, problems next,
+// churned last.
+const STATUS_FILTERS: BillingSubscriptionStatus[] = [
+  BillingSubscriptionStatus.ACTIVE,
+  BillingSubscriptionStatus.TRIALING,
+  BillingSubscriptionStatus.PAST_DUE,
+  BillingSubscriptionStatus.UNPAID,
+  BillingSubscriptionStatus.CANCELED,
+  BillingSubscriptionStatus.INCOMPLETE,
+  BillingSubscriptionStatus.INCOMPLETE_EXPIRED,
+  BillingSubscriptionStatus.FREE,
+];
+
+const ACCESS_FILTERS: Array<{ value: AccessFilter; label: string }> = [
+  { value: 'ALL', label: 'All Access' },
+  { value: 'ACTIVE', label: 'Has Access' },
+  { value: 'NONE', label: 'No Access' },
+];
+
+const MAX_QUERY_LENGTH = 120;
+
 const SORTABLE_COLUMNS: SortBy[] = [
   'user',
   'subscription',
@@ -123,6 +151,60 @@ function isSortBy(value: string | undefined): value is SortBy {
 
 function getDefaultSortDirection(sortBy: SortBy): SortDirection {
   return sortBy === 'user' ? 'asc' : 'desc';
+}
+
+function parseQuery(value: string | undefined): string {
+  return (value ?? '').trim().slice(0, MAX_QUERY_LENGTH);
+}
+
+function parseStatusFilter(value: string | undefined): StatusFilter {
+  return STATUS_FILTERS.includes(value as BillingSubscriptionStatus)
+    ? (value as BillingSubscriptionStatus)
+    : 'ALL';
+}
+
+function parseAccessFilter(value: string | undefined): AccessFilter {
+  return value === 'ACTIVE' || value === 'NONE' ? value : 'ALL';
+}
+
+/**
+ * User ids that have in-app access through somebody else's paid workspace or
+ * project. Mirrors hasCollaboratorBillingBackedAccess in lib/route-access.ts,
+ * but resolves every user in two queries instead of two queries per user, so
+ * the same set can back both the table column and the access filter.
+ */
+async function getCollaboratorAccessUserIds(now: Date): Promise<Set<string>> {
+  const payingOwner = buildBillingAccessWhereInput(now);
+
+  const [workspaces, projects] = await Promise.all([
+    db.workspace.findMany({
+      where: { owner: payingOwner },
+      select: { ownerId: true, members: { select: { userId: true } } },
+    }),
+    db.project.findMany({
+      where: { workspace: { owner: payingOwner } },
+      select: {
+        ownerId: true,
+        members: { select: { userId: true } },
+        workspace: { select: { members: { select: { userId: true } } } },
+      },
+    }),
+  ]);
+
+  const userIds = new Set<string>();
+
+  for (const workspace of workspaces) {
+    userIds.add(workspace.ownerId);
+    for (const member of workspace.members) userIds.add(member.userId);
+  }
+
+  for (const project of projects) {
+    userIds.add(project.ownerId);
+    for (const member of project.members) userIds.add(member.userId);
+    for (const member of project.workspace.members) userIds.add(member.userId);
+  }
+
+  return userIds;
 }
 
 function getSortIndicator(
@@ -181,7 +263,14 @@ function getUsersOrderBy(
 export default async function AdminUsersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; sortBy?: string; sortDirection?: string }>;
+  searchParams: Promise<{
+    page?: string;
+    sortBy?: string;
+    sortDirection?: string;
+    q?: string;
+    status?: string;
+    access?: string;
+  }>;
 }) {
   const session = await auth();
   if (!session?.user?.isAdmin) {
@@ -200,15 +289,67 @@ export default async function AdminUsersPage({
   const pageSize = 20;
   const stripeBillingEnabled = isStripeBillingEnabled();
   const now = new Date();
-  const [totalUsers, userStorage, userBunnyStorage, userDownloadEgress, bunnyStorageStats] =
-    await Promise.all([
-      db.user.count(),
-      getCachedUserMediaStorage(),
-      getCachedUserBunnyStorage(),
-      getCachedUserDownloadEgress(),
-      getCachedBunnyStorageStats(),
-    ]);
-  const totalPages = Math.max(1, Math.ceil(totalUsers / pageSize));
+
+  const query = parseQuery(resolvedSearchParams?.q);
+  // Subscription/access are only meaningful (and only rendered) when billing is on.
+  const statusFilter: StatusFilter = stripeBillingEnabled
+    ? parseStatusFilter(resolvedSearchParams?.status)
+    : 'ALL';
+  const accessFilter: AccessFilter = stripeBillingEnabled
+    ? parseAccessFilter(resolvedSearchParams?.access)
+    : 'ALL';
+  const hasActiveFilters = Boolean(query) || statusFilter !== 'ALL' || accessFilter !== 'ALL';
+
+  // Access is not just the user's own subscription: a user with no billing of
+  // their own still has access as a collaborator on a paying owner's workspace
+  // or project (mirrors hasAppNavigationAccess in lib/route-access.ts).
+  const collaboratorAccessUserIds = stripeBillingEnabled
+    ? await getCollaboratorAccessUserIds(now)
+    : new Set<string>();
+
+  const filters: Prisma.UserWhereInput[] = [];
+
+  if (query) {
+    filters.push({
+      OR: [
+        { name: { contains: query, mode: 'insensitive' } },
+        { email: { contains: query, mode: 'insensitive' } },
+      ],
+    });
+  }
+
+  if (statusFilter !== 'ALL') {
+    filters.push({ subscriptionStatus: statusFilter });
+  }
+
+  if (accessFilter !== 'ALL') {
+    const hasAccess: Prisma.UserWhereInput = {
+      OR: [
+        buildBillingAccessWhereInput(now),
+        { id: { in: Array.from(collaboratorAccessUserIds) } },
+      ],
+    };
+    filters.push(accessFilter === 'ACTIVE' ? hasAccess : { NOT: hasAccess });
+  }
+
+  const where: Prisma.UserWhereInput = filters.length > 0 ? { AND: filters } : {};
+
+  const [
+    totalUsers,
+    matchingUsers,
+    userStorage,
+    userBunnyStorage,
+    userDownloadEgress,
+    bunnyStorageStats,
+  ] = await Promise.all([
+    db.user.count(),
+    db.user.count({ where }),
+    getCachedUserMediaStorage(),
+    getCachedUserBunnyStorage(),
+    getCachedUserDownloadEgress(),
+    getCachedBunnyStorageStats(),
+  ]);
+  const totalPages = Math.max(1, Math.ceil(matchingUsers / pageSize));
   const page = Math.min(Math.max(1, requestedPage), totalPages);
   const skip = (page - 1) * pageSize;
 
@@ -262,6 +403,7 @@ export default async function AdminUsersPage({
 
   if (canSortInDb(sortBy)) {
     const users = await db.user.findMany({
+      where,
       skip,
       take: pageSize,
       orderBy: getUsersOrderBy(sortBy, sortDirection),
@@ -279,7 +421,7 @@ export default async function AdminUsersPage({
       mediaStorageBytes: userStorage[user.id]?.total || 0,
     }));
   } else {
-    const users = await db.user.findMany({ select });
+    const users = await db.user.findMany({ where, select });
 
     const usersWithMetrics = users.map((user) => ({
       ...user,
@@ -315,34 +457,36 @@ export default async function AdminUsersPage({
     paginatedUsers = sortedUsers.slice(skip, skip + pageSize);
   }
 
-  // Resolve the real in-app access for each user on the current page. Access is
-  // not just the user's own subscription: a user with no billing of their own
-  // still has access as a collaborator on a paying owner's workspace/project
-  // (mirrors hasAppNavigationAccess in lib/route-access.ts).
+  // Resolve the real in-app access for each user on the current page.
   const accessByUserId = new Map<string, { hasAppAccess: boolean; viaCollaboration: boolean }>();
   if (stripeBillingEnabled) {
-    await Promise.all(
-      paginatedUsers.map(async (user) => {
-        const { ownAccess } = getOwnBillingAccess(user, now);
-        const hasAppAccess = ownAccess || (await hasCollaboratorBillingBackedAccess(user.id));
-        accessByUserId.set(user.id, {
-          hasAppAccess,
-          viaCollaboration: hasAppAccess && !ownAccess,
-        });
-      })
-    );
+    for (const user of paginatedUsers) {
+      const { ownAccess } = getOwnBillingAccess(user, now);
+      const hasAppAccess = ownAccess || collaboratorAccessUserIds.has(user.id);
+      accessByUserId.set(user.id, {
+        hasAppAccess,
+        viaCollaboration: hasAppAccess && !ownAccess,
+      });
+    }
   }
 
   const buildUsersPageHref = (
     targetPage: number,
     targetSortBy: SortBy = sortBy,
-    targetSortDirection: SortDirection = sortDirection
+    targetSortDirection: SortDirection = sortDirection,
+    targetQuery: string = query,
+    targetStatus: StatusFilter = statusFilter,
+    targetAccess: AccessFilter = accessFilter
   ): string => {
     const params = new URLSearchParams({
       page: String(targetPage),
       sortBy: targetSortBy,
       sortDirection: targetSortDirection,
     });
+
+    if (targetQuery) params.set('q', targetQuery);
+    if (targetStatus !== 'ALL') params.set('status', targetStatus);
+    if (targetAccess !== 'ALL') params.set('access', targetAccess);
 
     return `/admin/users?${params.toString()}`;
   };
@@ -357,6 +501,14 @@ export default async function AdminUsersPage({
 
     return buildUsersPageHref(1, column, nextDirection);
   };
+
+  const buildStatusHref = (targetStatus: StatusFilter): string =>
+    buildUsersPageHref(1, sortBy, sortDirection, query, targetStatus, accessFilter);
+
+  const buildAccessHref = (targetAccess: AccessFilter): string =>
+    buildUsersPageHref(1, sortBy, sortDirection, query, statusFilter, targetAccess);
+
+  const clearFiltersHref = buildUsersPageHref(1, sortBy, sortDirection, '', 'ALL', 'ALL');
 
   return (
     <div className="flex-1 space-y-4">
@@ -391,11 +543,74 @@ export default async function AdminUsersPage({
         </Card>
       </div>
 
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <form method="get" action="/admin/users" className="flex items-center gap-2">
+            <input type="hidden" name="sortBy" value={sortBy} />
+            <input type="hidden" name="sortDirection" value={sortDirection} />
+            {statusFilter !== 'ALL' && <input type="hidden" name="status" value={statusFilter} />}
+            {accessFilter !== 'ALL' && <input type="hidden" name="access" value={accessFilter} />}
+            <Input
+              type="search"
+              name="q"
+              defaultValue={query}
+              maxLength={MAX_QUERY_LENGTH}
+              placeholder="Search by name or email…"
+              aria-label="Search users by name or email"
+              className="w-72"
+            />
+            <Button type="submit" size="sm">
+              Search
+            </Button>
+          </form>
+          {hasActiveFilters && (
+            <Button variant="ghost" size="sm" asChild>
+              <Link href={clearFiltersHref}>Clear filters</Link>
+            </Button>
+          )}
+        </div>
+
+        {stripeBillingEnabled && (
+          <>
+            <div className="flex flex-wrap gap-2">
+              <Button variant={statusFilter === 'ALL' ? 'default' : 'outline'} size="sm" asChild>
+                <Link href={buildStatusHref('ALL')}>All Statuses</Link>
+              </Button>
+              {STATUS_FILTERS.map((status) => (
+                <Button
+                  key={status}
+                  variant={statusFilter === status ? 'default' : 'outline'}
+                  size="sm"
+                  asChild
+                >
+                  <Link href={buildStatusHref(status)}>{getBillingStatusLabel(status)}</Link>
+                </Button>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {ACCESS_FILTERS.map((filter) => (
+                <Button
+                  key={filter.value}
+                  variant={accessFilter === filter.value ? 'default' : 'outline'}
+                  size="sm"
+                  asChild
+                >
+                  <Link href={buildAccessHref(filter.value)}>{filter.label}</Link>
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle>All Users</CardTitle>
           <CardDescription>
-            A comprehensive list of all {totalUsers} users registered on the platform.
+            {hasActiveFilters
+              ? `${matchingUsers} of ${totalUsers} users match the current filters.`
+              : `A comprehensive list of all ${totalUsers} users registered on the platform.`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -521,7 +736,7 @@ export default async function AdminUsersPage({
                 {paginatedUsers.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={stripeBillingEnabled ? 10 : 9} className="h-24 text-center">
-                      No users found.
+                      {hasActiveFilters ? 'No users match these filters.' : 'No users found.'}
                     </TableCell>
                   </TableRow>
                 ) : (
