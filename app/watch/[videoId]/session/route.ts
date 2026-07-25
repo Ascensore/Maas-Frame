@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { checkRateLimit, getClientIp, rateLimit, rateLimitHeaders } from '@/lib/rate-limit';
-import { isTrustedSameOriginRequest } from '@/lib/request-origin';
+import { getPublicOrigin, isTrustedSameOriginRequest } from '@/lib/request-origin';
 import { MAX_SHARE_PASSWORD_LENGTH, validateShareLinkAccess } from '@/lib/share-links';
 import {
   createPendingShareValue,
@@ -48,7 +48,7 @@ function validateSameOriginRequest(request: NextRequest): NextResponse | null {
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   const { videoId } = await params;
-  const cleanWatchUrl = new URL(`/watch/${videoId}`, request.nextUrl.origin);
+  const cleanWatchUrl = new URL(`/watch/${videoId}`, getPublicOrigin(request));
   const legacyShareToken = request.nextUrl.searchParams.get('shareToken');
 
   // Keep GET route for backwards compatibility, but never establish session from GET.
