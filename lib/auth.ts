@@ -281,9 +281,13 @@ export async function checkProjectAccess(
   const isProjectMember = !!projectMember;
   const isProjectAdmin = projectMember?.role === ProjectMemberRole.ADMIN;
 
-  const needsWorkspaceForAccess = !!userId && !isOwner && !isProjectMember && !isPublic;
-  const needsWorkspaceForActions = !!userId && !isOwner && intent !== 'view';
-  const shouldLoadWorkspaceRole = needsWorkspaceForAccess || needsWorkspaceForActions;
+  // The workspace role decides `canEdit`/`isWorkspaceMember`, not just whether the viewer
+  // gets in at all, so it has to be resolved for every signed-in non-owner. Skipping it
+  // once access was already granted some other way (public project, or an existing project
+  // membership) silently downgraded workspace admins to read-only on `intent: 'view'` —
+  // the intent pages and GET routes use to decide which actions to render.
+  // Owners pass every check on their own; resolve their role only when they mutate.
+  const shouldLoadWorkspaceRole = !!userId && (!isOwner || intent !== 'view');
 
   // Check workspace membership/role
   let workspaceRole: WorkspaceMemberRole | 'OWNER' | null = null;
