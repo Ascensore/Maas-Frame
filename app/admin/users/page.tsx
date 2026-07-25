@@ -1,8 +1,10 @@
 import { Metadata } from 'next';
-import { Prisma } from '@prisma/client';
+import { Prisma, BillingSubscriptionStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auth } from '@/lib/auth';
-import { isBunnyUploadsFeatureEnabled } from '@/lib/feature-flags';
+import { isBunnyUploadsFeatureEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
+import { getBillingStatusLabel, hasBillingAccess } from '@/lib/billing';
+import { hasCollaboratorBillingBackedAccess } from '@/lib/route-access';
 import { redirect } from 'next/navigation';
 import {
   getCachedBunnyStorageStats,
@@ -13,6 +15,7 @@ import {
 import { Film, HardDrive } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -24,12 +27,62 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { format } from 'date-fns';
 
+function getBillingStatusVariant(
+  status: BillingSubscriptionStatus
+): 'default' | 'secondary' | 'destructive' | 'outline' | 'ghost' {
+  switch (status) {
+    case BillingSubscriptionStatus.ACTIVE:
+      return 'default';
+    case BillingSubscriptionStatus.TRIALING:
+    case BillingSubscriptionStatus.INCOMPLETE:
+      return 'secondary';
+    case BillingSubscriptionStatus.PAST_DUE:
+    case BillingSubscriptionStatus.UNPAID:
+      return 'destructive';
+    case BillingSubscriptionStatus.CANCELED:
+    case BillingSubscriptionStatus.INCOMPLETE_EXPIRED:
+      return 'outline';
+    case BillingSubscriptionStatus.FREE:
+    default:
+      return 'ghost';
+  }
+}
+
+function getOwnBillingAccess(
+  user: {
+    subscriptionStatus: BillingSubscriptionStatus;
+    trialEndsAt: Date | null;
+    stripeCurrentPeriodEnd: Date | null;
+    stripeCancelAtPeriodEnd: boolean;
+    stripeCancelAt: Date | null;
+    billingAccessEndedAt: Date | null;
+  },
+  now: Date
+): { ownAccess: boolean; endsAt: Date | null } {
+  if (!hasBillingAccess(user, now)) {
+    return { ownAccess: false, endsAt: null };
+  }
+
+  const isEnding =
+    user.stripeCancelAtPeriodEnd || user.subscriptionStatus === BillingSubscriptionStatus.CANCELED;
+
+  let endsAt: Date | null = null;
+  if (user.subscriptionStatus === BillingSubscriptionStatus.TRIALING) {
+    endsAt = user.trialEndsAt;
+  } else if (isEnding) {
+    endsAt = user.stripeCurrentPeriodEnd ?? user.stripeCancelAt;
+  }
+
+  return { ownAccess: true, endsAt };
+}
+
 export const metadata: Metadata = {
   title: 'Manage Users | Admin',
 };
 
 type SortBy =
   | 'user'
+  | 'subscription'
   | 'joinedDate'
   | 'workspacesOwned'
   | 'invitedMembers'
@@ -43,6 +96,7 @@ type SortDirection = 'asc' | 'desc';
 
 const SORTABLE_COLUMNS: SortBy[] = [
   'user',
+  'subscription',
   'joinedDate',
   'workspacesOwned',
   'invitedMembers',
@@ -83,6 +137,7 @@ function getSortIndicator(
 function canSortInDb(sortBy: SortBy): boolean {
   return (
     sortBy === 'user' ||
+    sortBy === 'subscription' ||
     sortBy === 'joinedDate' ||
     sortBy === 'workspacesOwned' ||
     sortBy === 'projectsOwned' ||
@@ -98,6 +153,10 @@ function getUsersOrderBy(
 
   if (sortBy === 'user') {
     return [{ name: sortDirection }, { email: sortDirection }, createdAtTieBreaker];
+  }
+
+  if (sortBy === 'subscription') {
+    return [{ subscriptionStatus: sortDirection }, createdAtTieBreaker];
   }
 
   if (sortBy === 'joinedDate') {
@@ -139,6 +198,8 @@ export default async function AdminUsersPage({
       ? resolvedSearchParams.sortDirection
       : getDefaultSortDirection(sortBy);
   const pageSize = 20;
+  const stripeBillingEnabled = isStripeBillingEnabled();
+  const now = new Date();
   const [totalUsers, userStorage, userBunnyStorage, userDownloadEgress, bunnyStorageStats] =
     await Promise.all([
       db.user.count(),
@@ -156,6 +217,12 @@ export default async function AdminUsersPage({
     name: true,
     email: true,
     createdAt: true,
+    subscriptionStatus: true,
+    trialEndsAt: true,
+    stripeCurrentPeriodEnd: true,
+    stripeCancelAtPeriodEnd: true,
+    stripeCancelAt: true,
+    billingAccessEndedAt: true,
     ownedWorkspaces: {
       select: {
         _count: {
@@ -179,6 +246,12 @@ export default async function AdminUsersPage({
     name: string | null;
     email: string | null;
     createdAt: Date;
+    subscriptionStatus: BillingSubscriptionStatus;
+    trialEndsAt: Date | null;
+    stripeCurrentPeriodEnd: Date | null;
+    stripeCancelAtPeriodEnd: boolean;
+    stripeCancelAt: Date | null;
+    billingAccessEndedAt: Date | null;
     ownedWorkspaces: Array<{ _count: { members: number } }>;
     _count: { ownedWorkspaces: number; projects: number; comments: number };
     invitedMembersCount: number;
@@ -240,6 +313,24 @@ export default async function AdminUsersPage({
     });
 
     paginatedUsers = sortedUsers.slice(skip, skip + pageSize);
+  }
+
+  // Resolve the real in-app access for each user on the current page. Access is
+  // not just the user's own subscription: a user with no billing of their own
+  // still has access as a collaborator on a paying owner's workspace/project
+  // (mirrors hasAppNavigationAccess in lib/route-access.ts).
+  const accessByUserId = new Map<string, { hasAppAccess: boolean; viaCollaboration: boolean }>();
+  if (stripeBillingEnabled) {
+    await Promise.all(
+      paginatedUsers.map(async (user) => {
+        const { ownAccess } = getOwnBillingAccess(user, now);
+        const hasAppAccess = ownAccess || (await hasCollaboratorBillingBackedAccess(user.id));
+        accessByUserId.set(user.id, {
+          hasAppAccess,
+          viaCollaboration: hasAppAccess && !ownAccess,
+        });
+      })
+    );
   }
 
   const buildUsersPageHref = (
@@ -323,6 +414,19 @@ export default async function AdminUsersPage({
                       </span>
                     </Link>
                   </TableHead>
+                  {stripeBillingEnabled && (
+                    <TableHead>
+                      <Link
+                        href={buildSortHref('subscription')}
+                        className="inline-flex items-center gap-1 hover:underline"
+                      >
+                        Subscription
+                        <span className="text-xs">
+                          {getSortIndicator('subscription', sortBy, sortDirection)}
+                        </span>
+                      </Link>
+                    </TableHead>
+                  )}
                   <TableHead>
                     <Link
                       href={buildSortHref('joinedDate')}
@@ -416,7 +520,7 @@ export default async function AdminUsersPage({
               <TableBody>
                 {paginatedUsers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-24 text-center">
+                    <TableCell colSpan={stripeBillingEnabled ? 10 : 9} className="h-24 text-center">
                       No users found.
                     </TableCell>
                   </TableRow>
@@ -429,6 +533,36 @@ export default async function AdminUsersPage({
                           <span className="text-xs text-muted-foreground">{user.email}</span>
                         </div>
                       </TableCell>
+                      {stripeBillingEnabled &&
+                        (() => {
+                          const { endsAt } = getOwnBillingAccess(user, now);
+                          const access = accessByUserId.get(user.id) ?? {
+                            hasAppAccess: false,
+                            viaCollaboration: false,
+                          };
+                          return (
+                            <TableCell>
+                              <div className="flex flex-col items-start gap-1">
+                                <Badge variant={getBillingStatusVariant(user.subscriptionStatus)}>
+                                  {getBillingStatusLabel(user.subscriptionStatus)}
+                                </Badge>
+                                {access.hasAppAccess ? (
+                                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
+                                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                    Active access
+                                    {access.viaCollaboration
+                                      ? ' · via team'
+                                      : endsAt
+                                        ? ` · until ${format(new Date(endsAt), 'MMM dd')}`
+                                        : ''}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">No access</span>
+                                )}
+                              </div>
+                            </TableCell>
+                          );
+                        })()}
                       <TableCell>{format(new Date(user.createdAt), 'MMM dd, yyyy')}</TableCell>
                       <TableCell className="text-center">{user._count.ownedWorkspaces}</TableCell>
                       <TableCell className="text-center">{user.invitedMembersCount}</TableCell>
