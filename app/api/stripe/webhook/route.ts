@@ -1,28 +1,16 @@
 import { NextRequest } from 'next/server';
 import type Stripe from 'stripe';
-import { markSubscriptionCanceledByCustomerId, syncStripeSubscriptionToUser } from '@/lib/billing';
+import { syncStripeCustomerSubscriptions } from '@/lib/billing';
 import { getStripe, getStripeWebhookSecret } from '@/lib/stripe';
 import { logError } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 
-async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
-  const customerId =
-    typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id;
-
-  const currentPeriodEnd =
-    'current_period_end' in subscription && typeof subscription.current_period_end === 'number'
-      ? new Date(subscription.current_period_end * 1000)
-      : null;
-  const endedAt =
-    'ended_at' in subscription && typeof subscription.ended_at === 'number'
-      ? new Date(subscription.ended_at * 1000)
-      : currentPeriodEnd;
-
-  await markSubscriptionCanceledByCustomerId(customerId, {
-    currentPeriodEnd,
-    endedAt,
-  });
+function getCustomerId(
+  customer: string | Stripe.Customer | Stripe.DeletedCustomer | null
+): string | null {
+  if (!customer) return null;
+  return typeof customer === 'string' ? customer : customer.id;
 }
 
 export async function POST(request: NextRequest) {
@@ -43,30 +31,28 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const stripe = getStripe();
-
+    // Every subscription-related event re-derives the user's state from the
+    // full set of the customer's Stripe subscriptions, so a stale event (e.g.
+    // an old subscription being deleted) can never clobber a newer active one.
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
-        if (session.mode === 'subscription' && session.subscription) {
-          const subscriptionId =
-            typeof session.subscription === 'string'
-              ? session.subscription
-              : session.subscription.id;
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          await syncStripeSubscriptionToUser(subscription);
+        if (session.mode === 'subscription') {
+          const customerId = getCustomerId(session.customer);
+          if (customerId) {
+            await syncStripeCustomerSubscriptions(customerId);
+          }
         }
         break;
       }
       case 'customer.subscription.created':
-      case 'customer.subscription.updated': {
-        const subscription = event.data.object as Stripe.Subscription;
-        await syncStripeSubscriptionToUser(subscription);
-        break;
-      }
+      case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
         const subscription = event.data.object as Stripe.Subscription;
-        await handleSubscriptionDeleted(subscription);
+        const customerId = getCustomerId(subscription.customer);
+        if (customerId) {
+          await syncStripeCustomerSubscriptions(customerId);
+        }
         break;
       }
       default:

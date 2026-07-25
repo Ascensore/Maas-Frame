@@ -46,8 +46,15 @@ export async function POST(request: NextRequest) {
     }
 
     const checkoutState = await getStripeCheckoutState(session.user.id);
-    if (checkoutState.hasActiveSubscription) {
-      return apiErrors.badRequest('An active subscription already exists for this account');
+    // Block a fresh checkout whenever the customer already has a live subscription
+    // (active/trialing OR a recoverable one like past_due/unpaid/incomplete).
+    // Stripe Checkout in subscription mode always creates a NEW subscription, so
+    // letting a past_due user through here duplicates their subscription instead
+    // of recovering it. They should manage the existing one via the billing portal.
+    if (checkoutState.hasRecoverableSubscription) {
+      return apiErrors.badRequest(
+        'A subscription already exists for this account. Manage it from the billing portal.'
+      );
     }
 
     const stripe = getStripe();

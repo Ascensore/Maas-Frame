@@ -10,6 +10,18 @@ const ACTIVE_SUBSCRIPTION_STATUSES = new Set<BillingSubscriptionStatus>([
   BillingSubscriptionStatus.TRIALING,
 ]);
 
+// Statuses that mean the customer already has a live Stripe subscription that
+// should be recovered (via the billing portal / dunning) rather than duplicated
+// with a fresh checkout. Everything else (FREE, CANCELED, INCOMPLETE_EXPIRED)
+// has no recoverable subscription, so a new checkout is appropriate.
+const RECOVERABLE_SUBSCRIPTION_STATUSES = new Set<BillingSubscriptionStatus>([
+  BillingSubscriptionStatus.ACTIVE,
+  BillingSubscriptionStatus.TRIALING,
+  BillingSubscriptionStatus.PAST_DUE,
+  BillingSubscriptionStatus.UNPAID,
+  BillingSubscriptionStatus.INCOMPLETE,
+]);
+
 export const DEFAULT_TRIAL_PERIOD_DAYS = 7;
 const STORAGE_CLEANUP_GRACE_DAYS = 15;
 
@@ -33,6 +45,14 @@ export function hasActiveTrial(trialEndsAt: Date | null | undefined, now: Date =
 export function hasActiveSubscription(status: BillingSubscriptionStatus | null | undefined) {
   if (!status) return false;
   return ACTIVE_SUBSCRIPTION_STATUSES.has(status);
+}
+
+// True when the customer already has a live subscription (active/trialing OR a
+// recoverable one like past_due/unpaid/incomplete). Used to route them to the
+// billing portal instead of letting a new checkout create a duplicate.
+export function hasRecoverableSubscription(status: BillingSubscriptionStatus | null | undefined) {
+  if (!status) return false;
+  return RECOVERABLE_SUBSCRIPTION_STATUSES.has(status);
 }
 
 export function hasBillingAccess(subject: BillingAccessSubject, now: Date = new Date()) {
@@ -170,6 +190,7 @@ export async function getStripeCheckoutState(userId: string) {
 
   return {
     hasActiveSubscription: hasActiveSubscription(user.subscriptionStatus),
+    hasRecoverableSubscription: hasRecoverableSubscription(user.subscriptionStatus),
     isTrialEligible: !user.billingTrialConsumedAt,
   };
 }
@@ -253,6 +274,7 @@ export async function getWorkspaceCreationEligibility(userId: string) {
       status: user.subscriptionStatus,
       label: getBillingStatusLabel(user.subscriptionStatus),
       hasActiveSubscription: hasActiveSubscription(user.subscriptionStatus),
+      hasRecoverableSubscription: hasRecoverableSubscription(user.subscriptionStatus),
       hasActiveTrial: hasActiveTrial(user.trialEndsAt),
       hasBillingAccess: billingAccess,
       isTrialEligible: !user.billingTrialConsumedAt,
@@ -408,6 +430,67 @@ export async function syncStripeSubscriptionToUser(subscription: Stripe.Subscrip
         : getInactiveBillingAccessEndedAt(subscription, hasEntitledPrice ? currentPeriodEnd : null),
     },
   });
+}
+
+// A single Stripe customer can own several subscriptions at once (e.g. after
+// going past_due and re-subscribing). Higher priority = more authoritative for
+// deciding the user's entitlement.
+const SUBSCRIPTION_STATUS_PRIORITY: Record<Stripe.Subscription.Status, number> = {
+  active: 100,
+  trialing: 90,
+  past_due: 80,
+  unpaid: 70,
+  paused: 60,
+  incomplete: 50,
+  incomplete_expired: 20,
+  canceled: 10,
+};
+
+// Picks the subscription that should drive the user's billing state when a
+// customer has more than one. Prefers subscriptions that carry the entitled
+// price, then the most "alive" status, then the most recently created.
+export function selectAuthoritativeSubscription(
+  subscriptions: Stripe.Subscription[]
+): Stripe.Subscription | null {
+  if (subscriptions.length === 0) {
+    return null;
+  }
+
+  return [...subscriptions].sort((a, b) => {
+    const aEntitled = Boolean(getEntitledStripePriceId(a));
+    const bEntitled = Boolean(getEntitledStripePriceId(b));
+    if (aEntitled !== bEntitled) {
+      return aEntitled ? -1 : 1;
+    }
+
+    const aStatus = SUBSCRIPTION_STATUS_PRIORITY[a.status] ?? 0;
+    const bStatus = SUBSCRIPTION_STATUS_PRIORITY[b.status] ?? 0;
+    if (aStatus !== bStatus) {
+      return bStatus - aStatus;
+    }
+
+    return (getStripeTimestamp(b.created) ?? 0) - (getStripeTimestamp(a.created) ?? 0);
+  })[0];
+}
+
+// Source-of-truth sync: instead of trusting a single subscription from a webhook
+// event body (which may be an OLD subscription being deleted while a NEWER one is
+// active), re-list ALL of the customer's subscriptions from Stripe and sync the
+// authoritative one. This is order-independent and self-healing.
+export async function syncStripeCustomerSubscriptions(customerId: string) {
+  const stripe = getStripe();
+  const { data: subscriptions } = await stripe.subscriptions.list({
+    customer: customerId,
+    status: 'all',
+    limit: 100,
+  });
+
+  const authoritative = selectAuthoritativeSubscription(subscriptions);
+  if (!authoritative) {
+    return markSubscriptionCanceledByCustomerId(customerId);
+  }
+
+  return syncStripeSubscriptionToUser(authoritative);
 }
 
 export async function markSubscriptionCanceledByCustomerId(

@@ -53,6 +53,7 @@ interface BillingOverview {
     status: string;
     label: string;
     hasActiveSubscription: boolean;
+    hasRecoverableSubscription: boolean;
     hasActiveTrial: boolean;
     hasBillingAccess: boolean;
     isTrialEligible: boolean;
@@ -400,6 +401,14 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
                 </Badge>
               </div>
 
+              {billing.subscription.hasRecoverableSubscription &&
+              !billing.subscription.hasActiveSubscription ? (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+                  Your latest payment didn&apos;t go through. Update your payment method to keep
+                  your subscription — starting a new one would create a duplicate.
+                </p>
+              ) : null}
+
               {billing.subscription.hasActiveTrial &&
               billing.subscription.trialEndsAt &&
               hasScheduledCancellation ? (
@@ -444,7 +453,7 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
               ) : null}
 
               <div className="flex flex-col sm:flex-row gap-3">
-                {billing.subscription.hasActiveSubscription && billing.portalAvailable ? (
+                {billing.subscription.hasRecoverableSubscription && billing.portalAvailable ? (
                   <Button
                     onClick={() => handleBillingRedirect('/api/billing/portal')}
                     disabled={billingAction !== null}
@@ -454,8 +463,10 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                         Opening Portal...
                       </>
-                    ) : (
+                    ) : billing.subscription.hasActiveSubscription ? (
                       'Manage Subscription'
+                    ) : (
+                      'Update Payment Method'
                     )}
                   </Button>
                 ) : (
