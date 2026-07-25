@@ -16,6 +16,26 @@ function getConfiguredOrigins(): string[] {
     .filter((value): value is string => value !== null);
 }
 
+/**
+ * Origin to build user-facing redirects from.
+ *
+ * Behind a reverse proxy (Docker deployments) `request.nextUrl.origin` is the
+ * container-internal address (`localhost:3000`), so redirecting relative to the
+ * request URL sends the browser to a dead host. Prefer the operator-configured
+ * public origin and fall back to the request origin for local development.
+ */
+export function getPublicOrigin(request: NextRequest): string {
+  const configured = [process.env.NEXTAUTH_URL, process.env.NEXT_PUBLIC_APP_URL];
+
+  for (const value of configured) {
+    if (typeof value !== 'string' || value.trim().length === 0) continue;
+    const origin = normalizeOrigin(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    if (origin) return origin;
+  }
+
+  return request.nextUrl.origin;
+}
+
 export function getAllowedRequestOrigins(request: NextRequest): Set<string> {
   const origins = new Set<string>();
 
