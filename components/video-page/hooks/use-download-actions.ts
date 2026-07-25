@@ -13,9 +13,14 @@ import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import {
   downloadNamedFile,
   downloadProgressLabel,
+  downloadProgressPercent,
   extensionFromUrl,
   navigateDownload,
 } from '@/lib/client/download-file';
+import {
+  createDownloadProgressToast,
+  type DownloadProgressToastHandle,
+} from '@/components/download-progress-toast';
 
 function sanitizeDownloadFileName(value: string): string {
   return value
@@ -84,6 +89,7 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
 
       const target: DownloadTarget = activeVersion.providerId === 'bunny' ? preference : 'direct';
       setActiveDownloadTarget(target);
+      let progressToast: DownloadProgressToastHandle | null = null;
       try {
         let downloadUrl: string | null = null;
 
@@ -151,27 +157,32 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
 
           // The file is pulled into the browser before it can be saved, which on
           // a big file / slow connection takes a while with no native download UI
-          // — show live progress so it doesn't look stuck.
-          const toastId = `download-${activeVersion.id}`;
-          toast.loading(`Downloading “${baseName}”…`, { id: toastId, duration: Infinity });
+          // — show live progress so it doesn't look stuck. The panel can be
+          // minimized because it sits over the comment composer.
+          progressToast = createDownloadProgressToast(`download-${activeVersion.id}`, {
+            title: `Downloading “${baseName}”`,
+            description: 'Starting…',
+          });
           const saved = await downloadNamedFile(downloadUrl, `${baseName}.${fallbackExt}`, (p) => {
-            toast.loading(`Downloading “${baseName}”`, {
-              id: toastId,
+            progressToast?.update({
               description: downloadProgressLabel(p),
-              duration: Infinity,
+              percent: downloadProgressPercent(p),
             });
           });
           if (saved) {
-            toast.success(`“${baseName}” downloaded`, { id: toastId, duration: 4000 });
+            progressToast.success(`“${baseName}” downloaded`);
           } else {
             // Too large to buffer (or fetch blocked): let the browser download it
             // directly (its own progress UI, CDN filename).
-            toast.dismiss(toastId);
+            progressToast.dismiss();
             navigateDownload(downloadUrl);
           }
         }
       } catch (error) {
         console.error('Failed to start video download:', error);
+        // The progress panel never expires on its own, so clear it before the
+        // error toast replaces it.
+        progressToast?.dismiss();
         if (error instanceof Error && error.message === 'Direct download URL is not allowed') {
           toast.error('This direct download host is not allowed');
         } else if (error instanceof Error && error.message) {

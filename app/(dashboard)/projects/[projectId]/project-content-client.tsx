@@ -51,6 +51,11 @@ import {
   runProjectDownloadManifest,
   type ProjectDownloadManifest,
 } from '@/lib/client/project-download';
+import { downloadProgressPercent } from '@/lib/client/download-file';
+import {
+  createDownloadProgressToast,
+  type DownloadProgressToastHandle,
+} from '@/components/download-progress-toast';
 
 interface SerializedVideo {
   id: string;
@@ -203,6 +208,7 @@ export function ProjectContentClient({
       const query = searchParams.toString() ? `?${searchParams.toString()}` : '';
 
       setIsDownloading(true);
+      let progressToast: DownloadProgressToastHandle | null = null;
       try {
         const response = await fetch(`/api/projects/${projectId}/download${query}`, {
           cache: 'no-store',
@@ -222,27 +228,26 @@ export function ProjectContentClient({
           return;
         }
 
-        const downloadToastId = `project-download-${projectId}`;
-        toast.loading(`Downloading ${manifest.totalFiles} files…`, {
-          id: downloadToastId,
-          duration: Infinity,
+        progressToast = createDownloadProgressToast(`project-download-${projectId}`, {
+          title: `Downloading ${manifest.totalFiles} files`,
+          description: 'Starting…',
         });
         await runProjectDownloadManifest(manifest, (p) => {
-          const pct =
-            p.totalBytes && p.totalBytes > 0
-              ? ` · ${Math.min(100, Math.floor((p.receivedBytes / p.totalBytes) * 100))}%`
-              : '';
-          toast.loading(`Downloading file ${p.index}/${p.total}`, {
-            id: downloadToastId,
-            description: `${p.fileName}${pct}`,
-            duration: Infinity,
+          const percent = downloadProgressPercent({
+            receivedBytes: p.receivedBytes,
+            totalBytes: p.totalBytes,
+          });
+          progressToast?.update({
+            title: `Downloading file ${p.index}/${p.total}`,
+            description: `${p.fileName}${percent !== null ? ` · ${percent}%` : ''}`,
+            percent,
           });
         });
-        toast.success(`Downloaded ${manifest.totalFiles} files`, {
-          id: downloadToastId,
-          duration: 4000,
-        });
+        progressToast.success(`Downloaded ${manifest.totalFiles} files`);
       } catch {
+        // The progress panel never expires on its own, so clear it before the
+        // error toast replaces it.
+        progressToast?.dismiss();
         toast.error('Failed to start project download');
       } finally {
         setIsDownloading(false);

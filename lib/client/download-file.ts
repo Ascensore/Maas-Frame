@@ -40,10 +40,17 @@ export function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+/** Percentage done, or null when the server didn't send a Content-Length. */
+export function downloadProgressPercent(progress: DownloadProgress): number | null {
+  const { receivedBytes, totalBytes } = progress;
+  if (!totalBytes || totalBytes <= 0) return null;
+  return Math.min(100, Math.floor((receivedBytes / totalBytes) * 100));
+}
+
 export function downloadProgressLabel(progress: DownloadProgress): string {
   const { receivedBytes, totalBytes } = progress;
-  if (totalBytes && totalBytes > 0) {
-    const pct = Math.min(100, Math.floor((receivedBytes / totalBytes) * 100));
+  const pct = downloadProgressPercent(progress);
+  if (pct !== null && totalBytes) {
     return `${pct}% · ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)}`;
   }
   return formatBytes(receivedBytes);
