@@ -8,10 +8,16 @@ import { Video, Mail, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { getSafeCallbackUrl } from '@/lib/safe-redirect';
 
 function VerifyEmailContent() {
   const searchParams = useSearchParams();
   const emailParam = searchParams.get('email') || '';
+  const callbackUrl = getSafeCallbackUrl(searchParams.get('callbackUrl'));
+  const loginHref =
+    callbackUrl === '/dashboard'
+      ? '/login'
+      : `/login?callbackUrl=${encodeURIComponent(callbackUrl)}`;
   const [resendEmail, setResendEmail] = useState(emailParam);
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -107,7 +113,7 @@ function VerifyEmailContent() {
 
             <p className="text-center text-sm text-muted-foreground">
               Already verified?{' '}
-              <Link href="/login" className="text-primary hover:underline">
+              <Link href={loginHref} className="text-primary hover:underline">
                 Sign in
               </Link>
             </p>

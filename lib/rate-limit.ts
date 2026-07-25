@@ -81,6 +81,11 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
 
   // Member management
   'invite-member': { windowMs: 60 * 60 * 1000, maxRequests: 30 }, // 30 per hour
+  // Unauthenticated invitation preview (accept landing + invited sign-up). Two buckets,
+  // as with share-unlock: a generous per-IP one that bounds token enumeration, and a
+  // tight per-IP+token one that stops repeated probing of a single invitation.
+  'invitation-preview': { windowMs: 15 * 60 * 1000, maxRequests: 120 }, // 120 per 15 min per IP
+  'invitation-preview-token': { windowMs: 15 * 60 * 1000, maxRequests: 12 }, // 12 per 15 min per IP+token
   'manage-member': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
 
   // Mutations (update/delete) — moderate
@@ -188,12 +193,20 @@ function isPlausibleIp(value: string): boolean {
  * do so allows clients to spoof their IP and bypass rate limits.
  */
 export function getClientIp(request: Request): string {
+  return getClientIpFromHeaders(request.headers);
+}
+
+/**
+ * Same resolution as {@link getClientIp}, for callers that only have headers rather than a
+ * Request — server components reading `await headers()`.
+ */
+export function getClientIpFromHeaders(headers: Headers): string {
   const mode = process.env.TRUSTED_PROXY_MODE?.trim().toLowerCase();
 
   if (mode === 'cloudflare') {
     // cf-connecting-ip is injected by Cloudflare and cannot be set by clients
     // when origin access is restricted to Cloudflare's IP ranges.
-    const cfIp = request.headers.get('cf-connecting-ip');
+    const cfIp = headers.get('cf-connecting-ip');
     if (cfIp && isPlausibleIp(cfIp)) {
       return cfIp;
     }
@@ -202,11 +215,11 @@ export function getClientIp(request: Request): string {
   if (mode === 'nginx') {
     // x-real-ip is set by Nginx's real_ip_header directive (connection-level, not spoofable
     // by clients when set_real_ip_from is configured for the upstream proxy).
-    const realIp = request.headers.get('x-real-ip');
+    const realIp = headers.get('x-real-ip');
     if (realIp && isPlausibleIp(realIp)) return realIp;
 
     // x-forwarded-for last entry added by Nginx when proxy_add_x_forwarded_for is used.
-    const forwardedFor = request.headers.get('x-forwarded-for');
+    const forwardedFor = headers.get('x-forwarded-for');
     if (forwardedFor) {
       const entries = forwardedFor.split(',');
       const last = entries[entries.length - 1].trim();

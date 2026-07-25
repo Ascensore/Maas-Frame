@@ -221,6 +221,64 @@ export async function createOrRefreshInvitation(params: {
   throw new Error('Failed to create invitation after retrying');
 }
 
+export interface InvitationPreview {
+  email: string;
+  role: InvitationRole;
+  roleLabel: string;
+  scope: InvitationScope;
+  scopeLabel: string;
+  status: InvitationStatus;
+  /** PENDING but past its expiry — the DB row is only flipped to EXPIRED on acceptance. */
+  isExpired: boolean;
+  inviterName: string;
+  targetName: string | null;
+  /** Whether an account already exists for the invited address. */
+  hasAccount: boolean;
+}
+
+/**
+ * Public-facing summary of an invitation, safe to render to a signed-out visitor:
+ * the token itself is the secret, and everything here was already in the email we sent
+ * to that address.
+ */
+export async function getInvitationPreviewByToken(
+  token: string
+): Promise<InvitationPreview | null> {
+  const invitation = await db.invitation.findUnique({
+    where: { token },
+    select: {
+      email: true,
+      role: true,
+      scope: true,
+      status: true,
+      expiresAt: true,
+      invitedBy: { select: { name: true } },
+      workspace: { select: { name: true } },
+      project: { select: { name: true } },
+    },
+  });
+
+  if (!invitation) return null;
+
+  const existingUser = await db.user.findUnique({
+    where: { email: invitation.email },
+    select: { id: true },
+  });
+
+  return {
+    email: invitation.email,
+    role: invitation.role,
+    roleLabel: roleLabel(invitation.role),
+    scope: invitation.scope,
+    scopeLabel: scopeLabel(invitation.scope),
+    status: invitation.status,
+    isExpired: invitation.expiresAt <= new Date(),
+    inviterName: invitation.invitedBy?.name?.trim() || 'A team member',
+    targetName: invitation.workspace?.name ?? invitation.project?.name ?? null,
+    hasAccount: Boolean(existingUser),
+  };
+}
+
 export async function getValidInvitationByToken(token: string) {
   const now = new Date();
   return db.invitation.findFirst({

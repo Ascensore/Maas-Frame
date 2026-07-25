@@ -3,6 +3,7 @@ import { consumeVerificationToken } from '@/lib/email-verification';
 import { rateLimit } from '@/lib/rate-limit';
 import { logError } from '@/lib/logger';
 import { getPublicOrigin } from '@/lib/request-origin';
+import { getSafeCallbackUrl } from '@/lib/safe-redirect';
 
 // A raw 32-byte hex token is exactly 64 characters.
 const TOKEN_REGEX = /^[0-9a-f]{64}$/;
@@ -31,7 +32,15 @@ export async function GET(request: NextRequest) {
       return redirectTo('/login?error=InvalidVerificationToken');
     }
 
-    return redirectTo('/login?verified=true');
+    // Keep the post-verification destination (e.g. an invitation) if one was carried along.
+    const next = getSafeCallbackUrl(request.nextUrl.searchParams.get('next'), {
+      origin,
+      fallback: '',
+    });
+
+    return redirectTo(
+      next ? `/login?verified=true&callbackUrl=${encodeURIComponent(next)}` : '/login?verified=true'
+    );
   } catch (err) {
     logError('Email verification error:', err);
     return redirectTo('/login?error=VerificationFailed');

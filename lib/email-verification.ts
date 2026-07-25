@@ -94,7 +94,11 @@ function createTransport() {
   return nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } });
 }
 
-export async function sendVerificationEmail(email: string, token: string): Promise<void> {
+export async function sendVerificationEmail(
+  email: string,
+  token: string,
+  options?: { next?: string }
+): Promise<void> {
   const transporter = createTransport();
   if (!transporter) return;
 
@@ -109,7 +113,10 @@ export async function sendVerificationEmail(email: string, token: string): Promi
     return;
   }
 
-  const verifyUrl = `${baseUrl}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  // `next` survives the round-trip so an invited user lands back on the invitation
+  // (and from there on the shared project) instead of a generic login page.
+  const nextParam = options?.next ? `&next=${encodeURIComponent(options.next)}` : '';
+  const verifyUrl = `${baseUrl}/api/auth/verify-email?token=${encodeURIComponent(token)}${nextParam}`;
   const from = process.env.SMTP_FROM || process.env.EMAIL_FROM || 'OpenFrame <info@open-frame.net>';
 
   const html = brandedEmailTemplate(

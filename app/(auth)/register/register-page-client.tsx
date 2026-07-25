@@ -9,24 +9,52 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { getSafeCallbackUrl } from '@/lib/safe-redirect';
+
+export interface RegisterInvitation {
+  email: string;
+  inviterName: string;
+  roleLabel: string;
+  scopeLabel: string;
+  targetName: string | null;
+}
 
 interface RegisterPageClientProps {
   requireInviteCode: boolean;
   googleEnabled: boolean;
   githubEnabled: boolean;
+  invitation?: RegisterInvitation | null;
+  /** Preview lookup was rate-limited, so `invitation` says nothing about its validity. */
+  invitationLookupThrottled?: boolean;
 }
 
 export default function RegisterPageClient({
   requireInviteCode,
   googleEnabled,
   githubEnabled,
+  invitation = null,
+  invitationLookupThrottled = false,
 }: RegisterPageClientProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const invitationToken = useMemo(() => searchParams.get('invitationToken') || '', [searchParams]);
-  const invitedEmail = useMemo(() => searchParams.get('email') || '', [searchParams]);
+  const invitedEmail = useMemo(
+    () => invitation?.email || searchParams.get('email') || '',
+    [invitation, searchParams]
+  );
+  // Where to send the user once they are signed in — for invitations this points back
+  // at /invitations/accept so they land on the workspace/project they were invited to
+  // instead of the onboarding wizard.
+  const callbackUrl = useMemo(
+    () => getSafeCallbackUrl(searchParams.get('callbackUrl')),
+    [searchParams]
+  );
   const isInvitationFlow = invitationToken.length > 0;
   const shouldShowInviteCode = requireInviteCode && !isInvitationFlow;
+  const loginHref =
+    callbackUrl === '/dashboard'
+      ? '/login'
+      : `/login?callbackUrl=${encodeURIComponent(callbackUrl)}`;
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -91,10 +119,11 @@ export default function RegisterPageClient({
         return;
       }
 
+      const callbackParam = `&callbackUrl=${encodeURIComponent(callbackUrl)}`;
       if (data.data?.emailVerificationRequired) {
-        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}`);
+        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${callbackParam}`);
       } else {
-        router.push('/login?registered=true');
+        router.push(`/login?registered=true${callbackParam}`);
       }
     } catch {
       setError('Something went wrong. Please try again.');
@@ -106,7 +135,7 @@ export default function RegisterPageClient({
   const handleOAuthSignUp = async (provider: string) => {
     setOauthLoading(provider);
     setError('');
-    await signIn(provider, { callbackUrl: '/dashboard' });
+    await signIn(provider, { callbackUrl });
   };
 
   const hasOAuth = googleEnabled || githubEnabled;
@@ -204,9 +233,29 @@ export default function RegisterPageClient({
             )}
 
             <form onSubmit={handleRegister} className="space-y-4">
-              {isInvitationFlow ? (
-                <div className="p-3 rounded-md bg-primary/10 text-sm">
-                  You are registering via an invitation link.
+              {isInvitationFlow && invitation ? (
+                <div className="p-3 rounded-md bg-primary/10 text-sm space-y-1">
+                  <p>
+                    {invitation.inviterName} invited you to{' '}
+                    <strong>
+                      {invitation.targetName
+                        ? `${invitation.targetName} (${invitation.scopeLabel})`
+                        : `a ${invitation.scopeLabel}`}
+                    </strong>{' '}
+                    as {invitation.roleLabel}.
+                  </p>
+                  <p className="text-muted-foreground">
+                    Create your account below — you&apos;ll be taken straight to it.
+                  </p>
+                </div>
+              ) : isInvitationFlow && invitationLookupThrottled ? (
+                <div className="p-3 rounded-md bg-amber-500/10 text-sm">
+                  We couldn&apos;t check this invitation right now. Please wait a few minutes and
+                  open the link again.
+                </div>
+              ) : isInvitationFlow ? (
+                <div className="p-3 rounded-md bg-amber-500/10 text-sm">
+                  This invitation link is no longer valid. Ask whoever invited you for a new one.
                 </div>
               ) : shouldShowInviteCode ? (
                 <>
@@ -261,7 +310,14 @@ export default function RegisterPageClient({
                   onChange={handleChange}
                   required
                   disabled={isLoading}
+                  readOnly={Boolean(invitation)}
+                  className={invitation ? 'bg-muted text-muted-foreground' : undefined}
                 />
+                {invitation && (
+                  <p className="text-xs text-muted-foreground">
+                    The invitation is tied to this address.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -307,7 +363,7 @@ export default function RegisterPageClient({
 
             <p className="text-center text-sm text-muted-foreground mt-6">
               Already have an account?{' '}
-              <Link href="/login" className="text-primary hover:underline">
+              <Link href={loginHref} className="text-primary hover:underline">
                 Sign in
               </Link>
             </p>
