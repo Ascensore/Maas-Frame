@@ -13,13 +13,16 @@ interface CommentRichTextProps {
   assets?: VideoAsset[];
 }
 
-function renderUrls(text: string): React.ReactNode[] {
+// `keyPrefix` scopes the indices to this slice. The function runs once per gap between
+// mentions, so keying on the index alone emitted `txt-0` for several siblings and React
+// warned about duplicate keys.
+function renderUrls(text: string, keyPrefix: string): React.ReactNode[] {
   const parts = text.split(URL_REGEX);
   return parts.map((part, index) => {
     if (/^https?:\/\/[^\s]+$/.test(part)) {
       return (
         <a
-          key={`url-${index}`}
+          key={`${keyPrefix}-url-${index}`}
           href={part}
           target="_blank"
           rel="noopener noreferrer"
@@ -30,7 +33,7 @@ function renderUrls(text: string): React.ReactNode[] {
         </a>
       );
     }
-    return <React.Fragment key={`txt-${index}`}>{part}</React.Fragment>;
+    return <React.Fragment key={`${keyPrefix}-txt-${index}`}>{part}</React.Fragment>;
   });
 }
 
@@ -43,7 +46,7 @@ export function CommentRichText({ text, onAssetMentionClick, assets = [] }: Comm
     if (mentionIndex < 0) continue;
 
     if (mentionIndex > lastIndex) {
-      nodes.push(...renderUrls(text.slice(lastIndex, mentionIndex)));
+      nodes.push(...renderUrls(text.slice(lastIndex, mentionIndex), `s${lastIndex}`));
     }
 
     const fallbackLabel = match[1] || 'asset';
@@ -88,7 +91,7 @@ export function CommentRichText({ text, onAssetMentionClick, assets = [] }: Comm
   }
 
   if (lastIndex < text.length) {
-    nodes.push(...renderUrls(text.slice(lastIndex)));
+    nodes.push(...renderUrls(text.slice(lastIndex), `s${lastIndex}`));
   }
 
   return <>{nodes}</>;

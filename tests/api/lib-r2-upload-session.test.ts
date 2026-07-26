@@ -180,19 +180,20 @@ describe('cancelR2UploadSession', () => {
     ).toBe('FINALIZED');
   });
 
-  // The `expiresAt: { gt: now }` clause means an expired session cannot be
-  // cancelled at all: the row stays INITIATED and consumedAt stays null. That
-  // is the current contract, and it is why the sweeper rather than the route
-  // has to be the thing that reclaims those reservations. See the report.
-  it('matches nothing once the session has expired, leaving it INITIATED', async () => {
+  // An `expiresAt: { gt: now }` clause used to make this match zero rows once a session
+  // lapsed, so it stayed INITIATED with a null consumedAt for good. The r2-init DELETE
+  // route releases the quota reservation only when the update reports a row, so every
+  // abandoned upload held its reserved bytes against the user's quota permanently.
+  // Cancelling something already expired is the case that most needs to work.
+  it('cancels a session that has already expired', async () => {
     const { session } = await newSession({ expiresAt: new Date(Date.now() - 60_000) });
 
     const result = await cancelR2UploadSession(session.id);
 
-    expect(result.count).toBe(0);
+    expect(result.count).toBe(1);
     const row = await db.videoUploadSession.findUniqueOrThrow({ where: { id: session.id } });
-    expect(row.status).toBe('INITIATED');
-    expect(row.consumedAt).toBeNull();
+    expect(row.status).toBe('CANCELLED');
+    expect(row.consumedAt).not.toBeNull();
   });
 
   it('does nothing for an id that matches no row', async () => {

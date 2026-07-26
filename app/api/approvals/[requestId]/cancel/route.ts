@@ -40,11 +40,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
     if (!approvalRequest) return apiErrors.notFound('Approval request');
 
-    const access = await checkProjectAccess(
-      approvalRequest.version.video.project,
-      session.user.id,
-      { intent: 'manage' }
-    );
+    const access = await checkProjectAccess(approvalRequest.version.video.project, session.user.id);
     const canCancel = approvalRequest.requestedById === session.user.id || access.canEdit;
     if (!canCancel) return apiErrors.forbidden('Access denied');
 

@@ -84,7 +84,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { videoId, assetId } = await params;
     const context = await getVideoAssetAccessContext(request, videoId, 'VIEW');
     if (!context) return apiErrors.notFound('Video');
-    if (!context.hasViewAccess) return apiErrors.forbidden('Access denied');
+    // A caller with no relationship to the project is told the video does not exist.
+    // Answering 403 for an id belonging to another tenant confirms that the id exists,
+    // and the comment export route already answers 404 for the identical shape. Somebody
+    // who does belong, including an owner whose billing lapsed, gets the 403.
+    if (!context.hasViewAccess) {
+      return context.viewerBelongsToProject
+        ? apiErrors.forbidden('Access denied')
+        : apiErrors.notFound('Video');
+    }
     if (!context.canDownloadAssets) {
       return apiErrors.forbidden('Downloads are disabled for this project');
     }

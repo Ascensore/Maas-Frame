@@ -522,18 +522,18 @@ describe('useVersionActions uploading a file to Bunny', () => {
     expect(callsTo(BUNNY_INIT_URL, 'DELETE')).toHaveLength(0);
   });
 
-  // BUG, pinned rather than fixed. bunny-init has already created a video on
-  // Bunny by the time tus runs, but `pendingCleanup` is only assigned after
-  // uploadNewVersionFile returns. A tus failure therefore leaks that video:
-  // nothing ever calls the DELETE branch below it in the catch.
-  it('leaks the Bunny video when the tus upload itself fails', async () => {
+  // bunny-init has already created a video on Bunny by the time tus runs. `pendingCleanup`
+  // used to be assigned only after uploadNewVersionFile returned, so a tus failure threw
+  // past the assignment and left that video behind: billed, and invisible in the app. It
+  // is registered as soon as bunny-init answers now.
+  it('deletes the Bunny video when the tus upload itself fails', async () => {
     tusFailure = 'connection reset';
     const harness = renderVersionActions({ directUploadsEnabled: true });
 
     await createFromFile(harness);
 
     expect(toastError).toHaveBeenCalledWith('Upload failed: connection reset');
-    expect(callsTo(BUNNY_INIT_URL, 'DELETE')).toHaveLength(0);
+    expect(callsTo(BUNNY_INIT_URL, 'DELETE')).toHaveLength(1);
   });
 });
 

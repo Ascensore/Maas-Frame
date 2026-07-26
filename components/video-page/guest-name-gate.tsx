@@ -30,7 +30,11 @@ export const GuestNameGate = memo(function GuestNameGate({
           </p>
         </div>
         <div className="space-y-3">
+          <label htmlFor="guest-name" className="sr-only">
+            Your name
+          </label>
           <Input
+            id="guest-name"
             placeholder="Your name"
             value={guestName}
             onChange={(e) => setGuestName(e.target.value)}

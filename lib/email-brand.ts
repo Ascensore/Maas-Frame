@@ -22,7 +22,29 @@ export function escapeHtml(str: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const RAW_EMAIL_HTML = Symbol('rawEmailHtml');
+
+/** Markup a caller has already built and vouches for. See {@link rawEmailHtml}. */
+export type RawEmailHtml = { readonly [RAW_EMAIL_HTML]: string };
+
+/**
+ * Opt a value out of escaping. The helpers below escape everything they are given, so a
+ * caller that genuinely needs markup, a `<span>` around one half of a label, has to say
+ * so here. That keeps the default safe: a project name or a display name passed straight
+ * into a helper is escaped whether or not the caller remembered to.
+ */
+export function rawEmailHtml(html: string): RawEmailHtml {
+  return { [RAW_EMAIL_HTML]: html };
+}
+
+export type EmailText = string | RawEmailHtml;
+
+function renderEmailText(value: EmailText): string {
+  return typeof value === 'string' ? escapeHtml(value) : value[RAW_EMAIL_HTML];
 }
 
 export function escapeAttr(str: string): string {
@@ -33,14 +55,20 @@ export function escapeAttr(str: string): string {
     .replace(/>/g, '&gt;');
 }
 
+/**
+ * `bodyHtml` is markup, not text: it is assembled from the helpers below, so it is the one
+ * value here that is inserted verbatim. Everything a caller supplies as text, the footer
+ * included, is escaped.
+ */
 export function brandedEmailTemplate(
-  body: string,
+  bodyHtml: string,
   options?: {
     footerText?: string;
     footerLinkText?: string;
     footerLinkUrl?: string;
   }
 ): string {
+  const body = bodyHtml;
   const footerText = options?.footerText || '';
   const footerLinkText = options?.footerLinkText || '';
   const footerLinkUrl = options?.footerLinkUrl || '';
@@ -67,7 +95,7 @@ export function brandedEmailTemplate(
           footerText || (footerLinkText && footerLinkUrl)
             ? `
         <tr><td style="padding:20px 0 0;text-align:center;">
-          ${footerText ? `<p style="margin:0 0 6px;font-size:11px;color:${EMAIL_COLORS.textDim};">${footerText}</p>` : ''}
+          ${footerText ? `<p style="margin:0 0 6px;font-size:11px;color:${EMAIL_COLORS.textDim};">${escapeHtml(footerText)}</p>` : ''}
           ${footerLinkText && footerLinkUrl ? `<a href="${escapeAttr(footerLinkUrl)}" style="font-size:11px;color:${EMAIL_COLORS.accent};text-decoration:underline;">${escapeHtml(footerLinkText)}</a>` : ''}
         </td></tr>`
             : ''
@@ -79,26 +107,26 @@ export function brandedEmailTemplate(
 </html>`;
 }
 
-export function emailHeading(icon: string, title: string): string {
+export function emailHeading(icon: EmailText, title: EmailText): string {
   return `<td style="padding:16px 20px;border-bottom:1px solid ${EMAIL_COLORS.border};background-color:${EMAIL_COLORS.accentDark};">
-      <span style="font-size:14px;font-weight:600;color:${EMAIL_COLORS.accent};">${icon} &nbsp;${title}</span>
+      <span style="font-size:14px;font-weight:600;color:${EMAIL_COLORS.accent};">${renderEmailText(icon)} &nbsp;${renderEmailText(title)}</span>
     </td>`;
 }
 
-export function emailRow(label: string, value: string, isHighlight = false): string {
+export function emailRow(label: EmailText, value: EmailText, isHighlight = false): string {
   const valStyle = isHighlight
     ? `color:${EMAIL_COLORS.text};font-weight:600;`
     : `color:${EMAIL_COLORS.textSecondary};`;
   return `<tr>
-      <td style="padding:6px 16px 6px 0;color:${EMAIL_COLORS.textDim};font-size:13px;white-space:nowrap;vertical-align:top;">${label}</td>
-      <td style="padding:6px 0;font-size:13px;${valStyle}">${value}</td>
+      <td style="padding:6px 16px 6px 0;color:${EMAIL_COLORS.textDim};font-size:13px;white-space:nowrap;vertical-align:top;">${renderEmailText(label)}</td>
+      <td style="padding:6px 0;font-size:13px;${valStyle}">${renderEmailText(value)}</td>
     </tr>`;
 }
 
-export function emailButton(text: string, url: string): string {
-  return `<a href="${escapeAttr(url)}" style="display:inline-block;padding:9px 22px;background-color:${EMAIL_COLORS.accent};color:#0f1114;font-size:13px;font-weight:700;text-decoration:none;letter-spacing:0.2px;">${text}</a>`;
+export function emailButton(text: EmailText, url: string): string {
+  return `<a href="${escapeAttr(url)}" style="display:inline-block;padding:9px 22px;background-color:${EMAIL_COLORS.accent};color:#0f1114;font-size:13px;font-weight:700;text-decoration:none;letter-spacing:0.2px;">${renderEmailText(text)}</a>`;
 }
 
-export function emailHighlight(text: string): string {
-  return `<div style="border:1px solid ${EMAIL_COLORS.border};padding:10px 12px;margin:0 0 16px;background-color:${EMAIL_COLORS.cardInner};color:${EMAIL_COLORS.text};font-size:13px;line-height:1.5;">${text}</div>`;
+export function emailHighlight(text: EmailText): string {
+  return `<div style="border:1px solid ${EMAIL_COLORS.border};padding:10px 12px;margin:0 0 16px;background-color:${EMAIL_COLORS.cardInner};color:${EMAIL_COLORS.text};font-size:13px;line-height:1.5;">${renderEmailText(text)}</div>`;
 }

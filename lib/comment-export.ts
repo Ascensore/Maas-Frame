@@ -42,9 +42,16 @@ export interface ExportCommentRow {
   createdAtIso: string;
 }
 
+// A leading =, +, - or @ is what a spreadsheet reads as the start of a formula, so those
+// cells get an apostrophe. A plain negative number is not a formula, and prefixing one
+// stopped the spreadsheet reading a negative timestamp as a number at all.
+const FORMULA_START = /^[\s]*[=+\-@]/;
+const PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+
 function csvCell(value: string | number | boolean | null): string {
   const raw = value === null ? '' : String(value);
-  const neutralized = /^[\s]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  const needsPrefix = FORMULA_START.test(raw) && !PLAIN_NUMBER.test(raw);
+  const neutralized = needsPrefix ? `'${raw}` : raw;
   return `"${neutralized.replace(/"/g, '""')}"`;
 }
 

@@ -170,7 +170,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Video');
     }
 
-    const access = await checkProjectAccess(video.project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(video.project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Access denied');
     }
@@ -251,7 +251,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Video');
     }
 
-    const access = await checkProjectAccess(video.project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(video.project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Only project owner or admin can delete videos');
     }

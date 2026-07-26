@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { auth } from '@/lib/auth';
 import { apiErrors, successResponse } from '@/lib/api-response';
+import { buildBillingAccessWhereInput } from '@/lib/billing';
 import { checkRateLimit, rateLimitHeaders, RATE_LIMIT_CONFIGS } from '@/lib/rate-limit';
 import { logError } from '@/lib/logger';
 
@@ -38,8 +39,15 @@ export async function GET(request: NextRequest) {
       return apiErrors.badRequest('Query too long.');
     }
 
-    // Access filter reused across queries
+    // Access filter reused across queries. The billing condition is the same one every
+    // other read path carries (GET /api/projects, checkProjectAccess): without it search
+    // kept returning project names, descriptions and video titles for a tenant whose
+    // access had otherwise been cut off, which is a lapsed-tenant surface no other read
+    // path leaves open.
+    const ownerWithBillingAccess = buildBillingAccessWhereInput();
+
     const projectAccessFilter = {
+      workspace: { owner: ownerWithBillingAccess },
       OR: [
         { ownerId: userId },
         { members: { some: { userId } } },
@@ -48,6 +56,7 @@ export async function GET(request: NextRequest) {
     };
 
     const workspaceAccessFilter = {
+      owner: ownerWithBillingAccess,
       OR: [{ ownerId: userId }, { members: { some: { userId } } }],
     };
 

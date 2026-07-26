@@ -403,6 +403,59 @@ describe('requireWorkspaceAccessOrRedirect', () => {
     );
   });
 
+  // The redirect target must not depend on the owner's billing for somebody with no
+  // relationship to the workspace, or it becomes an oracle: probe workspace ids, and
+  // /settings rather than /dashboard tells you whose subscription has lapsed.
+  it.each([
+    ['the owner is paying', true],
+    ['the owner has lapsed', false],
+  ])('sends a signed-in stranger to the dashboard when %s', async (_label, ownerBillingActive) => {
+    dbMock.workspace.findUnique.mockResolvedValue(WORKSPACE_ROW);
+    authModule.checkWorkspaceAccess.mockResolvedValue(
+      workspaceAccess({ hasAccess: false, ownerBillingActive })
+    );
+
+    await expectRedirect(
+      requireWorkspaceAccessOrRedirect({ workspaceId: WORKSPACE_ID, userId: OTHER_USER_ID }),
+      FORBIDDEN
+    );
+  });
+
+  // A member cannot resolve the owner's billing from their own settings page, so sending
+  // them there offers no action they can take.
+  it('sends a member whose owner has lapsed to the dashboard, not to billing', async () => {
+    dbMock.workspace.findUnique.mockResolvedValue(WORKSPACE_ROW);
+    authModule.checkWorkspaceAccess.mockResolvedValue(
+      workspaceAccess({ isMember: true, hasAccess: false, ownerBillingActive: false })
+    );
+
+    await expectRedirect(
+      requireWorkspaceAccessOrRedirect({ workspaceId: WORKSPACE_ID, userId: OTHER_USER_ID }),
+      FORBIDDEN
+    );
+  });
+
+  it('sends the lapsed owner to billing on the manage intent too', async () => {
+    dbMock.workspace.findUnique.mockResolvedValue(WORKSPACE_ROW);
+    authModule.checkWorkspaceAccess.mockResolvedValue(
+      workspaceAccess({
+        isOwner: true,
+        hasAccess: true,
+        canEdit: false,
+        ownerBillingActive: false,
+      })
+    );
+
+    await expectRedirect(
+      requireWorkspaceAccessOrRedirect({
+        workspaceId: WORKSPACE_ID,
+        userId: USER_ID,
+        intent: 'manage',
+      }),
+      BILLING
+    );
+  });
+
   it('sends a member who cannot edit to the dashboard when the page needs manage rights', async () => {
     dbMock.workspace.findUnique.mockResolvedValue(WORKSPACE_ROW);
     authModule.checkWorkspaceAccess.mockResolvedValue(
@@ -579,9 +632,7 @@ describe('requireProjectAccessOrRedirect', () => {
     await expect(
       requireProjectAccessOrRedirect({ projectId: PROJECT_ID, allowPublicView: true })
     ).resolves.toEqual({ project: PUBLIC_PROJECT_ROW, access });
-    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PUBLIC_PROJECT_ROW, undefined, {
-      intent: 'view',
-    });
+    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PUBLIC_PROJECT_ROW, undefined);
   });
 
   it('passes the manage intent down to the permission check', async () => {
@@ -596,9 +647,7 @@ describe('requireProjectAccessOrRedirect', () => {
       intent: 'manage',
     });
 
-    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, USER_ID, {
-      intent: 'manage',
-    });
+    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, USER_ID);
   });
 
   it('falls back to the session user when no id is passed', async () => {
@@ -610,9 +659,7 @@ describe('requireProjectAccessOrRedirect', () => {
 
     await requireProjectAccessOrRedirect({ projectId: PROJECT_ID });
 
-    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, OTHER_USER_ID, {
-      intent: 'view',
-    });
+    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, OTHER_USER_ID);
   });
 });
 
@@ -697,9 +744,7 @@ describe('requireVideoProjectAccessOrRedirect', () => {
     await expect(
       requireVideoProjectAccessOrRedirect({ ...args, userId: OTHER_USER_ID })
     ).resolves.toEqual({ video: VIDEO_ROW, project: PROJECT_ROW, access });
-    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, OTHER_USER_ID, {
-      intent: 'view',
-    });
+    expect(authModule.checkProjectAccess).toHaveBeenCalledWith(PROJECT_ROW, OTHER_USER_ID);
   });
 
   it('lets an anonymous viewer watch a video in a public project when the route opts in', async () => {

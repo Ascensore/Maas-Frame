@@ -346,14 +346,21 @@ describe('validateProjectDownloadManifest', () => {
     );
   });
 
-  // KNOWN BUG in lib/project-download.ts, asserted as-is rather than fixed here:
-  // `BigInt(manifest.totalBytes)` is unguarded, so a non-numeric total throws a
-  // SyntaxError out of a function whose contract is to return a message string.
-  // The route wraps this in a try/catch and turns it into a 500 rather than the
-  // 400 that every other rejection produces.
-  it('throws instead of returning a message when totalBytes is not numeric', () => {
-    expect(() => validateProjectDownloadManifest(manifestOf({ totalBytes: 'lots' }))).toThrow(
-      SyntaxError
+  // The contract is to return a message, never to throw: a SyntaxError out of here
+  // reaches the route as a 500 rather than the 400 every other rejection produces.
+  it('returns a message rather than throwing when totalBytes is not numeric', () => {
+    expect(validateProjectDownloadManifest(manifestOf({ totalBytes: 'lots' }))).toBe(
+      'Could not determine the size of this download'
+    );
+  });
+
+  it.each([
+    ['a negative total', '-1'],
+    ['a decimal total', '1.5'],
+    ['a hex total', '0x10'],
+  ])('rejects %s without throwing', (_label, totalBytes) => {
+    expect(validateProjectDownloadManifest(manifestOf({ totalBytes }))).toBe(
+      'Could not determine the size of this download'
     );
   });
 });
@@ -707,26 +714,38 @@ describe('buildProjectDownloadManifest provider routing', () => {
     ]);
   });
 
-  // KNOWN BUG in lib/project-download.ts, asserted as-is rather than fixed here:
-  // the r2 branch returns `originalUrl` verbatim after a `startsWith` check on
-  // the proxy prefix, while the sibling branch below it validates the same shape
-  // against a strict UUID pattern. A stored url with dot segments is handed back
-  // untouched, and the extension the file name is built from is taken from the
-  // raw url too, so the resulting `fileName` escapes the archive root.
-  it('passes an r2 traversal path through and lets it leak into the file name', () => {
+  // The r2 branch validates against the strict proxy-path pattern rather than a
+  // `startsWith` on the prefix, so dot segments never reach the manifest as a url
+  // and never leak a path separator into the file name either.
+  it.each([
+    ['dot segments after a valid-looking name', '/api/upload/video/clip.mp4/../../../etc/passwd'],
+    ['a non-uuid basename', '/api/upload/video/clip.mp4'],
+    ['an encoded traversal', '/api/upload/video/..%2F..%2Fetc%2Fpasswd'],
+    ['a nested path', '/api/upload/video/nested/dir/file.mp4'],
+  ])('drops an r2 version whose stored url has %s', (_label, originalUrl) => {
+    const manifest = buildProjectDownloadManifest('Project', [
+      video({ versions: [version({ providerId: 'r2', originalUrl })] }),
+    ]);
+
+    expect(manifest.files).toEqual([]);
+  });
+
+  it('keeps a well-formed r2 proxy path', () => {
     const manifest = buildProjectDownloadManifest('Project', [
       video({
         versions: [
           version({
             providerId: 'r2',
-            originalUrl: '/api/upload/video/clip.mp4/../../../../etc/passwd',
+            originalUrl: '/api/upload/video/bbbbbbbb-1111-2222-3333-444444444444.mp4',
           }),
         ],
       }),
     ]);
 
-    expect(manifest.files[0]?.url).toBe('/api/upload/video/clip.mp4/../../../../etc/passwd');
-    expect(manifest.files[0]?.fileName).toBe('01-Intro-v1./etc/passwd');
+    expect(manifest.files[0]?.url).toBe(
+      '/api/upload/video/bbbbbbbb-1111-2222-3333-444444444444.mp4'
+    );
+    expect(manifest.files[0]?.fileName).toBe('01-Intro-v1.mp4');
   });
 });
 
@@ -872,10 +891,10 @@ describe('buildProjectDownloadManifest file naming', () => {
     ).toEqual(['01-Intro-v1.mov']);
   });
 
-  it('keeps the case of the extension', () => {
+  it('lowercases the extension', () => {
     expect(
       namesOf([video({ versions: [version({ originalUrl: 'https://cdn.example/master.MP4' })] })])
-    ).toEqual(['01-Intro-v1.MP4']);
+    ).toEqual(['01-Intro-v1.mp4']);
   });
 
   it('strips the query string before reading the extension', () => {
@@ -888,13 +907,11 @@ describe('buildProjectDownloadManifest file naming', () => {
     ).toEqual(['01-Intro-v1.webm']);
   });
 
-  // KNOWN BUG in lib/project-download.ts, asserted as-is rather than fixed here:
-  // `extensionFromUrl` slices from the last dot anywhere in the url, including a
-  // dot in the host, and the result is appended after the sanitiser has already
-  // run. An allowlisted direct url with no file extension therefore produces a
-  // file name containing a path separator, which a zip writer turns into a
-  // directory rather than a file.
-  it('lets a dot in the host leak a path separator into the file name', () => {
+  // The extension is appended after the sanitiser has run, so it is derived from the
+  // last path segment only and has to be a short alphanumeric run. A dot in the host
+  // of an extensionless url must not contribute a path separator: a zip writer would
+  // turn that into a directory rather than a file.
+  it('falls back rather than letting a dot in the host leak a path separator', () => {
     vi.stubEnv('NEXT_PUBLIC_DIRECT_DOWNLOAD_ALLOWED_HOSTS', 'example.com');
 
     expect(
@@ -905,7 +922,20 @@ describe('buildProjectDownloadManifest file naming', () => {
           ],
         }),
       ])
-    ).toEqual(['01-Intro-v1.com/download']);
+    ).toEqual(['01-Intro-v1.mp4']);
+  });
+
+  it.each([
+    ['a path segment after the extension', 'https://example.com/a.mp4/../../etc/passwd'],
+    ['an extension longer than ten characters', 'https://example.com/clip.verylongextension'],
+    ['a non-alphanumeric extension', 'https://example.com/clip.mp4%2f..'],
+    ['a dotfile with no extension', 'https://example.com/.hidden'],
+  ])('falls back to .mp4 for %s', (_label, originalUrl) => {
+    vi.stubEnv('NEXT_PUBLIC_DIRECT_DOWNLOAD_ALLOWED_HOSTS', 'example.com');
+
+    expect(
+      namesOf([video({ versions: [version({ providerId: 'direct', originalUrl })] })])
+    ).toEqual(['01-Intro-v1.mp4']);
   });
 
   it('falls back to .mp4 when the url contains no dot at all', () => {

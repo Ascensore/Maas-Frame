@@ -346,14 +346,17 @@ describe('verifyR2UploadToken', () => {
     expect(verifyR2UploadToken(token, SUBJECT)).toBe(false);
   });
 
-  it('returns false rather than throwing when the server has no secret configured', () => {
+  // A missing signing secret is a configuration fault, not a forgery. Answering "invalid
+  // token" for it turned a self-hosted misconfiguration into a silent, total upload
+  // outage that reads like a client bug.
+  it('throws rather than reporting a forgery when the server has no secret configured', () => {
     const token = createR2UploadToken(SUBJECT);
 
     vi.stubEnv('R2_UPLOAD_TOKEN_SECRET', undefined);
     vi.stubEnv('NEXTAUTH_SECRET', undefined);
 
-    // A misconfigured server is indistinguishable from a forged token here.
-    expect(verifyR2UploadToken(token, SUBJECT)).toBe(false);
+    expect(() => verifyR2UploadToken(token, SUBJECT)).toThrow();
+    expect(() => parseR2UploadToken(token)).toThrow();
   });
 });
 

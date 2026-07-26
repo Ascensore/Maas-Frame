@@ -179,17 +179,44 @@ describe('logError', () => {
       });
     });
 
-    // Documents a real limitation rather than an intended behaviour: the branch
-    // keys on the constructor name, so an error that only claims to be a Prisma
-    // error through `err.name` (a re-thrown, deserialised or minified one) falls
-    // through to the generic branch and its message is logged verbatim.
-    it('does not redact an error that is Prisma only by its `name` property', () => {
+    // An Error instance always has a constructor, so keying on `constructor.name` alone
+    // would stop redacting the moment an error identifies itself as Prisma only through
+    // `name`: one that was re-thrown or deserialised and lost its prototype, or a
+    // production build whose minifier renamed the class.
+    it('redacts an error that is Prisma only by its `name` property', () => {
       const err = new Error(LEAKY_PRISMA_MESSAGE);
       err.name = 'PrismaClientKnownRequestError';
+      (err as unknown as Record<string, unknown>).code = 'P2002';
 
       logError('user lookup failed', err);
 
-      expect(loggedPayload()).toEqual({ type: 'Error', message: LEAKY_PRISMA_MESSAGE });
+      expect(loggedPayload()).toEqual({
+        type: 'PrismaError',
+        code: 'P2002',
+        message: 'Database error [P2002]',
+      });
+    });
+
+    it('redacts a name-only Prisma error that carries no code', () => {
+      const err = new Error(LEAKY_PRISMA_MESSAGE);
+      err.name = 'PrismaClientValidationError';
+
+      logError('user lookup failed', err);
+
+      expect(loggedPayload()).toEqual({
+        type: 'PrismaError',
+        code: 'UNKNOWN',
+        message: 'Database error [UNKNOWN]',
+      });
+    });
+
+    it('leaves a non-Prisma error alone', () => {
+      const err = new Error('plain failure');
+      err.name = 'ValidationError';
+
+      logError('lookup failed', err);
+
+      expect(loggedPayload()).toEqual({ type: 'Error', message: 'plain failure' });
     });
   });
 

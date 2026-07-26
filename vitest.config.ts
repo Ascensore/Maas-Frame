@@ -1,9 +1,11 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
-import tsconfigPaths from 'vite-tsconfig-paths';
 
 export default defineConfig({
-  plugins: [tsconfigPaths()],
+  // Vite 8 resolves the tsconfig `paths` (the `@/` alias) itself. The
+  // vite-tsconfig-paths plugin that used to do this printed a deprecation notice on
+  // every run.
+  resolve: { tsconfigPaths: true },
   test: {
     server: {
       deps: {
@@ -26,6 +28,7 @@ export default defineConfig({
           name: 'unit',
           environment: 'node',
           include: ['tests/unit/**/*.test.ts'],
+          setupFiles: ['tests/setup/unit.ts'],
         },
       },
       {
@@ -43,7 +46,7 @@ export default defineConfig({
       },
       {
         extends: true,
-        plugins: [tsconfigPaths(), react()],
+        plugins: [react()],
         test: {
           name: 'component',
           environment: 'jsdom',

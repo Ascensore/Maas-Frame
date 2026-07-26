@@ -6,7 +6,6 @@ import {
   emailButton,
   emailHeading,
   emailRow,
-  escapeHtml,
   EMAIL_COLORS,
 } from '@/lib/email-brand';
 import { logError } from '@/lib/logger';
@@ -124,14 +123,14 @@ export async function sendVerificationEmail(
         <tr>${emailHeading('✉', 'Verify your email address')}</tr>
         <tr><td style="padding:20px;">
           <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:20px;">
-            ${emailRow('Account', escapeHtml(email), true)}
+            ${emailRow('Account', email, true)}
             ${emailRow('Expires in', `${TOKEN_EXPIRY_HOURS} hours`)}
           </table>
           <p style="margin:0 0 20px;font-size:14px;color:${EMAIL_COLORS.textSecondary};line-height:1.6;">
             Click the button below to verify your email address and activate your OpenFrame account.
             If you did not create an account, you can safely ignore this email.
           </p>
-          ${emailButton('Verify Email Address  &#8594;', verifyUrl)}
+          ${emailButton('Verify Email Address  →', verifyUrl)}
         </td></tr>
         `,
     {

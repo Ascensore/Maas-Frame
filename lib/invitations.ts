@@ -15,7 +15,6 @@ import {
   emailHeading,
   emailHighlight,
   emailRow,
-  escapeHtml,
 } from '@/lib/email-brand';
 import { logError } from '@/lib/logger';
 
@@ -101,17 +100,17 @@ function invitationEmailTemplate(input: {
 }): string {
   return brandedEmailTemplate(
     `
-      <tr>${emailHeading('&#10003;', `${escapeHtml(input.scope.charAt(0).toUpperCase() + input.scope.slice(1))} Invitation`)}</tr>
+      <tr>${emailHeading('✓', `${input.scope.charAt(0).toUpperCase() + input.scope.slice(1)} Invitation`)}</tr>
       <tr><td style="padding:20px;">
         ${emailHighlight('You were invited to join OpenFrame.')}
         <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-          ${emailRow('Invited by', escapeHtml(input.inviterName), true)}
-          ${emailRow('Target', `${escapeHtml(input.targetName)} (${escapeHtml(input.scope)})`, true)}
-          ${emailRow('Role', escapeHtml(input.role))}
+          ${emailRow('Invited by', input.inviterName, true)}
+          ${emailRow('Target', `${input.targetName} (${input.scope})`, true)}
+          ${emailRow('Role', input.role)}
           ${emailRow('Expires', `${INVITATION_TTL_DAYS} days`)}
         </table>
         ${emailHighlight('Create an account (or sign in with this email) to accept this invitation.')}
-        ${emailButton('Accept Invitation &#8594;', input.invitationUrl)}
+        ${emailButton('Accept Invitation →', input.invitationUrl)}
       </td></tr>
     `,
     {
@@ -300,6 +299,18 @@ async function acceptInvitation(tx: Prisma.TransactionClient, invitationId: stri
   });
 }
 
+/**
+ * Applies the invited membership and marks the invitation accepted.
+ *
+ * Returns false when the invitation grants nothing: a scoped row whose target id is null,
+ * or one pointing at a workspace or project that no longer exists. The invitation is left
+ * PENDING in that case, so the caller can report the failure rather than show a success
+ * screen for a no-op the user has no way to detect.
+ *
+ * An existing membership is never downgraded. Applying the invited role unconditionally
+ * turned an invitation into a privilege-change primitive: re-invite a sitting ADMIN as a
+ * COMMENTATOR, get them to click the link once, and they are demoted.
+ */
 async function applyInvitationMembership(
   tx: Prisma.TransactionClient,
   invitation: {
@@ -310,13 +321,17 @@ async function applyInvitationMembership(
     projectId: string | null;
   },
   userId: string
-) {
-  if (invitation.scope === InvitationScope.WORKSPACE && invitation.workspaceId) {
+): Promise<boolean> {
+  const invitedAsAdmin = invitation.role === InvitationRole.ADMIN;
+
+  if (invitation.scope === InvitationScope.WORKSPACE) {
+    if (!invitation.workspaceId) return false;
+
     const workspace = await tx.workspace.findUnique({
       where: { id: invitation.workspaceId },
       select: { ownerId: true },
     });
-    if (!workspace) return;
+    if (!workspace) return false;
 
     if (workspace.ownerId !== userId) {
       await tx.workspaceMember.upsert({
@@ -326,33 +341,28 @@ async function applyInvitationMembership(
             userId,
           },
         },
-        update: {
-          role:
-            invitation.role === InvitationRole.ADMIN
-              ? WorkspaceMemberRole.ADMIN
-              : WorkspaceMemberRole.COMMENTATOR,
-        },
+        // Only ever a promotion. An empty update leaves a sitting ADMIN as they were.
+        update: invitedAsAdmin ? { role: WorkspaceMemberRole.ADMIN } : {},
         create: {
           workspaceId: invitation.workspaceId,
           userId,
-          role:
-            invitation.role === InvitationRole.ADMIN
-              ? WorkspaceMemberRole.ADMIN
-              : WorkspaceMemberRole.COMMENTATOR,
+          role: invitedAsAdmin ? WorkspaceMemberRole.ADMIN : WorkspaceMemberRole.COMMENTATOR,
         },
       });
     }
 
     await acceptInvitation(tx, invitation.id);
-    return;
+    return true;
   }
 
-  if (invitation.scope === InvitationScope.PROJECT && invitation.projectId) {
+  if (invitation.scope === InvitationScope.PROJECT) {
+    if (!invitation.projectId) return false;
+
     const project = await tx.project.findUnique({
       where: { id: invitation.projectId },
       select: { ownerId: true },
     });
-    if (!project) return;
+    if (!project) return false;
 
     if (project.ownerId !== userId) {
       await tx.projectMember.upsert({
@@ -362,25 +372,20 @@ async function applyInvitationMembership(
             userId,
           },
         },
-        update: {
-          role:
-            invitation.role === InvitationRole.ADMIN
-              ? ProjectMemberRole.ADMIN
-              : ProjectMemberRole.COMMENTATOR,
-        },
+        update: invitedAsAdmin ? { role: ProjectMemberRole.ADMIN } : {},
         create: {
           projectId: invitation.projectId,
           userId,
-          role:
-            invitation.role === InvitationRole.ADMIN
-              ? ProjectMemberRole.ADMIN
-              : ProjectMemberRole.COMMENTATOR,
+          role: invitedAsAdmin ? ProjectMemberRole.ADMIN : ProjectMemberRole.COMMENTATOR,
         },
       });
     }
 
     await acceptInvitation(tx, invitation.id);
+    return true;
   }
+
+  return false;
 }
 
 export async function acceptInvitationTokenForUser(input: {
@@ -407,8 +412,10 @@ export async function acceptInvitationTokenForUser(input: {
       return 'expired';
     }
 
-    await applyInvitationMembership(tx, invitation, input.userId);
-    return 'accepted';
+    const applied = await applyInvitationMembership(tx, invitation, input.userId);
+    // A scoped invitation pointing at nothing grants no membership. Reporting 'accepted'
+    // for it showed a success screen for a no-op and left the row PENDING for good.
+    return applied ? 'accepted' : 'not_found';
   });
 }
 

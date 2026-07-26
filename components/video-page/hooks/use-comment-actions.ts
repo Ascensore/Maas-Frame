@@ -116,7 +116,12 @@ export function useCommentActions({
 
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
-  const [editTagId, setEditTagId] = useState<string | null>(null);
+  // `undefined` means "this editor does not manage a tag", which is the reply editor:
+  // replies have no tag picker. `null` means "no tag", which the comment editor seeds
+  // from the comment itself. Initialising to `null` made `editTagId !== undefined` always
+  // true, so editing a reply's text sent `tagId: null` and cleared its tag, or sent a
+  // stale value left over from a previous edit.
+  const [editTagId, setEditTagId] = useState<string | null | undefined>(undefined);
   const [editAnnotationData, setEditAnnotationData] = useState<string | null | undefined>(
     undefined
   );
@@ -569,6 +574,11 @@ export function useCommentActions({
       if (!activeVersionId) return;
 
       isMutatingRef.current = true;
+      // The optimistic flip, the request body and the rollback all derive from the same
+      // value. Flipping relative to the row (`!c.isResolved`) while the body and the
+      // rollback came from `currentlyResolved` meant a failed request could leave the
+      // comment in a state it was never in whenever the two disagreed.
+      const nextResolved = !currentlyResolved;
       setVideo((prev) => {
         if (!prev) return prev;
         return {
@@ -578,7 +588,7 @@ export function useCommentActions({
               ? {
                   ...v,
                   comments: v.comments.map((c) =>
-                    c.id === commentId ? { ...c, isResolved: !c.isResolved } : c
+                    c.id === commentId ? { ...c, isResolved: nextResolved } : c
                   ),
                 }
               : v
@@ -590,7 +600,7 @@ export function useCommentActions({
         const res = await fetch(`/api/comments/${commentId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isResolved: !currentlyResolved }),
+          body: JSON.stringify({ isResolved: nextResolved }),
         });
 
         if (!res.ok) {
@@ -1027,7 +1037,7 @@ export function useCommentActions({
           });
           setEditingCommentId(null);
           setEditText('');
-          setEditTagId(null);
+          setEditTagId(undefined);
           setEditAnnotationData(undefined);
           setIsEditingAnnotation(false);
           if (finalAnnotationData !== undefined && finalAnnotationData) {
@@ -1070,9 +1080,17 @@ export function useCommentActions({
 
       isMutatingRef.current = true;
 
+      // The snapshot is taken once, however many times React runs the updater. React is
+      // free to invoke an updater more than once (StrictMode, and React 19 retries a
+      // render that threw), and a second run would otherwise capture the post-delete
+      // state, turning a failed delete into a silent confirmation of it.
       const previousVideoRef: { current: VideoData | null } = { current: null };
+      let capturedSnapshot = false;
       setVideo((prev) => {
-        previousVideoRef.current = prev;
+        if (!capturedSnapshot) {
+          previousVideoRef.current = prev;
+          capturedSnapshot = true;
+        }
         if (!prev) return prev;
         return {
           ...prev,

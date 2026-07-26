@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { revalidatePath } from 'next/cache';
 import { db } from '@/lib/db';
-import { deleteProjectVideosWithCleanup } from '@/lib/video-delete';
+import { deleteProjectVideosWithCleanup, VideoStorageCleanupError } from '@/lib/video-delete';
 import {
   createComment,
   createProject,
@@ -372,12 +372,10 @@ describe('deleteProjectVideosWithCleanup and Bunny', () => {
 });
 
 describe('deleteProjectVideosWithCleanup when storage fails', () => {
-  // The rows go first and the objects go second, with no transaction spanning
-  // the two. A refused DELETE therefore leaves the object behind with nothing
-  // in the database still pointing at it: the caller cannot retry, because the
-  // video id it would retry with no longer resolves. The result object is the
-  // only trace, which is why the warnings are asserted here.
-  it('still removes the rows and surfaces the orphaned key as a warning', async () => {
+  // Storage runs first and the rows go second. Deleting the rows first left the object in
+  // the bucket with nothing pointing at it and no way to retry, because the video id no
+  // longer resolved. Keeping the rows makes the delete repeatable.
+  it('keeps the rows and reports the failure when a key cannot be deleted', async () => {
     const scenario = await seedProject();
     const target = await seedDeletableVideo({
       projectId: scenario.project.id,
@@ -387,22 +385,40 @@ describe('deleteProjectVideosWithCleanup when storage fails', () => {
     });
     r2.rejectKeys.add(TARGET_VIDEO_KEY);
 
-    const result = await deleteProjectVideosWithCleanup(scenario.project.id, [target.video.id]);
+    await expect(
+      deleteProjectVideosWithCleanup(scenario.project.id, [target.video.id])
+    ).rejects.toBeInstanceOf(VideoStorageCleanupError);
 
-    expect(result.deletedCount).toBe(1);
-    // The row is gone even though its object is not.
-    expect(await db.video.count()).toBe(0);
-    expect(result.cleanupInput.r2).toEqual({
-      attempted: 2,
-      failed: 1,
-      failedKeys: [TARGET_VIDEO_KEY],
-    });
-    expect(result.cleanupWarnings).toEqual({ r2: { attempted: 2, failed: 1 } });
+    // The row is still there, so the caller can try again.
+    expect(await db.video.count()).toBe(1);
     // The rest of the sweep still ran.
     expect(r2.deletedKeys).toEqual([TARGET_COMMENT_IMAGE_KEY]);
   });
 
-  it('reports a Bunny failure without failing the delete', async () => {
+  it('carries the failed keys on the error so the route can log them', async () => {
+    const scenario = await seedProject();
+    const target = await seedDeletableVideo({
+      projectId: scenario.project.id,
+      ownerId: scenario.owner.id,
+      videoUrl: TARGET_VIDEO_URL,
+      commentImageUrl: TARGET_COMMENT_IMAGE,
+    });
+    r2.rejectKeys.add(TARGET_VIDEO_KEY);
+
+    const error = await deleteProjectVideosWithCleanup(scenario.project.id, [
+      target.video.id,
+    ]).catch((err: unknown) => err as VideoStorageCleanupError);
+
+    expect(error.cleanupInput.r2).toEqual({
+      attempted: 2,
+      failed: 1,
+      failedKeys: [TARGET_VIDEO_KEY],
+    });
+  });
+
+  // A Bunny video that survives the delete is billed and invisible in the app, so it gets
+  // the same treatment as an orphaned R2 object.
+  it('keeps the rows when Bunny refuses the delete', async () => {
     vi.stubEnv('BUNNY_STREAM_API_KEY', 'test-bunny-key');
     vi.stubEnv('BUNNY_STREAM_LIBRARY_ID', '9999');
     vi.stubGlobal(
@@ -417,10 +433,13 @@ describe('deleteProjectVideosWithCleanup when storage fails', () => {
       providerVideoId: 'bunny-version-id-2',
     });
 
-    const result = await deleteProjectVideosWithCleanup(scenario.project.id, [video.id]);
+    const error = await deleteProjectVideosWithCleanup(scenario.project.id, [video.id]).catch(
+      (err: unknown) => err as VideoStorageCleanupError
+    );
 
-    expect(await db.video.count()).toBe(0);
-    expect(result.cleanupWarnings).toEqual({ bunny: { attempted: 1, failed: 1 } });
+    expect(error).toBeInstanceOf(VideoStorageCleanupError);
+    expect(error.cleanupInput.bunny).toMatchObject({ attempted: 1, failed: 1 });
+    expect(await db.video.count()).toBe(1);
   });
 
   it('reports no warnings when both providers succeed', async () => {

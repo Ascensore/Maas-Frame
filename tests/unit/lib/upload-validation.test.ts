@@ -108,16 +108,17 @@ describe('resolveVideoContentType', () => {
     expect(resolveVideoContentType('payload.exe', 'application/x-msdownload')).toBeNull();
   });
 
-  // KNOWN GAP asserted as-is: a client-declared video mime is accepted even when
-  // the file name is not a known video extension, because the mismatch branch only
-  // fires when BOTH sides resolve to an extension.
-  it('trusts a declared video mime even for a non-video file name', () => {
-    expect(resolveVideoContentType('payload.exe', 'video/mp4')).toBe('video/mp4');
-    expect(isAllowedVideoFile('payload.exe', 'video/mp4')).toBe(true);
-  });
+  // The declared mime is a client claim, so it cannot be what makes a file acceptable.
+  it.each(['payload.exe', 'payload', 'payload.', 'payload.mp4.exe'])(
+    'refuses %s however it declares itself',
+    (fileName) => {
+      expect(resolveVideoContentType(fileName, 'video/mp4')).toBeNull();
+      expect(isAllowedVideoFile(fileName, 'video/mp4')).toBe(false);
+    }
+  );
 
-  it('accepts a video mime that has no extension mapping of its own', () => {
-    expect(resolveVideoContentType('clip.mp4', 'video/3gpp')).toBe('video/3gpp');
+  it('ignores a video mime that has no extension mapping of its own', () => {
+    expect(resolveVideoContentType('clip.mp4', 'video/3gpp')).toBe('video/mp4');
   });
 });
 

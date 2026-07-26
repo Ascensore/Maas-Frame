@@ -438,20 +438,32 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                         <input
                           type="color"
                           value={editTagColor}
+                          aria-label={`Tag colour for ${tag.name}`}
                           onChange={(e) => setEditTagColor(e.target.value)}
                           className="w-8 h-8 rounded cursor-pointer border-0"
                         />
                         <Input
                           value={editTagName}
+                          aria-label={`Tag name for ${tag.name}`}
                           onChange={(e) => setEditTagName(e.target.value)}
                           className="flex-1 h-8"
                           onKeyDown={(e) => e.key === 'Enter' && handleUpdateTag(tag.id)}
                         />
-                        <Button size="sm" variant="ghost" onClick={() => handleUpdateTag(tag.id)}>
-                          <Save className="h-4 w-4" />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Save tag ${tag.name}`}
+                          onClick={() => handleUpdateTag(tag.id)}
+                        >
+                          <Save className="h-4 w-4" aria-hidden="true" />
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditingTagId(null)}>
-                          <X className="h-4 w-4" />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Cancel editing tag ${tag.name}`}
+                          onClick={() => setEditingTagId(null)}
+                        >
+                          <X className="h-4 w-4" aria-hidden="true" />
                         </Button>
                       </>
                     ) : (
@@ -476,9 +488,10 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                           size="sm"
                           variant="ghost"
                           className="text-destructive hover:text-destructive"
+                          aria-label={`Delete tag ${tag.name}`}
                           onClick={() => handleDeleteTag(tag.id)}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
                         </Button>
                       </>
                     )}

@@ -103,7 +103,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       select: { id: true, ownerId: true, workspaceId: true, visibility: true },
     });
     const access = projectAccessTarget
-      ? await checkProjectAccess(projectAccessTarget, session.user.id, { intent: 'manage' })
+      ? await checkProjectAccess(projectAccessTarget, session.user.id)
       : null;
     if (!access?.canEdit) {
       return apiErrors.forbidden('Access denied');
@@ -181,7 +181,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'delete' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canDelete) {
       return apiErrors.forbidden('Only the project owner can delete it');
     }

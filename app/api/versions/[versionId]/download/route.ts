@@ -308,6 +308,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const canDownloadViaShareLink = shareAccess.hasAccess && shareAccess.canDownload;
     const canDownloadViaMembership = canDownloadProjectMedia(version.video.project, access);
     if (!canDownloadViaMembership && !canDownloadViaShareLink) {
+      // A caller with no relationship to the project at all is told the version does not
+      // exist, matching the comment export route: answering 403 for an id belonging to
+      // another tenant confirms that the id exists. Anyone who does have a relationship,
+      // including an owner whose billing has lapsed, already knows it exists and gets the
+      // more informative 403.
+      const belongsToProject = access.isOwner || access.isProjectMember || access.isWorkspaceMember;
+      if (!belongsToProject && !shareAccess.hasAccess) {
+        return apiErrors.notFound('Version');
+      }
       return apiErrors.forbidden('Access denied');
     }
 

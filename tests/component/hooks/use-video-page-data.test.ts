@@ -477,14 +477,14 @@ describe('useVideoPageData loading tags', () => {
     expect(harness.result.current.selectedTagId).toBe('tag-colour');
   });
 
-  // KNOWN INEFFICIENCY, pinned rather than fixed. selectedTagId is in the
-  // effect's dependency list purely so the auto-select can read it, so the
-  // moment the first tag is selected the whole effect re-runs and the tag list
-  // is fetched a second time on every page load.
-  it('reads the tag list twice because selecting a tag re-runs the effect', async () => {
-    await renderPage();
+  // selectedTagId used to be in the effect's dependency list purely so the auto-select
+  // could read it, so the moment the first tag was selected the whole effect re-ran and
+  // the tag list was fetched a second time on every page load. It is read from a ref now.
+  it('reads the tag list once even though the auto-select sets a tag', async () => {
+    const harness = await renderPage();
 
-    expect(callsMatching((url) => url === TAGS_URL)).toHaveLength(2);
+    expect(harness.result.current.selectedTagId).toBe('tag-audio');
+    expect(callsMatching((url) => url === TAGS_URL)).toHaveLength(1);
   });
 
   it('selects nothing when the project has no tags', async () => {

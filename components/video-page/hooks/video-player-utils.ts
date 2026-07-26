@@ -15,8 +15,23 @@ const STANDARD_FRAME_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120]
 
 export function normalizeFrameRate(rate: number | undefined): number | null {
   if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 12 || rate > 120) return null;
-  const standard = STANDARD_FRAME_RATES.find((value) => Math.abs(rate - value) / value < 0.015);
-  return standard ?? rate;
+
+  // Nearest, not first-within-tolerance. The NTSC pairs (23.976/24, 29.97/30, 59.94/60)
+  // are 0.1 percent apart and the tolerance is 1.5 percent, so taking the first match made
+  // an exactly 30 fps source snap to 29.97 and left 24, 30 and 60 unreachable entirely.
+  // That produced the very drift the snapping exists to prevent, roughly 18 frames after
+  // ten minutes.
+  let nearest: number | null = null;
+  let nearestDistance = Infinity;
+  for (const value of STANDARD_FRAME_RATES) {
+    const distance = Math.abs(rate - value);
+    if (distance / value < 0.015 && distance < nearestDistance) {
+      nearest = value;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearest ?? rate;
 }
 
 /**

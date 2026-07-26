@@ -304,13 +304,15 @@ describe('verifyBunnyUploadToken', () => {
     expect(verifyBunnyUploadToken(token, SUBJECT)).toBe(true);
   });
 
-  it('returns false rather than throwing when the server has no secret configured', () => {
+  // A missing signing secret is a configuration fault, not a forgery. Answering "invalid
+  // token" for it turned a self-hosted misconfiguration into a silent, total upload
+  // outage that reads like a client bug.
+  it('throws rather than reporting a forgery when the server has no secret configured', () => {
     const token = createBunnyUploadToken(SUBJECT);
 
     vi.stubEnv('BUNNY_UPLOAD_TOKEN_SECRET', undefined);
     vi.stubEnv('NEXTAUTH_SECRET', undefined);
 
-    // A misconfigured server is indistinguishable from a forged token here.
-    expect(verifyBunnyUploadToken(token, SUBJECT)).toBe(false);
+    expect(() => verifyBunnyUploadToken(token, SUBJECT)).toThrow();
   });
 });

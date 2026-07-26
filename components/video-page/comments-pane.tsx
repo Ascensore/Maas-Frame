@@ -66,8 +66,8 @@ interface CommentsPaneProps {
   setEditingCommentId: (id: string | null) => void;
   editText: string;
   setEditText: (value: string) => void;
-  editTagId: string | null;
-  setEditTagId: (value: string | null) => void;
+  editTagId: string | null | undefined;
+  setEditTagId: (value: string | null | undefined) => void;
   setEditAnnotationData: (value: string | null | undefined) => void;
   setIsEditingAnnotation: (value: boolean) => void;
   onStartEditAnnotation: () => void;
@@ -488,7 +488,7 @@ export const CommentsPane = memo(function CommentsPane({
                             if (e.key === 'Escape') {
                               setEditingCommentId(null);
                               setEditText('');
-                              setEditTagId(null);
+                              setEditTagId(undefined);
                               setEditAnnotationData(undefined);
                               setIsEditingAnnotation(false);
                             }
@@ -513,7 +513,7 @@ export const CommentsPane = memo(function CommentsPane({
                             onClick={() => {
                               setEditingCommentId(null);
                               setEditText('');
-                              setEditTagId(null);
+                              setEditTagId(undefined);
                               setEditAnnotationData(undefined);
                               setIsEditingAnnotation(false);
                             }}
@@ -726,6 +726,9 @@ export const CommentsPane = memo(function CommentsPane({
                                           onClick={() => {
                                             setEditingCommentId(reply.id);
                                             setEditText(reply.content || '');
+                                            // No tag picker on a reply: undefined keeps
+                                            // the PATCH from carrying a tagId at all.
+                                            setEditTagId(undefined);
                                           }}
                                         >
                                           <Pencil className="h-4 w-4 mr-2" />

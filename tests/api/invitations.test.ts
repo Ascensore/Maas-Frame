@@ -450,11 +450,10 @@ describe('acceptInvitationTokenForUser', () => {
     expect(membership.role).toBe('ADMIN');
   });
 
-  // The invited role wins over the role the member already holds, so accepting
-  // a COMMENTATOR invitation demotes a sitting workspace ADMIN. Pinned because
-  // it is a privilege change, and a surprising one: the accept link looks like
-  // it can only ever add access.
-  it('applies a COMMENTATOR invitation over an existing ADMIN membership', async () => {
+  // An invitation can only ever add access. Applying the invited role over an existing
+  // membership made it a privilege-change primitive: re-invite a sitting ADMIN at a lower
+  // role, get them to click the link once, and they are demoted.
+  it('leaves an existing ADMIN membership alone for a COMMENTATOR invitation', async () => {
     const scenario = await seedProject();
     const member = await createUser({ email: 'member@example.com' });
     await addWorkspaceMember({
@@ -480,7 +479,66 @@ describe('acceptInvitationTokenForUser', () => {
     const membership = await db.workspaceMember.findUniqueOrThrow({
       where: { workspaceId_userId: { workspaceId: scenario.workspace.id, userId: member.id } },
     });
-    expect(membership.role).toBe('COMMENTATOR');
+    expect(membership.role).toBe('ADMIN');
+  });
+
+  it('leaves an existing project ADMIN alone for a COMMENTATOR invitation', async () => {
+    const scenario = await seedProject();
+    const member = await createUser({ email: 'member@example.com' });
+    await addProjectMember({
+      projectId: scenario.project.id,
+      userId: member.id,
+      role: 'ADMIN',
+    });
+    const invitation = await createInvitation({
+      invitedById: scenario.owner.id,
+      email: 'member@example.com',
+      scope: 'PROJECT',
+      projectId: scenario.project.id,
+      role: 'COMMENTATOR',
+    });
+
+    const result = await acceptInvitationTokenForUser({
+      token: invitation.token,
+      userId: member.id,
+      email: member.email!,
+    });
+
+    expect(result).toBe('accepted');
+    const membership = await db.projectMember.findUniqueOrThrow({
+      where: { projectId_userId: { projectId: scenario.project.id, userId: member.id } },
+    });
+    expect(membership.role).toBe('ADMIN');
+  });
+
+  // The other direction still has to work: an invitation is allowed to promote.
+  it('promotes an existing COMMENTATOR to ADMIN for an ADMIN invitation', async () => {
+    const scenario = await seedProject();
+    const member = await createUser({ email: 'member@example.com' });
+    await addWorkspaceMember({
+      workspaceId: scenario.workspace.id,
+      userId: member.id,
+      role: 'COMMENTATOR',
+    });
+    const invitation = await createInvitation({
+      invitedById: scenario.owner.id,
+      email: 'member@example.com',
+      scope: 'WORKSPACE',
+      workspaceId: scenario.workspace.id,
+      role: 'ADMIN',
+    });
+
+    const result = await acceptInvitationTokenForUser({
+      token: invitation.token,
+      userId: member.id,
+      email: member.email!,
+    });
+
+    expect(result).toBe('accepted');
+    const membership = await db.workspaceMember.findUniqueOrThrow({
+      where: { workspaceId_userId: { workspaceId: scenario.workspace.id, userId: member.id } },
+    });
+    expect(membership.role).toBe('ADMIN');
   });
 
   // The owner already outranks any membership row. Writing one would put them
@@ -532,11 +590,10 @@ describe('acceptInvitationTokenForUser', () => {
     );
   });
 
-  // Pins today's behaviour for a malformed row (scope WORKSPACE with no
-  // workspaceId): the caller is told "accepted" while nothing is granted and
-  // the invitation stays PENDING, so the accept page shows a success screen.
-  // See the report accompanying this suite.
-  it('reports accepted for a scoped invitation that points at nothing', async () => {
+  // A malformed row (scope WORKSPACE with no workspaceId) grants nothing. Reporting
+  // "accepted" for it showed the user a success screen for a no-op they had no way to
+  // detect, while the invitation stayed PENDING for good.
+  it('refuses a scoped invitation that points at nothing', async () => {
     const scenario = await seedProject();
     const invitee = await createUser({ email: 'invitee@example.com' });
     const invitation = await createInvitation({
@@ -552,11 +609,31 @@ describe('acceptInvitationTokenForUser', () => {
       email: invitee.email!,
     });
 
-    expect(result).toBe('accepted');
+    expect(result).toBe('not_found');
     expect(await db.workspaceMember.count()).toBe(0);
     expect((await db.invitation.findUniqueOrThrow({ where: { id: invitation.id } })).status).toBe(
       'PENDING'
     );
+  });
+
+  it('refuses a project invitation that points at nothing', async () => {
+    const scenario = await seedProject();
+    const invitee = await createUser({ email: 'invitee@example.com' });
+    const invitation = await createInvitation({
+      invitedById: scenario.owner.id,
+      email: 'invitee@example.com',
+      scope: 'PROJECT',
+      projectId: null,
+    });
+
+    const result = await acceptInvitationTokenForUser({
+      token: invitation.token,
+      userId: invitee.id,
+      email: invitee.email!,
+    });
+
+    expect(result).toBe('not_found');
+    expect(await db.projectMember.count()).toBe(0);
   });
 });
 

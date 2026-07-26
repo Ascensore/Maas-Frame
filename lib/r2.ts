@@ -12,11 +12,13 @@ import {
   PutObjectCommand,
   UploadPartCommand,
   S3Client,
+  type CORSRule,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { VIDEO_OBJECT_KEY_PREFIX } from '@/lib/video-upload-validation';
 
 const IMAGE_OBJECT_KEY_PREFIX = 'images/';
+const AUDIO_OBJECT_KEY_PREFIX = 'voice/';
 
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
@@ -104,12 +106,16 @@ export const r2Client = new Proxy({} as S3Client, {
   get(_target, prop, receiver) {
     if (prop === 'destroy') {
       return () => {
-        if (!cachedR2Client) return;
-        cachedR2Client.destroy();
-        cachedR2Client = null;
-        if (!cachedR2PresignClient) return;
-        cachedR2PresignClient.destroy();
-        cachedR2PresignClient = null;
+        // Both are destroyed independently. Returning early when the send client was
+        // never created leaked the presign client in a process that only ever presigned.
+        if (cachedR2Client) {
+          cachedR2Client.destroy();
+          cachedR2Client = null;
+        }
+        if (cachedR2PresignClient) {
+          cachedR2PresignClient.destroy();
+          cachedR2PresignClient = null;
+        }
       };
     }
 
@@ -234,13 +240,22 @@ export async function ensureR2UploadCors(extraOrigins: string[] = []): Promise<s
     MaxAgeSeconds: 3600,
   };
 
+  // The catch covers the read only. Wrapping the write in it too meant a transient write
+  // failure was mistaken for "this bucket has no CORS config", and the retry below then
+  // sent the managed rule on its own, discarding whatever the bucket already had.
+  let existingRules: CORSRule[] | null = null;
   try {
     const existing = await r2Client.send(
       new GetBucketCorsCommand({
         Bucket: R2_BUCKET_NAME,
       })
     );
-    const existingRules = existing.CORSRules ?? [];
+    existingRules = existing.CORSRules ?? [];
+  } catch {
+    // No CORS config yet, or insufficient permissions to read — write the managed rule.
+  }
+
+  if (existingRules) {
     if (existingRules.some((rule) => corsRulesMatchOrigins(rule, allowedOrigins))) {
       return allowedOrigins;
     }
@@ -254,8 +269,6 @@ export async function ensureR2UploadCors(extraOrigins: string[] = []): Promise<s
       })
     );
     return allowedOrigins;
-  } catch {
-    // No CORS config yet, or insufficient permissions to read — attempt to write.
   }
 
   await r2Client.send(
@@ -291,7 +304,13 @@ export async function createPresignedVideoPutUrl(
     ContentLength: Number(contentLength),
   });
 
-  return getSignedUrl(getOrCreateR2PresignClient(), command, { expiresIn: expiresInSeconds });
+  return getSignedUrl(getOrCreateR2PresignClient(), command, {
+    expiresIn: expiresInSeconds,
+    // Passing ContentType to the command is not enough: unless the header is signable the
+    // grant does not bind it, and whoever holds the url can put any media type at the key.
+    // The client sends the same value back, so the signature covers what actually lands.
+    signableHeaders: new Set(['content-type']),
+  });
 }
 
 export async function createMultipartVideoUpload(
@@ -397,7 +416,12 @@ export async function createPresignedImagePutUrl(
     ContentType: contentType,
   });
 
-  return getSignedUrl(getOrCreateR2PresignClient(), command, { expiresIn: expiresInSeconds });
+  return getSignedUrl(getOrCreateR2PresignClient(), command, {
+    expiresIn: expiresInSeconds,
+    // Without this the grant binds only the host, so an image upload url accepts any
+    // media type at an `images/` key the app then serves as an image.
+    signableHeaders: new Set(['content-type']),
+  });
 }
 
 export async function headVideoObject(key: string): Promise<{
@@ -464,7 +488,14 @@ export async function readVideoObjectBytes(
 }
 
 function assertAllowedObjectKey(key: string): void {
-  if (!key.startsWith(VIDEO_OBJECT_KEY_PREFIX) && !key.startsWith(IMAGE_OBJECT_KEY_PREFIX)) {
+  // `voice/` belongs here because uploadAudio() writes under it. Leaving it out meant
+  // deleteR2Object('voice/...') always threw, so a voice note attached to a comment could
+  // never be removed by the module that stored it and outlived the comment in the bucket.
+  if (
+    !key.startsWith(VIDEO_OBJECT_KEY_PREFIX) &&
+    !key.startsWith(IMAGE_OBJECT_KEY_PREFIX) &&
+    !key.startsWith(AUDIO_OBJECT_KEY_PREFIX)
+  ) {
     throw new Error('Invalid object key');
   }
 }

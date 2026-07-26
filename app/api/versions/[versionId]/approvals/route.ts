@@ -84,9 +84,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
     if (!version) return apiErrors.notFound('Version');
 
-    const access = await checkProjectAccess(version.video.project, session.user.id, {
-      intent: 'manage',
-    });
+    const access = await checkProjectAccess(version.video.project, session.user.id);
     if (!access.canEdit) return apiErrors.forbidden('Access denied');
 
     const body = (await request.json().catch(() => ({}))) as {

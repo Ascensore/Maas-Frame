@@ -359,11 +359,11 @@ function getInactiveBillingAccessEndedAt(
 }
 
 function getEntitledStripePriceId(subscription: Stripe.Subscription) {
-  const configuredPriceId = getStripePriceId();
+  return hasEntitledPrice(subscription, getStripePriceId()) ? getStripePriceId() : null;
+}
 
-  return (
-    subscription.items.data.find((item) => item.price.id === configuredPriceId)?.price.id ?? null
-  );
+function hasEntitledPrice(subscription: Stripe.Subscription, configuredPriceId: string): boolean {
+  return subscription.items.data.some((item) => item.price.id === configuredPriceId);
 }
 
 export async function syncStripeSubscriptionToUser(subscription: Stripe.Subscription) {
@@ -456,9 +456,15 @@ export function selectAuthoritativeSubscription(
     return null;
   }
 
+  // Read once, up front. Reading it inside the comparator meant a deployment with no
+  // STRIPE_PRICE_ID configured worked for every customer holding one subscription and
+  // threw only for those holding two, because a comparator never runs for a one-element
+  // array. That is a miserable failure mode to diagnose in production.
+  const configuredPriceId = getStripePriceId();
+
   return [...subscriptions].sort((a, b) => {
-    const aEntitled = Boolean(getEntitledStripePriceId(a));
-    const bEntitled = Boolean(getEntitledStripePriceId(b));
+    const aEntitled = hasEntitledPrice(a, configuredPriceId);
+    const bEntitled = hasEntitledPrice(b, configuredPriceId);
     if (aEntitled !== bEntitled) {
       return aEntitled ? -1 : 1;
     }

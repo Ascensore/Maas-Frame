@@ -242,8 +242,15 @@ export function useVideoPlayer({
 
     const tag = document.createElement('script');
     tag.src = 'https://www.youtube.com/iframe_api';
+    // A document with no <script> is unusual but not impossible, and dereferencing the
+    // first one threw on mount when there was none. Next always emits one in the app;
+    // appending to <head> covers everything else.
     const firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    if (firstScriptTag?.parentNode) {
+      firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+    } else {
+      document.head.appendChild(tag);
+    }
 
     window.onYouTubeIframeAPIReady = () => {
       setIsApiLoaded(true);

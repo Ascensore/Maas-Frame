@@ -4,6 +4,7 @@ import {
   getPartByteRange,
   getRetryDelayMs,
   getUploadProgressPercent,
+  isRetryableUploadError,
   PART_RETRY_DELAYS_MS,
 } from '@/lib/client/upload-chunking';
 
@@ -183,5 +184,49 @@ describe('getMultipartProgressPercent', () => {
 
   it('counts progress against the whole file, not the part', () => {
     expect(getMultipartProgressPercent([100, 0, 0], 300)).toBe(33);
+  });
+
+  // Dividing by a total of zero produced NaN, which reached the UI as
+  // "Uploading... NaN%". Not reachable from the product today (r2-init rejects
+  // sizeBytes <= 0 and the multipart path only engages above 90 MiB), so the guard is
+  // here to keep an arithmetic accident from becoming a visible one.
+  it.each([
+    ['zero', 0],
+    ['a negative total', -1],
+  ])('reports 0 rather than NaN for %s', (_label, totalBytes) => {
+    expect(getMultipartProgressPercent([0, 0], totalBytes)).toBe(0);
+    expect(getMultipartProgressPercent([50, 50], totalBytes)).toBe(0);
+    expect(getUploadProgressPercent(50, totalBytes)).toBe(0);
+  });
+});
+
+describe('isRetryableUploadError', () => {
+  // The retry loop used to repeat every rejection. Cancelling an upload therefore did
+  // not cancel it: the part sat through the full 2s, 5s and 10s backoff and fired three
+  // more PUTs before the error surfaced.
+  it('refuses to retry the user cancelling the upload', () => {
+    expect(isRetryableUploadError(new Error('Upload aborted'))).toBe(false);
+  });
+
+  // An expired presigned part URL answers 403 every time, so retrying turned one dead
+  // part into four requests and 17 seconds of apparent hanging.
+  it.each([400, 401, 403, 404, 411, 413])('refuses to retry status %s', (status) => {
+    expect(isRetryableUploadError(new Error(`Upload failed with status ${status}`))).toBe(false);
+    expect(isRetryableUploadError(new Error(`Chunk upload failed with status ${status}`))).toBe(
+      false
+    );
+  });
+
+  it.each([408, 429, 500, 502, 503, 504])('retries status %s', (status) => {
+    expect(isRetryableUploadError(new Error(`Upload failed with status ${status}`))).toBe(true);
+  });
+
+  it('retries an error that carries no status at all', () => {
+    expect(isRetryableUploadError(new Error('Network error during upload.'))).toBe(true);
+    expect(isRetryableUploadError(new Error('Upload response missing ETag header.'))).toBe(true);
+  });
+
+  it('retries a non-Error rejection rather than swallowing it', () => {
+    expect(isRetryableUploadError('something went wrong')).toBe(true);
   });
 });

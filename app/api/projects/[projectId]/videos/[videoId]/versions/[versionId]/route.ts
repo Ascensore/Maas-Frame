@@ -32,7 +32,7 @@ async function getVersionWithAccess(
   }
 
   const project = version.video.project;
-  const access = await checkProjectAccess(project, userId, { intent: 'manage' });
+  const access = await checkProjectAccess(project, userId);
 
   return { version, canEdit: access.canEdit, isOwner: access.isOwner };
 }

@@ -363,6 +363,7 @@ export default function NewVideoPageClient({
         failCount += 1;
         const message = error instanceof Error ? error.message : 'Upload failed';
         setSubmitError(`${file.name}: ${message}`);
+        setUploadStatus('');
       }
     }
 
@@ -447,6 +448,9 @@ export default function NewVideoPageClient({
     } catch (error: unknown) {
       console.error('Failed to add video:', error);
       setSubmitError(error instanceof Error ? error.message : 'An unexpected error occurred');
+      // Cleared on the failure path too. Leaving it set showed the error above a stale
+      // "Initializing upload...", so the form claimed to be doing both at once.
+      setUploadStatus('');
     } finally {
       activeTusUploadRef.current = null;
       pendingUploadRef.current = null;

@@ -1,6 +1,7 @@
+import { createHash } from 'crypto';
 import { db } from '@/lib/db';
 import { NextResponse } from 'next/server';
-import { logError } from '@/lib/logger';
+import { logError, logWarn } from '@/lib/logger';
 
 const RATE_LIMIT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -30,6 +31,19 @@ if (process.env.NODE_ENV === 'production' && isRateLimitDisabled()) {
   throw new Error(
     'DISABLE_RATE_LIMIT must not be set in production. ' +
       'Remove or unset the environment variable before deploying.'
+  );
+}
+
+// Without a proxy mode every caller resolves to 127.0.0.1, so the limiter counts the whole
+// world in one bucket. That is the deliberate trade-off (trusting a spoofable header is
+// worse), but a deployment behind a proxy should know it is running with global rather
+// than per-client limits rather than discover it under load.
+if (process.env.NODE_ENV === 'production' && !process.env.TRUSTED_PROXY_MODE?.trim()) {
+  logWarn(
+    'TRUSTED_PROXY_MODE is not set. Every request resolves to 127.0.0.1, so rate limits ' +
+      'apply per process rather than per client. Set TRUSTED_PROXY_MODE=cloudflare or ' +
+      'TRUSTED_PROXY_MODE=nginx once you have confirmed your proxy overwrites the ' +
+      'corresponding header on every inbound request.'
   );
 }
 
@@ -95,6 +109,21 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   api: { windowMs: 60 * 1000, maxRequests: 100 }, // 100 per minute
 };
 
+// Column widths of rate_limits.key and rate_limits.action in prisma/schema.prisma. A value
+// wider than its column would fail the INSERT with SQLSTATE 22001.
+const RATE_LIMIT_KEY_MAX_LENGTH = 255;
+const RATE_LIMIT_ACTION_MAX_LENGTH = 50;
+
+/**
+ * Fits a value to its column without ever giving up on counting it. A SHA-256 hex digest
+ * is 64 characters, so it is truncated for the narrower action column; 50 hex characters
+ * is 200 bits, far past any collision that matters for a rate limit bucket.
+ */
+function fitToColumn(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return createHash('sha256').update(value).digest('hex').slice(0, maxLength);
+}
+
 /**
  * Check and update rate limit for a given key and action
  * Uses PostgreSQL UNLOGGED table for performance
@@ -116,12 +145,12 @@ export async function checkRateLimit(
 
   const windowSeconds = Math.floor(windowMs / 1000);
 
-  // Validate inputs before passing to query — defence in depth.
-  // Prisma's tagged template $queryRaw already parameterizes these values,
-  // but we enforce sane bounds to reject obviously malicious input.
-  if (key.length > 256 || action.length > 64) {
-    return { allowed: true, remaining: maxRequests, resetAt: new Date(Date.now() + windowMs) };
-  }
+  // Anything wider than its column is replaced by a digest rather than skipped. Skipping
+  // meant the limit stopped applying altogether, and letting the value through meant the
+  // INSERT failed with SQLSTATE 22001 and the catch below allowed the request anyway.
+  // Both were fail-open. A digest is stable, so the same caller keeps the same bucket.
+  const storedKey = fitToColumn(key, RATE_LIMIT_KEY_MAX_LENGTH);
+  const storedAction = fitToColumn(action, RATE_LIMIT_ACTION_MAX_LENGTH);
 
   try {
     // Atomic upsert with window check
@@ -134,7 +163,7 @@ export async function checkRateLimit(
       }>
     >`
             INSERT INTO rate_limits (key, action, count, window_start)
-            VALUES (${key}, ${action}, 1, NOW())
+            VALUES (${storedKey}, ${storedAction}, 1, NOW())
             ON CONFLICT (key, action) DO UPDATE SET
                 count = CASE 
                     WHEN rate_limits.window_start < NOW() - (${windowSeconds} || ' seconds')::INTERVAL 

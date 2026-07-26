@@ -35,9 +35,15 @@ function resolveR2ConnectOrigins(): string[] {
     origins.add('https://*.r2.cloudflarestorage.com');
   }
 
-  // Docker/MinIO self-hosted defaults for local development.
-  origins.add('http://localhost:9000');
-  origins.add('http://127.0.0.1:9000');
+  // Docker/MinIO defaults, for local development only. A production build has no reason
+  // to allow plaintext loopback object storage, and adding it there weakened the policy of
+  // every deployment to accommodate a developer's machine. A self-hosted install whose
+  // storage really is on loopback still works: it sets R2_ENDPOINT, which is picked up
+  // above.
+  if (process.env.NODE_ENV !== 'production') {
+    origins.add('http://localhost:9000');
+    origins.add('http://127.0.0.1:9000');
+  }
 
   return [...origins];
 }

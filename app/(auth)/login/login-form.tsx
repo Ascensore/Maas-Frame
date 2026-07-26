@@ -124,10 +124,15 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {/*
+          `?registered=true` is only ever reached when email verification is off: the
+          register page sends a user who has to verify to /verify-email instead. Telling
+          this one to go and check a mailbox pointed them at a message that never arrives,
+          on a self-hosted deployment without SMTP, which is the documented default.
+        */}
         {showSuccess && (
           <div className="p-3 rounded-md bg-green-500/10 text-green-600 text-sm mb-4">
-            Account created successfully! Please check your email to verify your address before
-            signing in.
+            Account created successfully! You can sign in now.
           </div>
         )}
 

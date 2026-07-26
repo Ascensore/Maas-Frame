@@ -105,6 +105,11 @@ export function MembersManagementPage({
           router.push('/dashboard');
           return;
         }
+        // Any other status has to say so. Returning silently rendered "No members yet"
+        // and "No pending invitations" on a workspace that has both, and the user's next
+        // move was to re-invite somebody who is already a member, which answers 409 and
+        // reads as a second, unrelated bug.
+        setError('Failed to load members. Please refresh to try again.');
         return;
       }
       const data = await res.json();

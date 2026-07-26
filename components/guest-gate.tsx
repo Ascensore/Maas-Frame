@@ -26,8 +26,10 @@ export function GuestGate({ children }: { children: ReactNode }) {
   }
 
   const confirm = () => {
+    // The length check the input's own maxLength={100} already enforces is gone: it was
+    // unreachable, and an unreachable guard reads as protection that is not there.
     const trimmed = guestName.trim();
-    if (!trimmed || trimmed.length > 100) return;
+    if (!trimmed) return;
     localStorage.setItem('openframe_guest_name', trimmed);
     setConfirmed(true);
   };
@@ -45,7 +47,11 @@ export function GuestGate({ children }: { children: ReactNode }) {
           </p>
         </div>
         <div className="space-y-3">
+          <label htmlFor="guest-gate-name" className="sr-only">
+            Your name
+          </label>
           <Input
+            id="guest-gate-name"
             placeholder="Your name"
             value={guestName}
             maxLength={100}
@@ -55,11 +61,7 @@ export function GuestGate({ children }: { children: ReactNode }) {
             }}
             autoFocus
           />
-          <Button
-            className="w-full"
-            disabled={!guestName.trim() || guestName.trim().length > 100}
-            onClick={confirm}
-          >
+          <Button className="w-full" disabled={!guestName.trim()} onClick={confirm}>
             Continue
           </Button>
         </div>

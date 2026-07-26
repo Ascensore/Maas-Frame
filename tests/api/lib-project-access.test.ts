@@ -41,11 +41,6 @@ import {
   createWorkspace,
 } from '../factories';
 
-type Intent = 'view' | 'manage' | 'delete';
-
-/** `undefined` stands for a caller that passes no options at all. */
-const INTENTS: ReadonlyArray<Intent | undefined> = [undefined, 'view', 'manage', 'delete'];
-
 type Actor =
   | 'an anonymous caller'
   | 'an outsider'
@@ -252,42 +247,6 @@ const SCENARIOS: readonly Scenario[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// The known divergence
-// ---------------------------------------------------------------------------
-
-/**
- * The one place the two functions disagree, spelled out rather than filtered
- * out.
- *
- * `shouldLoadWorkspaceRole` in lib/auth.ts skips the workspace queries for a
- * project owner on `intent: 'view'`, on the reasoning that an owner passes every
- * check on their own. That is true of the three permission booleans, and it is
- * why this is harmless today, but it is not true of the two identity flags:
- * checkProjectAccess() reports `isWorkspaceMember: false, isWorkspaceAdmin:
- * false` for an owner who is in fact the workspace owner, where
- * computeProjectAccess() on the same rows reports true and true.
- *
- * Harmless today rests on one fact and not on the design: the only consumer of
- * `isWorkspaceMember` from checkProjectAccess() is
- * app/api/versions/[versionId]/approvals/route.ts:37, and its
- * `isOwner || isProjectMember || isWorkspaceMember` is already satisfied by
- * `isOwner` for exactly the actor that diverges. Nothing consumes
- * `isWorkspaceAdmin` from checkProjectAccess() at all; `canEdit` folds it in,
- * and `isOwner` covers that too. The next reader of either flag inherits the
- * bug, which is why this is asserted instead of hidden behind a comparison of
- * `hasAccess` alone.
- *
- * If this stops matching, the divergence was closed: delete this function and
- * the test at the bottom of the file rather than widening either of them.
- */
-function knownDivergence(actor: Actor, intent: Intent | undefined): Partial<ExpectedAccess> {
-  const resolvesWorkspaceRole = intent === 'manage' || intent === 'delete';
-  if (actor === 'a project owner who also owns the workspace' && !resolvesWorkspaceRole) {
-    return { isWorkspaceMember: false, isWorkspaceAdmin: false };
-  }
-  return {};
-}
-
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -428,7 +387,7 @@ for (const scenario of SCENARIOS) {
     });
 
     for (const actor of ACTORS) {
-      it(`resolves ${actor} exactly as computeProjectAccess does, at every intent`, async () => {
+      it(`resolves ${actor} exactly as computeProjectAccess does`, async () => {
         const userId = seeded.userIdFor(actor);
         const projectId = projectIdFor(actor, seeded);
         const expected = scenario.expected[actor];
@@ -437,20 +396,10 @@ for (const scenario of SCENARIOS) {
         // The pure half first: given the rows, this is the answer.
         expect(computeProjectAccess(enriched, userId), 'computeProjectAccess').toEqual(expected);
 
-        // And the querying half, which has to arrive at the same place from the
-        // same rows, whatever the caller says it intends to do.
-        for (const intent of INTENTS) {
-          const checked = await checkProjectAccess(
-            enriched,
-            userId,
-            intent === undefined ? undefined : { intent }
-          );
-
-          expect(checked, `checkProjectAccess with intent ${intent ?? '(default)'}`).toEqual({
-            ...expected,
-            ...knownDivergence(actor, intent),
-          });
-        }
+        // And the querying half, which has to arrive at the same place from the same rows.
+        // It used to take an `intent` that skipped the workspace queries for an owner at
+        // `view`, which is what made these two disagree; there is one code path now.
+        expect(await checkProjectAccess(enriched, userId), 'checkProjectAccess').toEqual(expected);
       });
     }
   });
@@ -460,8 +409,13 @@ for (const scenario of SCENARIOS) {
 // The divergence, on its own
 // ---------------------------------------------------------------------------
 
-describe('checkProjectAccess and computeProjectAccess disagree in one place', () => {
-  it('hides the workspace role from a project owner who also owns the workspace, on intent view', async () => {
+describe('checkProjectAccess and computeProjectAccess agree about the workspace role', () => {
+  // This was the one cell of the matrix that diverged, and it is the shape every real
+  // signup produces: app/api/projects/route.ts gives a new project the workspace owner's
+  // id. checkProjectAccess() used to skip both workspace queries for an owner at `view`
+  // intent, so the two identity flags read as if this user were a stranger to the
+  // workspace they own.
+  it('reports a project owner who also owns the workspace as a workspace admin', async () => {
     const owner = await createUser();
     const workspace = await createWorkspace({ ownerId: owner.id });
     const project = await createProject({
@@ -471,32 +425,11 @@ describe('checkProjectAccess and computeProjectAccess disagree in one place', ()
     });
 
     const enriched = await fetchEnriched(project.id, owner.id);
-
     const computed = computeProjectAccess(enriched, owner.id);
-    const viewed = await checkProjectAccess(enriched, owner.id, { intent: 'view' });
-    const managed = await checkProjectAccess(enriched, owner.id, { intent: 'manage' });
 
-    // What the rows say: this user owns the workspace the project lives in.
     expect(computed.isWorkspaceMember).toBe(true);
     expect(computed.isWorkspaceAdmin).toBe(true);
 
-    // What checkProjectAccess() says on the intent that pages and GET routes
-    // use. `shouldLoadWorkspaceRole` skipped the workspace queries, so the role
-    // was never resolved and the two flags read as if this user were a stranger
-    // to the workspace.
-    expect(viewed.isWorkspaceMember).toBe(false);
-    expect(viewed.isWorkspaceAdmin).toBe(false);
-
-    // Ask the same question with a mutating intent and the same user, on the
-    // same rows, is a workspace owner again.
-    expect(managed.isWorkspaceMember).toBe(true);
-    expect(managed.isWorkspaceAdmin).toBe(true);
-
-    // Why nobody has noticed: every permission the flags feed is already
-    // granted by isOwner, so the divergence stops at the two identity flags.
-    expect(viewed.hasAccess).toBe(true);
-    expect(viewed.canEdit).toBe(true);
-    expect(viewed.canDelete).toBe(true);
-    expect({ ...viewed, isWorkspaceMember: true, isWorkspaceAdmin: true }).toEqual(computed);
+    expect(await checkProjectAccess(enriched, owner.id)).toEqual(computed);
   });
 });

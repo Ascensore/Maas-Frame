@@ -163,7 +163,7 @@ export function VideoPageContent({
     assets,
     isLoadingAssets,
     isCreatingAsset,
-    activeDeleteAssetId,
+    deletingAssetIds,
     activeDownloadAssetId,
     hasMoreAssets,
     isLoadingMoreAssets,
@@ -908,7 +908,7 @@ export function VideoPageContent({
               assets={assets}
               isLoadingAssets={isLoadingAssets}
               isCreatingAsset={isCreatingAsset}
-              activeDeleteAssetId={activeDeleteAssetId}
+              deletingAssetIds={deletingAssetIds}
               activeDownloadAssetId={activeDownloadAssetId}
               canUploadAssets={canUploadAssets}
               canDownloadAssets={canDownloadAssets}

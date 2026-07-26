@@ -165,16 +165,16 @@ describe('checkRateLimit', () => {
     expect(result.remaining).toBe(RATE_LIMIT_CONFIGS.api.maxRequests - 1);
   });
 
-  // Defence in depth against oversized values reaching the query. The call is
-  // allowed but nothing is recorded, so an attacker cannot use a huge key to
-  // bloat the table either.
-  it('allows and records nothing for an over-long key or action', async () => {
+  // An oversized value is hashed to fit its column rather than skipped, so it is written
+  // and counted like any other. A huge key cannot bloat the table either: what lands in
+  // the column is a fixed-width digest.
+  it('records an over-long key and an over-long action', async () => {
     const longKey = await checkRateLimit('x'.repeat(257), 'login', CONFIG);
     const longAction = await checkRateLimit('1.2.3.4', 'y'.repeat(65), CONFIG);
 
     expect(longKey.allowed).toBe(true);
     expect(longAction.allowed).toBe(true);
-    expect(await countRows('rate_limits')).toBe(0);
+    expect(await countRows('rate_limits')).toBe(2);
   });
 
   it('records a key of exactly 255 characters, the column width', async () => {
@@ -184,27 +184,31 @@ describe('checkRateLimit', () => {
     expect(await countRows('rate_limits')).toBe(1);
   });
 
-  // Documents an off-by-one, reported rather than fixed. The guard in
-  // lib/rate-limit.ts rejects `key.length > 256`, but rate_limits.key is
-  // VARCHAR(255), so a 256-character key clears the guard and then fails the
-  // INSERT with P2010. The catch treats any database error as "allow", so such a
-  // key is never counted and the limit silently stops applying to it.
-  //
-  // Not reachable from the product today: every call site builds a key from an
-  // IP, a user id or a 24-character hash. The failure mode is fail-open, so a
-  // future longer key would disable a limit rather than break a page.
-  it('fails open for a 256-character key instead of counting it', async () => {
-    // Kept to four attempts, one past the limit, because each one logs the
-    // swallowed Postgres error and the point is made without ten copies of it.
+  // This is the case that used to fail open twice over: the guard allowed a 256-character
+  // key through, the INSERT then failed with SQLSTATE 22001 against a VARCHAR(255) column,
+  // and the catch answered "allowed" for every attempt. The key is now hashed before it
+  // reaches the query, so the limit applies to it like any other.
+  it('counts a 256-character key and blocks it past the cap', async () => {
     const key = 'x'.repeat(256);
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    for (let attempt = 0; attempt < CONFIG.maxRequests; attempt += 1) {
       const result = await checkRateLimit(key, 'login', CONFIG);
       expect(result.allowed).toBe(true);
-      expect(result.remaining).toBe(CONFIG.maxRequests);
     }
 
-    expect(await countRows('rate_limits')).toBe(0);
+    const blocked = await checkRateLimit(key, 'login', CONFIG);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.remaining).toBe(0);
+
+    expect(await countRows('rate_limits')).toBe(1);
+    expect((await db.rateLimit.findFirstOrThrow()).count).toBe(CONFIG.maxRequests + 1);
+  });
+
+  it('keeps two different over-long keys in separate buckets', async () => {
+    await checkRateLimit(`a${'x'.repeat(300)}`, 'login', CONFIG);
+    await checkRateLimit(`b${'x'.repeat(300)}`, 'login', CONFIG);
+
+    expect(await countRows('rate_limits')).toBe(2);
   });
 
   it('counts concurrent calls exactly once each', async () => {

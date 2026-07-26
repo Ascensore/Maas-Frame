@@ -9,16 +9,32 @@ type BunnyRef = {
   videoId: string;
 };
 
+type CleanupInput = {
+  bunny: Awaited<ReturnType<typeof cleanupBunnyStreamVideosBestEffort>>;
+  r2: Awaited<ReturnType<typeof deleteMediaFilesBestEffort>>;
+};
+
+/**
+ * Storage refused at least one delete, so the rows were left in place and nothing was
+ * removed. Carries the cleanup detail so the route can log which keys failed.
+ */
+export class VideoStorageCleanupError extends Error {
+  readonly cleanupInput: CleanupInput;
+
+  constructor(cleanupInput: CleanupInput) {
+    super('STORAGE_CLEANUP_FAILED');
+    this.name = 'VideoStorageCleanupError';
+    this.cleanupInput = cleanupInput;
+  }
+}
+
 export async function deleteProjectVideosWithCleanup(
   projectId: string,
   videoIds: string[]
 ): Promise<{
   deletedCount: number;
   cleanupWarnings: CleanupWarnings | undefined;
-  cleanupInput: {
-    bunny: Awaited<ReturnType<typeof cleanupBunnyStreamVideosBestEffort>>;
-    r2: Awaited<ReturnType<typeof deleteMediaFilesBestEffort>>;
-  };
+  cleanupInput: CleanupInput;
 }> {
   const uniqueVideoIds = [...new Set(videoIds)];
   if (uniqueVideoIds.length === 0) {
@@ -66,15 +82,11 @@ export async function deleteProjectVideosWithCleanup(
     );
   }
 
-  await db.video.deleteMany({
-    where: {
-      projectId,
-      id: { in: uniqueVideoIds },
-    },
-  });
-
-  revalidatePath(`/projects/${projectId}`);
-
+  // Storage first, rows second. The other order committed the deleteMany before the R2 and
+  // Bunny calls ran, with nothing spanning the two, so a refused storage DELETE left the
+  // object in the bucket with no row pointing at it and no way to retry: the video id no
+  // longer resolved to anything. Leaving the rows in place instead keeps the delete
+  // repeatable, and a second attempt cleans up whatever the first one could not.
   const [bunnyCleanupResult, r2CleanupResult] = await Promise.all([
     cleanupBunnyStreamVideosBestEffort(bunnyRefs),
     deleteMediaFilesBestEffort(mediaUrls),
@@ -85,9 +97,23 @@ export async function deleteProjectVideosWithCleanup(
     r2: r2CleanupResult,
   };
 
+  const cleanupWarnings = buildCleanupWarnings(cleanupInput);
+  if (cleanupWarnings) {
+    throw new VideoStorageCleanupError(cleanupInput);
+  }
+
+  await db.video.deleteMany({
+    where: {
+      projectId,
+      id: { in: uniqueVideoIds },
+    },
+  });
+
+  revalidatePath(`/projects/${projectId}`);
+
   return {
     deletedCount: videos.length,
-    cleanupWarnings: buildCleanupWarnings(cleanupInput),
+    cleanupWarnings,
     cleanupInput,
   };
 }
