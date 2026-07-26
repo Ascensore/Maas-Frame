@@ -82,7 +82,7 @@ interface AssetsPaneProps {
   assets: VideoAsset[];
   isLoadingAssets: boolean;
   isCreatingAsset: boolean;
-  activeDeleteAssetId: string | null;
+  deletingAssetIds: string[];
   activeDownloadAssetId: string | null;
   canUploadAssets: boolean;
   canDownloadAssets: boolean;
@@ -112,7 +112,7 @@ export const AssetsPane = memo(function AssetsPane({
   assets,
   isLoadingAssets,
   isCreatingAsset,
-  activeDeleteAssetId,
+  deletingAssetIds,
   activeDownloadAssetId,
   canUploadAssets,
   canDownloadAssets,
@@ -1518,7 +1518,7 @@ export const AssetsPane = memo(function AssetsPane({
         bunnyProcessingByAssetId={bunnyProcessingByAssetId}
         bunnyReadyByAssetId={bunnyReadyByAssetId}
         activeDownloadAssetId={activeDownloadAssetId}
-        activeDeleteAssetId={activeDeleteAssetId}
+        deletingAssetIds={deletingAssetIds}
         canDownloadAssets={canDownloadAssets}
         hasMoreAssets={hasMoreAssets}
         isLoadingMoreAssets={isLoadingMoreAssets}

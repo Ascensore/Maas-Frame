@@ -442,7 +442,10 @@ describe('DELETE /api/videos/[videoId]/assets/[assetId]', () => {
 // owner has turned exports off. Both are pinned, because merging them would look
 // like a tidy-up and would quietly hand the files to every viewer.
 describe('GET /api/videos/[videoId]/assets/[assetId]/download', () => {
-  it('returns 403 to a signed-in stranger', async () => {
+  // 404 rather than 403 for a caller with no relationship to the project: a 403 confirms
+  // the id exists. The comment export route has always answered 404 for the identical
+  // shape, and the three download paths now agree.
+  it('returns 404 to a signed-in stranger', async () => {
     const fixture = await seedAsset({ allowDownloads: true });
     await seedProject();
     const stranger = await createUser();
@@ -454,8 +457,7 @@ describe('GET /api/videos/[videoId]/assets/[assetId]/download', () => {
       { videoId: fixture.video.id, assetId: fixture.asset.id }
     );
 
-    expect(response.status).toBe(403);
-    expect(await readError(response)).toContain('Access denied');
+    expect(response.status).toBe(404);
   });
 
   it('returns 403 to a project COMMENTATOR when downloads are disabled', async () => {
@@ -529,7 +531,7 @@ describe('GET /api/videos/[videoId]/assets/[assetId]/download', () => {
     expect(response.status).toBe(404);
   });
 
-  it('returns 403 for a foreign asset reached through its own foreign video id', async () => {
+  it('returns 404 for a foreign asset reached through its own foreign video id', async () => {
     const mine = await seedAsset({ allowDownloads: true });
     const theirs = await seedAsset({ allowDownloads: true });
     signedInAs(mine.owner);
@@ -540,7 +542,7 @@ describe('GET /api/videos/[videoId]/assets/[assetId]/download', () => {
       { videoId: theirs.video.id, assetId: theirs.asset.id }
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 });
 

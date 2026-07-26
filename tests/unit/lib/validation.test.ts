@@ -101,13 +101,15 @@ describe('validateAnnotationStrokes', () => {
     expect(validateAnnotationStrokes([stroke({ width })])).toBeNull();
   });
 
-  // KNOWN GAP in lib/validation.ts, asserted as-is rather than fixed here:
-  // the width check is `width < MIN || width > MAX`, and both comparisons are
-  // false for NaN, so NaN passes the bounds test. The coordinate checks use an
-  // explicit isFinite() guard; the width check does not. A NaN width survives
-  // into the stored annotation JSON, where JSON.stringify renders it as null.
-  it('lets a NaN stroke width through, unlike NaN coordinates', () => {
-    expect(validateAnnotationStrokes([stroke({ width: Number.NaN })])?.[0].width).toBeNaN();
+  // Both bounds comparisons are false for NaN, so the range check alone let it through
+  // into the stored annotation JSON, where JSON.stringify renders it as null. Coordinates
+  // always had the isFinite() guard the width was missing.
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+  ])('refuses a %s stroke width, as it does for coordinates', (_label, width) => {
+    expect(validateAnnotationStrokes([stroke({ width })])).toBeNull();
   });
 
   it.each(['#FF3B30', '#ff3b30', '#000000', '#AbCdEf'])('accepts colour %s', (color) => {

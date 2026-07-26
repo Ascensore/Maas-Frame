@@ -6,6 +6,14 @@ COPY package.json bun.lock ./
 COPY prisma ./prisma
 RUN bun install --frozen-lockfile
 
+# The tree the runner ships. The build needs eslint, vitest, playwright and the rest; the
+# running app does not, and copying the full tree put them all in the image.
+FROM base AS prod-deps
+COPY package.json bun.lock ./
+COPY prisma ./prisma
+RUN bun install --frozen-lockfile --production
+RUN bun run db:generate
+
 FROM deps AS build
 COPY app ./app
 COPY components ./components
@@ -45,7 +53,10 @@ COPY --from=build /app/lib ./lib
 COPY --from=build /app/app ./app
 COPY --from=build /app/components ./components
 COPY --from=build /app/types ./types
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
+# next.config.ts and prisma.config.ts are TypeScript, and both are loaded at startup, so
+# the compiler has to be present even though nothing else here needs it.
+COPY --from=deps /app/node_modules/typescript ./node_modules/typescript
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/postcss.config.mjs ./postcss.config.mjs

@@ -20,7 +20,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
     });
     if (!project) return apiErrors.notFound('Project');
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canEdit) return apiErrors.forbidden('Access denied');
 
     const candidates = await getApprovalCandidatesForProject(projectId);

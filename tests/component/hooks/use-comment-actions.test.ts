@@ -733,18 +733,32 @@ describe('useCommentActions editing', () => {
     expect(findComment(harness, 'c1')?.content).toBe('Existing note');
   });
 
-  // KNOWN BUG, pinned rather than fixed. `editTagId` is typed `string | null`
-  // and initialised to `null`, so the `editTagId !== undefined` guard in the
-  // hook can never be false: every edit PATCH carries a `tagId`, and every
-  // successful edit overwrites the comment's tag with whatever `editTagId`
-  // happens to hold. The comment editor in comments-pane.tsx seeds it from the
-  // comment, but the REPLY editor (comments-pane.tsx, "Edit" on a reply) sets
-  // only editingCommentId and editText, so editing a reply's text silently
-  // sends tagId: null.
-  it('always sends a tagId, and clears the tag, even when the caller never set one', async () => {
+  // `editTagId` was initialised to `null`, so the `editTagId !== undefined` guard could
+  // never be false: every edit PATCH carried a `tagId` and every success overwrote the
+  // comment's tag. The comment editor seeds the value from the comment, but the reply
+  // editor sets only editingCommentId and editText, so editing a reply's text silently
+  // cleared its tag or applied a stale one. `undefined` now means "not managed here".
+  it('sends no tagId when the caller never set one, and leaves the tag alone', async () => {
     const harness = renderActions();
 
     act(() => harness.result.current.actions.setEditText('Reworded note'));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0])).toEqual({
+      content: 'Reworded note',
+    });
+    expect(findComment(harness, 'c1')?.tag).toEqual(TAGS[0]);
+  });
+
+  it('sends tagId: null when the editor explicitly clears the tag', async () => {
+    const harness = renderActions();
+
+    act(() => {
+      harness.result.current.actions.setEditText('Reworded note');
+      harness.result.current.actions.setEditTagId(null);
+    });
     await act(async () => {
       await harness.result.current.actions.handleEditComment('c1');
     });

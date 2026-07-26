@@ -619,18 +619,19 @@ describe('useDownloadActions repeated clicks', () => {
     });
   });
 
-  // KNOWN FRAGILITY, pinned rather than fixed. The in-flight guard reads
-  // `isDownloadingVideo` out of the closure the callback was created in, so two
-  // calls made from the SAME render (a double click landing before React
-  // commits the state update) both get through and the file is fetched twice.
-  it('lets two calls from the same render both through', async () => {
+  // The in-flight guard used to read `isDownloadingVideo` out of the closure the callback
+  // was created in, so two calls made from the SAME render (a double click landing before
+  // React commits the state update) both got through and the file was fetched twice. It
+  // reads a ref now.
+  it('refuses a second call from the same render', async () => {
     const startDownload = renderDownload().result.current.startDownload;
 
     await act(async () => {
       await Promise.all([startDownload(), startDownload()]);
     });
 
-    expect(urlsFetched().filter((url) => url.includes('prepare=1'))).toHaveLength(2);
+    expect(urlsFetched().filter((url) => url.includes('prepare=1'))).toHaveLength(1);
+    expect(clicked).toHaveLength(1);
   });
 
   it('is ready to download again after a failure', async () => {

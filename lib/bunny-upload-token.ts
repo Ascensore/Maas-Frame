@@ -65,6 +65,10 @@ export function createBunnyUploadToken(
 }
 
 export function verifyBunnyUploadToken(token: string, subject: BunnyUploadTokenSubject): boolean {
+  // Resolved before the try. A missing signing secret is a configuration fault, and
+  // swallowing that throw made every upload grant look like a forgery instead.
+  const secret = getBunnyUploadTokenSecret();
+
   try {
     const parts = token.split('.');
     if (parts.length !== 2) return false;
@@ -72,7 +76,7 @@ export function verifyBunnyUploadToken(token: string, subject: BunnyUploadTokenS
     const [encodedPayload, providedSignature] = parts;
     if (!encodedPayload || !providedSignature) return false;
 
-    const expectedSignature = signPayload(encodedPayload, getBunnyUploadTokenSecret());
+    const expectedSignature = signPayload(encodedPayload, secret);
     const providedBuffer = Buffer.from(providedSignature, 'utf8');
     const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
 

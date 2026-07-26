@@ -54,8 +54,17 @@ export function validateAnnotationStrokes(
     }
 
     if (typeof color !== 'string' || !ANNOTATION_COLOR_RE.test(color)) return null;
-    if (typeof width !== 'number' || width < MIN_STROKE_WIDTH || width > MAX_STROKE_WIDTH)
+    // isFinite as well as the bounds: both comparisons are false for NaN, so a NaN width
+    // cleared the range check and reached the stored annotation JSON, where
+    // JSON.stringify renders it as null. Coordinates already had this guard.
+    if (
+      typeof width !== 'number' ||
+      !isFinite(width) ||
+      width < MIN_STROKE_WIDTH ||
+      width > MAX_STROKE_WIDTH
+    ) {
       return null;
+    }
 
     result.push({ points: safePoints, color, width });
   }

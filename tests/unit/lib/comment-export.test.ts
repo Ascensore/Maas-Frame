@@ -327,9 +327,11 @@ describe('buildCommentsCsv', () => {
     expect(line[17]).toBe('"false"');
   });
 
-  it('neutralises a negative timestamp because it starts with a minus sign', () => {
-    // Documents an interaction between the formula guard and numeric cells.
-    expect(csvRows([row({ timestamp: -1 })])[1][8]).toBe(`"'-1.000"`);
+  // The formula guard prefixes an apostrophe to anything starting with =, +, - or @.
+  // Applying it to a plain negative number stopped the spreadsheet reading the cell as a
+  // number at all, which is what a negative timestamp is.
+  it('leaves a negative number readable as a number', () => {
+    expect(csvRows([row({ timestamp: -1 })])[1][8]).toBe(`"-1.000"`);
   });
 
   it('preserves the flattened thread order in the output', () => {

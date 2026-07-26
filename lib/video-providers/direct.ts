@@ -39,12 +39,13 @@ export const directProvider: VideoProvider = {
   getEmbedUrl(videoId: string, options: EmbedOptions = {}): string {
     // For direct videos, we'll use HTML5 video player
     // The videoId IS the URL for direct uploads
-    const params = new URLSearchParams();
+    // A direct video is played by the HTML5 element, which reads the start time from the
+    // media fragment. The URLSearchParams that used to be built here never reached the
+    // returned string; only its emptiness was tested, and the fragment then carried the
+    // unfloored value, so the floor accomplished nothing.
+    const startTime = options.startTime ? Math.floor(options.startTime) : 0;
 
-    if (options.startTime) params.set('t', String(Math.floor(options.startTime)));
-
-    const queryString = params.toString();
-    return `${videoId}${queryString ? `#t=${options.startTime}` : ''}`;
+    return `${videoId}${startTime > 0 ? `#t=${startTime}` : ''}`;
   },
 
   getThumbnailUrl(videoId: string): string {

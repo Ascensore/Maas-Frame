@@ -36,20 +36,24 @@ export function getVideoExtensionFromFileName(fileName: string): string | null {
   return ext;
 }
 
+/**
+ * The file name decides, always. A declared MIME type is a client claim, so trusting it
+ * on its own let `payload.exe` through as long as it said `video/mp4`. The declared type
+ * is only consulted to pick between two types that share an extension.
+ */
 export function resolveVideoContentType(fileName: string, mime: string | undefined): string | null {
+  const ext = getVideoExtensionFromFileName(fileName);
+  if (!ext) return null;
+
+  const typeFromName = EXT_TO_MIME[ext];
+  if (!typeFromName) return null;
+
   const normalizedMime = normalizeVideoMime(mime);
-  if (normalizedMime) {
-    const extFromMime = getVideoExtensionFromMime(normalizedMime);
-    const extFromName = getVideoExtensionFromFileName(fileName);
-    if (extFromMime && extFromName && extFromMime !== extFromName) {
-      return EXT_TO_MIME[extFromName] ?? normalizedMime;
-    }
+  if (normalizedMime && getVideoExtensionFromMime(normalizedMime) === ext) {
     return normalizedMime;
   }
 
-  const ext = getVideoExtensionFromFileName(fileName);
-  if (!ext) return null;
-  return EXT_TO_MIME[ext] ?? null;
+  return typeFromName;
 }
 
 export function isAllowedVideoFile(fileName: string, mime: string | undefined): boolean {

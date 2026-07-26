@@ -243,19 +243,19 @@ describe('CommentRichText asset mentions', () => {
     expect(screen.getByRole('button', { name: '@https://evil.test/x' })).toBeInTheDocument();
   });
 
-  // KNOWN BUG, pinned rather than fixed. `renderUrls` keys its fragments by the
-  // index within its own slice, and CommentRichText calls it once per gap
-  // between mentions, so the same key ("txt-0") is emitted for several
-  // siblings. React logs "Encountered two children with the same key" and warns
-  // that children may be duplicated or omitted. The output happens to be
-  // correct today; the text assertion locks that in, and the warning assertion
-  // is the thing to delete once the keys are made unique.
-  it('produces duplicate React keys when text surrounds a mention', () => {
+  // `renderUrls` used to key its fragments by the index within its own slice, and
+  // CommentRichText calls it once per gap between mentions, so the same key ("txt-0") was
+  // emitted for several siblings and React warned that children may be duplicated or
+  // omitted. The keys carry the slice offset now.
+  it('emits no duplicate React keys when text surrounds a mention', () => {
     const { container } = render(
       <CommentRichText text="Before @[One](asset:aaa111) middle @[Two](asset:bbb222) after" />
     );
 
     expect(container).toHaveTextContent('Before @One middle @Two after');
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('same key'), 'txt-0');
+    expect(consoleError).not.toHaveBeenCalledWith(
+      expect.stringContaining('same key'),
+      expect.anything()
+    );
   });
 });

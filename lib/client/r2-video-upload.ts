@@ -4,6 +4,7 @@ import {
   getPartByteRange,
   getRetryDelayMs,
   getUploadProgressPercent,
+  isRetryableUploadError,
   PART_RETRY_DELAYS_MS,
 } from '@/lib/client/upload-chunking';
 
@@ -33,9 +34,9 @@ export type R2VideoUploadResult = R2VideoInitResponse & {
   thumbnailUrl: string | null;
 };
 
-type UploadProgressHandler = (progress: number) => void;
+export type UploadProgressHandler = (progress: number) => void;
 
-function uploadBytesWithProgress(
+export function uploadBytesWithProgress(
   url: string,
   body: Blob | File,
   contentType: string,
@@ -128,6 +129,9 @@ async function withRetry<T>(fn: () => Promise<T>, delays: number[]): Promise<T> 
       return await fn();
     } catch (error) {
       lastError = error;
+      // An abort or a permanent 4xx will fail the same way every time, so repeating it
+      // only delays the error the caller is waiting for.
+      if (!isRetryableUploadError(error)) break;
     }
   }
   throw lastError instanceof Error ? lastError : new Error('Upload failed after retries');

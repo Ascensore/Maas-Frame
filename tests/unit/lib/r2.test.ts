@@ -284,6 +284,21 @@ describe('createPresignedVideoPutUrl', () => {
     expect(url.searchParams.get('X-Amz-SignedHeaders')?.split(';')).toContain('content-length');
   });
 
+  // Passing ContentType to the command does not bind it. Without the header in the
+  // signature the holder of the url could put any media type at the key.
+  it('binds the content type into the signature', async () => {
+    const url = new URL(await createPresignedVideoPutUrl(VIDEO_KEY, 'video/mp4', BigInt(1024)));
+
+    expect(url.searchParams.get('X-Amz-SignedHeaders')?.split(';')).toContain('content-type');
+  });
+
+  it('produces a different signature for a different content type', async () => {
+    const a = new URL(await createPresignedVideoPutUrl(VIDEO_KEY, 'video/mp4', BigInt(1024)));
+    const b = new URL(await createPresignedVideoPutUrl(VIDEO_KEY, 'video/webm', BigInt(1024)));
+
+    expect(a.searchParams.get('X-Amz-Signature')).not.toBe(b.searchParams.get('X-Amz-Signature'));
+  });
+
   it('produces a different signature for a different key', async () => {
     const a = new URL(await createPresignedVideoPutUrl(VIDEO_KEY, 'video/mp4', BigInt(1024)));
     const b = new URL(
@@ -316,13 +331,19 @@ describe('createPresignedImagePutUrl', () => {
     expect(url.searchParams.get('X-Amz-Expires')).toBe('3600');
   });
 
-  // Documents current behaviour rather than endorsing it: ContentType is passed
-  // to the command but the presigner does not sign it, so the grant does not
-  // pin the uploaded media type. See the note in the review notes.
-  it('does not bind the content type into the signature', async () => {
+  // The image grant used to sign the host alone, so whoever held the url could put any
+  // media type at an `images/` key the app then went on serving as an image.
+  it('binds the content type into the signature', async () => {
     const url = new URL(await createPresignedImagePutUrl('images/avatar.png', 'image/png'));
 
-    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host');
+    expect(url.searchParams.get('X-Amz-SignedHeaders')?.split(';')).toContain('content-type');
+  });
+
+  it('produces a different signature for a different content type', async () => {
+    const a = new URL(await createPresignedImagePutUrl('images/avatar.png', 'image/png'));
+    const b = new URL(await createPresignedImagePutUrl('images/avatar.png', 'image/webp'));
+
+    expect(a.searchParams.get('X-Amz-Signature')).not.toBe(b.searchParams.get('X-Amz-Signature'));
   });
 });
 
@@ -586,15 +607,24 @@ describe('deleteVideoObject and deleteR2Object', () => {
     expect(inputAt(0)).toEqual({ Bucket: BUCKET, Key: 'images/a.png' });
   });
 
+  // uploadAudio() writes under `voice/`, so the allowlist has to include it. Leaving it
+  // out meant a voice note could never be deleted by the module that stored it, and it
+  // outlived the comment it was attached to.
+  it('deletes a voice key, which uploadAudio writes', async () => {
+    await deleteR2Object('voice/note.webm');
+
+    expect(inputAt(0)).toEqual({ Bucket: BUCKET, Key: 'voice/note.webm' });
+  });
+
   // The allowlist is the whole safety story for delete: anything that is not a
-  // video or an image key must never reach DeleteObject.
+  // video, image or voice key must never reach DeleteObject.
   it.each([
-    'voice/note.webm',
     '',
     '/videos/a.mp4',
     'other/videos/a.mp4',
     '../videos/a.mp4',
     'videos',
+    'other/voice/a.webm',
   ])('refuses to delete %s', async (key) => {
     await expect(deleteR2Object(key)).rejects.toThrow('Invalid object key');
     expect(send).not.toHaveBeenCalled();
@@ -728,22 +758,22 @@ describe('ensureR2UploadCors', () => {
     });
   });
 
-  // The try block wraps the write as well as the read, so a write that fails
-  // lands in the same catch as "no config to read" and the retry re-sends only
-  // the managed rule. Asserted as-is; see the review notes.
-  it('drops the pre-existing rules when the first write fails and the retry succeeds', async () => {
+  // The catch covers the read only. Wrapping the write in it too meant a failed write was
+  // mistaken for "no config to read", and the retry then replaced the bucket's existing
+  // rules with the managed one alone.
+  it('propagates a failed write rather than retrying without the pre-existing rules', async () => {
     const existing = { AllowedOrigins: ['https://other.example.com'], AllowedMethods: ['GET'] };
     send
       .mockResolvedValueOnce({ CORSRules: [existing] } as never)
       .mockRejectedValueOnce(s3Error(500))
       .mockResolvedValueOnce({} as never);
 
-    await ensureR2UploadCors();
+    await expect(ensureR2UploadCors()).rejects.toThrow();
 
-    expect(send).toHaveBeenCalledTimes(3);
-    expect(inputAt(2)).toEqual({
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(inputAt(1)).toEqual({
       Bucket: BUCKET,
-      CORSConfiguration: { CORSRules: [managedRule] },
+      CORSConfiguration: { CORSRules: [existing, managedRule] },
     });
   });
 

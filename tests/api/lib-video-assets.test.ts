@@ -18,7 +18,6 @@ import {
   extractVideoFileNameFromProxyUrl,
   extractVideoKeyFromProxyUrl,
   getVideoAssetAccessContext,
-  mediaUrlToR2Key,
   sanitizeAssetDisplayName,
   SAFE_BUNNY_VIDEO_ID,
 } from '@/lib/video-assets';
@@ -132,26 +131,25 @@ describe('proxy URL extraction', () => {
   });
 });
 
-describe('mediaUrlToR2Key', () => {
-  it('derives an image key and a voice key from canonical URLs', () => {
-    expect(mediaUrlToR2Key(IMAGE_URL)).toBe('images/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png');
-    expect(mediaUrlToR2Key(AUDIO_URL)).toBe('voice/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2.webm');
-  });
-
-  it('returns null for a URL that is not an image or audio proxy path', () => {
-    expect(mediaUrlToR2Key(VIDEO_URL)).toBeNull();
-    expect(mediaUrlToR2Key('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
-  });
-
-  // Documented, not endorsed. Unlike extractImageKeyFromProxyUrl this one
-  // matches on a substring with no shape check, so the key it produces is
-  // attacker-shaped whenever the URL is. The module has no callers today; if
-  // one appears it must use the extract* helpers instead. See the report.
-  it('accepts a substring match that the anchored extractor rejects', () => {
+// mediaUrlToR2Key used to live here. It matched the proxy prefix as a substring with no
+// shape check, so `https://evil.test/api/upload/image/../../videos/live.mp4` produced the
+// key `images/../../videos/live.mp4`. It had no callers, so it was deleted rather than
+// reimplemented; the anchored extract* helpers below are what a caller should use.
+describe('the anchored extractors refuse a substring match', () => {
+  it('rejects a hostile url that only contains the proxy prefix', () => {
     const hostile = 'https://evil.test/api/upload/image/../../videos/live.mp4';
 
     expect(extractImageKeyFromProxyUrl(hostile)).toBeNull();
-    expect(mediaUrlToR2Key(hostile)).toBe('images/../../videos/live.mp4');
+    expect(extractImageFileNameFromProxyUrl(hostile)).toBeNull();
+  });
+
+  it('still derives keys from canonical urls', () => {
+    expect(extractImageKeyFromProxyUrl(IMAGE_URL)).toBe(
+      'images/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png'
+    );
+    expect(extractAudioKeyFromProxyUrl(AUDIO_URL)).toBe(
+      'voice/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2.webm'
+    );
   });
 });
 

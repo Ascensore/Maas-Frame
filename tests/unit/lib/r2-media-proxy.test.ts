@@ -26,8 +26,11 @@ vi.mock('@/lib/r2', () => ({
 
 import { proxyR2MediaObject } from '@/lib/r2-media-proxy';
 
+/** A stored media key as the routes build one: a prefix plus a uuid file name. */
+const SAFE_KEY = 'images/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png';
+
 const BASE_OPTIONS = {
-  key: 'images/photo.png',
+  key: SAFE_KEY,
   fallbackContentType: 'image/png',
   cacheControl: 'private, no-store',
   internalErrorMessage: 'Failed to retrieve image',
@@ -83,25 +86,37 @@ describe('key handling', () => {
 
     await proxyR2MediaObject({ ...BASE_OPTIONS, request: request() });
 
-    expect(commandInput()).toMatchObject({ Bucket: 'test-bucket', Key: 'images/photo.png' });
+    expect(commandInput()).toMatchObject({ Bucket: 'test-bucket', Key: SAFE_KEY });
   });
 
-  // Pinning the absence of validation, not endorsing it. This module applies no
-  // normalisation and no prefix check to `key`, so a caller that builds one from
-  // unvalidated input hands the traversal straight to S3. Today all three call
-  // sites gate the filename on a UUID regex first, which is the only reason this
-  // is not reachable. If a fourth route ever skips that regex, nothing in this
-  // module will stop it. See the report accompanying this suite.
-  it('passes a traversal-shaped key through untouched', async () => {
+  // The guard lives here rather than in each caller, so it travels with the function. All
+  // three call sites gate the file name on a uuid pattern first; a fourth that forgot
+  // would otherwise hand the traversal straight to GetObject.
+  it.each([
+    ['a traversal segment', 'images/../../etc/passwd'],
+    ['a nested path', 'images/nested/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png'],
+    ['a non-uuid basename', 'images/photo.png'],
+    ['an unknown prefix', 'secrets/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png'],
+    ['no prefix at all', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png'],
+    ['a trailing segment', 'images/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png/../x'],
+    ['an empty key', ''],
+  ])('refuses %s with a 400 and never reaches storage', async (_label, key) => {
+    const response = await proxyR2MediaObject({ ...BASE_OPTIONS, key, request: request() });
+
+    expect(response.status).toBe(400);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['images/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1.png'],
+    ['voice/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2.webm'],
+    ['videos/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3.mp4'],
+  ])('accepts the stored key shape %s', async (key) => {
     sendMock.mockResolvedValue(objectWith());
 
-    await proxyR2MediaObject({
-      ...BASE_OPTIONS,
-      key: 'images/../../etc/passwd',
-      request: request(),
-    });
+    await proxyR2MediaObject({ ...BASE_OPTIONS, key, request: request() });
 
-    expect(commandInput().Key).toBe('images/../../etc/passwd');
+    expect(commandInput().Key).toBe(key);
   });
 
   it('sends no Range or conditional fields when the request has no range header', async () => {

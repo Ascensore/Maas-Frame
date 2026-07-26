@@ -97,10 +97,11 @@ export const VersionActionsDialog = memo(function VersionActionsDialog({
 
           {newVersionMode === 'url' ? (
             <div className="space-y-2">
-              <Label>Video URL</Label>
+              <Label htmlFor="versionUrl">Video URL</Label>
               <div className="relative">
                 <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
+                  id="versionUrl"
                   placeholder="https://youtube.com/watch?v=..."
                   value={newVersionUrl}
                   onChange={(e) => onNewVersionUrlChange(e.target.value)}
@@ -173,8 +174,9 @@ export const VersionActionsDialog = memo(function VersionActionsDialog({
           )}
 
           <div className="space-y-2">
-            <Label>Version Label (optional)</Label>
+            <Label htmlFor="versionLabel">Version Label (optional)</Label>
             <Input
+              id="versionLabel"
               placeholder="e.g. Final Cut, Review Round 2"
               value={newVersionLabel}
               onChange={(e) => onNewVersionLabelChange(e.target.value)}

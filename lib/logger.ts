@@ -23,12 +23,18 @@ function sanitizeError(err: unknown): SanitizedError | unknown {
     return err;
   }
 
-  const name = err.constructor?.name ?? err.name ?? 'Error';
+  const constructorName = err.constructor?.name;
+  const name = constructorName || err.name || 'Error';
   const anyErr = err as unknown as Record<string, unknown>;
 
   // Prisma client errors: their `.message` can embed raw SQL, WHERE-clause
   // values, and schema internals. Only safe to expose the Prisma error code.
-  if (name.startsWith('PrismaClient')) {
+  //
+  // Both names are checked. An Error instance always has a constructor, so keying on
+  // `constructor.name` alone would silently stop redacting for an error that identifies
+  // itself only through `name`: one that was re-thrown or deserialised and lost its
+  // prototype, or a production build whose minifier renamed the class.
+  if (name.startsWith('PrismaClient') || err.name.startsWith('PrismaClient')) {
     const code = typeof anyErr.code === 'string' ? anyErr.code : 'UNKNOWN';
     return {
       type: 'PrismaError',
@@ -58,4 +64,16 @@ function sanitizeError(err: unknown): SanitizedError | unknown {
  */
 export function logError(context: string, err: unknown): void {
   console.error(context, sanitizeError(err));
+}
+
+/**
+ * Log a configuration or operational warning. Same sanitisation as {@link logError} for
+ * the optional detail, so a warning cannot become the leak the error path guards against.
+ */
+export function logWarn(context: string, detail?: unknown): void {
+  if (detail === undefined) {
+    console.warn(context);
+    return;
+  }
+  console.warn(context, sanitizeError(detail));
 }

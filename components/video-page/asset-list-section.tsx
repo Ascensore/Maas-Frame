@@ -20,7 +20,7 @@ interface AssetListSectionProps {
   bunnyProcessingByAssetId: Record<string, boolean>;
   bunnyReadyByAssetId: Record<string, boolean>;
   activeDownloadAssetId: string | null;
-  activeDeleteAssetId: string | null;
+  deletingAssetIds: string[];
   canDownloadAssets: boolean;
   hasMoreAssets: boolean;
   isLoadingMoreAssets: boolean;
@@ -38,7 +38,7 @@ export const AssetListSection = memo(function AssetListSection({
   bunnyProcessingByAssetId,
   bunnyReadyByAssetId,
   activeDownloadAssetId,
-  activeDeleteAssetId,
+  deletingAssetIds,
   canDownloadAssets,
   hasMoreAssets,
   isLoadingMoreAssets,
@@ -186,10 +186,10 @@ export const AssetListSection = memo(function AssetListSection({
                     className="h-7 w-7"
                     title="Delete asset"
                     aria-label="Delete asset"
-                    disabled={activeDeleteAssetId === asset.id}
+                    disabled={deletingAssetIds.includes(asset.id)}
                     onClick={() => onDeleteAsset(asset.id)}
                   >
-                    {activeDeleteAssetId === asset.id ? (
+                    {deletingAssetIds.includes(asset.id) ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
                     ) : (
                       <Trash2 className="h-3 w-3" />

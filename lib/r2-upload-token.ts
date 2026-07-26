@@ -100,6 +100,12 @@ export function verifyR2UploadToken(token: string, subject: R2UploadTokenSubject
 }
 
 export function parseR2UploadToken(token: string): R2UploadTokenPayload | null {
+  // Resolved before the try. A server booted with neither R2_UPLOAD_TOKEN_SECRET nor
+  // NEXTAUTH_SECRET set is misconfigured, and swallowing that throw made it answer
+  // "invalid token" for every upload grant: a total upload outage that looks like a
+  // client bug and says nothing about why.
+  const secret = getR2UploadTokenSecret();
+
   try {
     const parts = token.split('.');
     if (parts.length !== 2) return null;
@@ -107,7 +113,7 @@ export function parseR2UploadToken(token: string): R2UploadTokenPayload | null {
     const [encodedPayload, providedSignature] = parts;
     if (!encodedPayload || !providedSignature) return null;
 
-    const expectedSignature = signPayload(encodedPayload, getR2UploadTokenSecret());
+    const expectedSignature = signPayload(encodedPayload, secret);
     const providedBuffer = Buffer.from(providedSignature, 'utf8');
     const expectedBuffer = Buffer.from(expectedSignature, 'utf8');
 

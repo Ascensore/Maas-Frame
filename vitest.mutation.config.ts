@@ -1,5 +1,4 @@
 import { defineConfig } from 'vitest/config';
-import tsconfigPaths from 'vite-tsconfig-paths';
 
 // The Vitest config StrykerJS runs against, kept apart from vitest.config.ts on
 // purpose.
@@ -18,10 +17,12 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 // report every one of its mutants as survived, and a report that is mostly noise
 // gets ignored.
 export default defineConfig({
-  plugins: [tsconfigPaths()],
+  // Same as the root config: Vite 8 resolves the tsconfig `paths` itself.
+  resolve: { tsconfigPaths: true },
   test: {
     environment: 'node',
     include: ['tests/unit/**/*.test.ts'],
+    setupFiles: ['tests/setup/unit.ts'],
     // Same reason as the root config: next-auth's lib/env.js imports the
     // extensionless specifier 'next/server', which Node's ESM resolver cannot
     // resolve, so it has to go through Vite's resolver instead of being

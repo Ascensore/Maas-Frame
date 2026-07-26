@@ -1,4 +1,5 @@
 import { captureVideoThumbnail } from '@/lib/client/video-thumbnail';
+import { uploadBytesWithProgress, type UploadProgressHandler } from '@/lib/client/r2-video-upload';
 
 export type R2AssetVideoInitResponse = {
   presignedPutUrl: string;
@@ -16,44 +17,8 @@ export type R2AssetVideoUploadResult = R2AssetVideoInitResponse & {
   thumbnailUrl: string | null;
 };
 
-type UploadProgressHandler = (progress: number) => void;
-
-function uploadBytesWithProgress(
-  url: string,
-  body: Blob | File,
-  contentType: string,
-  onProgress?: UploadProgressHandler
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('PUT', url);
-    xhr.setRequestHeader('Content-Type', contentType);
-
-    xhr.upload.onprogress = (event) => {
-      if (!onProgress || !event.lengthComputable) return;
-      onProgress(Math.round((event.loaded / event.total) * 100));
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-        return;
-      }
-      reject(new Error(`Upload failed with status ${xhr.status}`));
-    };
-
-    xhr.onerror = () => {
-      reject(
-        new Error(
-          'Network error during upload. If you use direct S3/R2 uploads, configure bucket CORS to allow PUT from this site origin.'
-        )
-      );
-    };
-    xhr.onabort = () => reject(new Error('Upload aborted'));
-
-    xhr.send(body);
-  });
-}
+// uploadBytesWithProgress used to be duplicated here, progress arithmetic included. There
+// is one copy now, in r2-video-upload.ts, which is where the multipart path already lives.
 
 export async function initR2AssetVideoUpload(
   videoId: string,

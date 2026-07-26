@@ -30,7 +30,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     const isOwner = project.ownerId === session.user.id;
     const isAdmin = project.members[0]?.role === ProjectMemberRole.ADMIN;
 
@@ -93,7 +93,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     const isOwner = project.ownerId === session.user.id;
     const isAdmin = project.members[0]?.role === ProjectMemberRole.ADMIN;
 

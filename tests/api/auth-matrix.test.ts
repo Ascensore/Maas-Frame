@@ -765,7 +765,21 @@ const NON_AUTHORIZATION_REFUSALS = new Map<string, string>();
  * fails and tells you to delete it, so nothing can rot into a permanent
  * exemption.
  */
-const NOT_FOUND_IS_THE_GUARD = new Map<string, string>();
+const NOT_FOUND_IS_THE_GUARD = new Map<string, string>([
+  // Both download routes take a bare resource id with no project in the path, so a 403
+  // for an id belonging to another tenant would confirm that the id exists. They answer
+  // 404 to any caller with no relationship to the project, which is what
+  // versions/[versionId]/comments/export has always done for the identical shape.
+  // Somebody who does belong, an owner whose billing lapsed for instance, still gets 403.
+  [
+    'GET versions/[versionId]/download/route.ts',
+    'hides whether the version id exists from a caller with no relationship to it',
+  ],
+  [
+    'GET videos/[videoId]/assets/[assetId]/download/route.ts',
+    'hides whether the video id exists from a caller with no relationship to it',
+  ],
+]);
 
 function discoverRouteModules(): string[] {
   const apiDir = path.join(REPO_ROOT, 'app', 'api');

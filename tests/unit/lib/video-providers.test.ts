@@ -258,13 +258,20 @@ describe('direct and r2 embed urls', () => {
     expect(getEmbedUrl({ providerId: 'direct', videoId: url, originalUrl: url })).toBe(url);
   });
 
-  // The direct provider floors the start time into the query params but then
-  // appends the unfloored value as the media fragment. Asserted as-is.
-  it('appends the unfloored start time as a media fragment for a direct url', () => {
+  // The fragment carries the floored value. It used to carry the unfloored one, which
+  // made the floor a step above it accomplish nothing.
+  it('appends the floored start time as a media fragment for a direct url', () => {
     const url = 'https://cdn.example.com/clip.mp4';
     expect(
       getEmbedUrl({ providerId: 'direct', videoId: url, originalUrl: url }, { startTime: 30.5 })
-    ).toBe(`${url}#t=30.5`);
+    ).toBe(`${url}#t=30`);
+  });
+
+  it('appends no fragment when the start time floors to zero', () => {
+    const url = 'https://cdn.example.com/clip.mp4';
+    expect(
+      getEmbedUrl({ providerId: 'direct', videoId: url, originalUrl: url }, { startTime: 0.4 })
+    ).toBe(url);
   });
 
   it('uses a query parameter rather than a fragment for an r2 proxy path', () => {

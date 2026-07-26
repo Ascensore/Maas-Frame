@@ -8,6 +8,7 @@ import {
   emailHighlight,
   emailRow,
   escapeHtml,
+  rawEmailHtml,
 } from '@/lib/email-brand';
 import { logError } from '@/lib/logger';
 
@@ -311,15 +312,15 @@ function formatEmail(
       return {
         subject: `[OpenFrame] New video in ${event.projectName}: ${event.videoTitle}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#9654;', 'New Video Added')}</tr>
+                    <tr>${emailHeading('▶', 'New Video Added')}</tr>
                     <tr><td style="padding:20px;">
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:20px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Added by', escapeHtml(event.addedBy))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Added by', event.addedBy)}
                         ${emailRow('When', now)}
                       </table>
-                      ${emailButton('View Video  &#8594;', event.url)}
+                      ${emailButton('View Video  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -327,16 +328,16 @@ function formatEmail(
       return {
         subject: `[OpenFrame] New version of ${event.videoTitle} in ${event.projectName}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#9654;', 'New Version Added')}</tr>
+                    <tr>${emailHeading('▶', 'New Version Added')}</tr>
                     <tr><td style="padding:20px;">
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:20px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Version', escapeHtml(event.versionLabel))}
-                        ${emailRow('Added by', escapeHtml(event.addedBy))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Version', event.versionLabel)}
+                        ${emailRow('Added by', event.addedBy)}
                         ${emailRow('When', now)}
                       </table>
-                      ${emailButton('View Version  &#8594;', event.url)}
+                      ${emailButton('View Version  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -344,19 +345,19 @@ function formatEmail(
       return {
         subject: `[OpenFrame] New comment on ${event.videoTitle}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#9679;', 'New Comment')}</tr>
+                    <tr>${emailHeading('●', 'New Comment')}</tr>
                     <tr><td style="padding:20px;">
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('From', escapeHtml(event.commentAuthor))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('From', event.commentAuthor)}
                         ${emailRow('At', event.timestamp)}
                         ${emailRow('When', now)}
                       </table>
                       <div style="border-left:2px solid #7aa7ff;padding:10px 14px;margin:0 0 20px;background-color:#2f2f2f;color:#c6c6cc;font-size:13px;line-height:1.6;">
                         ${escapeHtml(truncate(event.commentText, 300))}
                       </div>
-                      ${emailButton('View Comment  &#8594;', event.url)}
+                      ${emailButton('View Comment  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -364,18 +365,18 @@ function formatEmail(
       return {
         subject: `[OpenFrame] ${event.replyAuthor} replied on ${event.videoTitle}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#8617;', 'New Reply')}</tr>
+                    <tr>${emailHeading('↵', 'New Reply')}</tr>
                     <tr><td style="padding:20px;">
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('From', `<span style="color:${EMAIL_COLORS.text};font-weight:500;">${escapeHtml(event.replyAuthor)}</span> <span style="color:${EMAIL_COLORS.textDim};">&#8594;</span> ${escapeHtml(event.parentAuthor)}`)}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('From', rawEmailHtml(`<span style="color:${EMAIL_COLORS.text};font-weight:500;">${escapeHtml(event.replyAuthor)}</span> <span style="color:${EMAIL_COLORS.textDim};">&#8594;</span> ${escapeHtml(event.parentAuthor)}`))}
                         ${emailRow('When', now)}
                       </table>
                       <div style="border-left:2px solid #7aa7ff;padding:10px 14px;margin:0 0 20px;background-color:#2f2f2f;color:#c6c6cc;font-size:13px;line-height:1.6;">
                         ${escapeHtml(truncate(event.replyText, 300))}
                       </div>
-                      ${emailButton('View Reply  &#8594;', event.url)}
+                      ${emailButton('View Reply  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -383,18 +384,18 @@ function formatEmail(
       return {
         subject: `[OpenFrame] Approval requested for ${event.versionLabel} in ${event.projectName}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#10003;', 'Approval Requested')}</tr>
+                    <tr>${emailHeading('✓', 'Approval Requested')}</tr>
                     <tr><td style="padding:20px;">
                       ${emailHighlight(`A new approval request is waiting for your response.`)}
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Version', escapeHtml(event.versionLabel))}
-                        ${emailRow('Requested by', escapeHtml(event.requestedBy))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Version', event.versionLabel)}
+                        ${emailRow('Requested by', event.requestedBy)}
                         ${emailRow('When', now)}
                       </table>
                       ${event.message ? `<div style="border-left:2px solid #7aa7ff;padding:10px 14px;margin:0 0 20px;background-color:#2f2f2f;color:#c6c6cc;font-size:13px;line-height:1.6;">${escapeHtml(truncate(event.message, 300))}</div>` : ''}
-                      ${emailButton('Review Request  &#8594;', event.url)}
+                      ${emailButton('Review Request  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -402,18 +403,18 @@ function formatEmail(
       return {
         subject: `[OpenFrame] Approval ${event.action} by ${event.actorName}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#10003;', 'Approval Update')}</tr>
+                    <tr>${emailHeading('✓', 'Approval Update')}</tr>
                     <tr><td style="padding:20px;">
-                      ${emailHighlight(`${escapeHtml(event.actorName)} ${escapeHtml(event.action)} this request.`)}
+                      ${emailHighlight(`${event.actorName} ${event.action} this request.`)}
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Version', escapeHtml(event.versionLabel))}
-                        ${emailRow('Action', escapeHtml(`${event.actorName} ${event.action}`))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Version', event.versionLabel)}
+                        ${emailRow('Action', `${event.actorName} ${event.action}`)}
                         ${emailRow('When', now)}
                       </table>
                       ${event.note ? `<div style="border-left:2px solid #7aa7ff;padding:10px 14px;margin:0 0 20px;background-color:#2f2f2f;color:#c6c6cc;font-size:13px;line-height:1.6;">${escapeHtml(truncate(event.note, 300))}</div>` : ''}
-                      ${emailButton('Open Request  &#8594;', event.url)}
+                      ${emailButton('Open Request  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -421,17 +422,17 @@ function formatEmail(
       return {
         subject: `[OpenFrame] Approval completed for ${event.versionLabel}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#10003;', 'Approval Completed')}</tr>
+                    <tr>${emailHeading('✓', 'Approval Completed')}</tr>
                     <tr><td style="padding:20px;">
                       ${emailHighlight(`All approvers accepted this request.`)}
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:20px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Version', escapeHtml(event.versionLabel))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Version', event.versionLabel)}
                         ${emailRow('Approvals', String(event.approvedByCount))}
                         ${emailRow('When', now)}
                       </table>
-                      ${emailButton('Open Version  &#8594;', event.url)}
+                      ${emailButton('Open Version  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -439,18 +440,18 @@ function formatEmail(
       return {
         subject: `[OpenFrame] Approval rejected by ${event.rejectedBy}`,
         html: emailTemplate(`
-                    <tr>${emailHeading('&#9940;', 'Approval Rejected')}</tr>
+                    <tr>${emailHeading('⛔', 'Approval Rejected')}</tr>
                     <tr><td style="padding:20px;">
-                      ${emailHighlight(`${escapeHtml(event.rejectedBy)} rejected this request.`)}
+                      ${emailHighlight(`${event.rejectedBy} rejected this request.`)}
                       <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
-                        ${emailRow('Project', escapeHtml(event.projectName), true)}
-                        ${emailRow('Video', escapeHtml(event.videoTitle), true)}
-                        ${emailRow('Version', escapeHtml(event.versionLabel))}
-                        ${emailRow('Rejected by', escapeHtml(event.rejectedBy))}
+                        ${emailRow('Project', event.projectName, true)}
+                        ${emailRow('Video', event.videoTitle, true)}
+                        ${emailRow('Version', event.versionLabel)}
+                        ${emailRow('Rejected by', event.rejectedBy)}
                         ${emailRow('When', now)}
                       </table>
                       ${event.note ? `<div style="border-left:2px solid #7aa7ff;padding:10px 14px;margin:0 0 20px;background-color:#2f2f2f;color:#c6c6cc;font-size:13px;line-height:1.6;">${escapeHtml(truncate(event.note, 300))}</div>` : ''}
-                      ${emailButton('Open Request  &#8594;', event.url)}
+                      ${emailButton('Open Request  →', event.url)}
                     </td></tr>
                 `),
       };
@@ -462,7 +463,7 @@ function formatEmail(
  */
 export function testEmailHtml(): string {
   return emailTemplate(`
-        <tr>${emailHeading('&#10003;', 'Test Notification')}</tr>
+        <tr>${emailHeading('✓', 'Test Notification')}</tr>
         <tr><td style="padding:20px;">
           <p style="margin:0 0 8px;font-size:14px;color:${EMAIL_COLORS.text};">Email notifications are working.</p>
           <p style="margin:0;font-size:13px;color:${EMAIL_COLORS.textSecondary};">You&rsquo;ll receive emails when there&rsquo;s activity on your projects.</p>

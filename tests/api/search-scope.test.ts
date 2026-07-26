@@ -297,14 +297,14 @@ describe('GET /api/search reaches everything the caller is entitled to', () => {
 // ---------------------------------------------------------------------------
 // Billing
 // ---------------------------------------------------------------------------
-// Pins current behaviour, and the behaviour is inconsistent. See the report
-// accompanying this suite: GET /api/projects filters every row through
-// `workspace.owner: buildBillingAccessWhereInput()`, and `checkProjectAccess()`
-// makes `hasAccess` false the moment the workspace owner's billing lapses, so
-// the project itself answers 403. /api/search applies no billing filter at all
-// and keeps returning the names. Changing that means changing this test.
+// Search carries the same billing condition every other read path does. It used to carry
+// none: GET /api/projects filters every row through
+// `workspace.owner: buildBillingAccessWhereInput()`, and `checkProjectAccess()` makes
+// `hasAccess` false the moment the workspace owner's billing lapses, so the project
+// itself answers 403, while search went on returning names, descriptions and video
+// titles for the same tenant.
 describe('GET /api/search and lapsed billing', () => {
-  it('keeps returning a project whose workspace owner has lost billing access', async () => {
+  it('hides a project whose workspace owner has lost billing access', async () => {
     const term = uniqueTerm();
     const expiredOwner = await createExpiredUser();
     await seedProject({ ownerUser: expiredOwner, projectName: `${term} lapsed project` });
@@ -312,11 +312,22 @@ describe('GET /api/search and lapsed billing', () => {
 
     const results = await searchFor(term);
 
-    expect(results.projects.map((entry) => entry.name)).toEqual([`${term} lapsed project`]);
+    expect(results.projects).toEqual([]);
   });
 
-  // The same caller, the same row, through the list endpoint instead. This is
-  // the contrast that makes the case above a finding rather than a preference.
+  // The positive control: the same shape with billing intact still comes back, so the
+  // assertion above is about billing and not about the fixture failing to seed.
+  it('still returns a project whose workspace owner is paying', async () => {
+    const term = uniqueTerm();
+    const scenario = await seedProject({ projectName: `${term} live project` });
+    signedInAs(scenario.owner);
+
+    const results = await searchFor(term);
+
+    expect(results.projects.map((entry) => entry.name)).toEqual([`${term} live project`]);
+  });
+
+  // The same caller, the same row, through the list endpoint instead: the two agree now.
   it('is hidden from GET /api/projects for the same caller and the same row', async () => {
     const expiredOwner = await createExpiredUser();
     await seedProject({ ownerUser: expiredOwner, projectName: 'Lapsed project' });
@@ -329,7 +340,7 @@ describe('GET /api/search and lapsed billing', () => {
     expect(projects).toEqual([]);
   });
 
-  it('keeps returning a video title from a lapsed workspace to a collaborator', async () => {
+  it('hides a video title from a lapsed workspace, even from a collaborator', async () => {
     const term = uniqueTerm();
     const expiredOwner = await createExpiredUser();
     const { project } = await seedProject({ ownerUser: expiredOwner });
@@ -340,6 +351,20 @@ describe('GET /api/search and lapsed billing', () => {
 
     const results = await searchFor(term);
 
-    expect(results.videos.map((entry) => entry.title)).toEqual([`${term} lapsed cut`]);
+    expect(results.videos).toEqual([]);
+  });
+
+  it('still returns a video title to a collaborator while the owner is paying', async () => {
+    const term = uniqueTerm();
+    const { project } = await seedProject();
+
+    await createVideo({ projectId: project.id, title: `${term} live cut` });
+    const collaborator = await createUser();
+    await addProjectMember({ projectId: project.id, userId: collaborator.id });
+    signedInAs(collaborator);
+
+    const results = await searchFor(term);
+
+    expect(results.videos.map((entry) => entry.title)).toEqual([`${term} live cut`]);
   });
 });

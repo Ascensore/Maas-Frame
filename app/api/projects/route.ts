@@ -42,22 +42,15 @@ export async function GET(request: NextRequest) {
       return apiErrors.badRequest('Invalid page range. Offset must be 10000 or less.');
     }
 
-    // Build base filter: user is owner OR a member
+    // Build base filter: user is the project owner, a project member, or a member of the
+    // workspace the project lives in. The third branch used to be dropped whenever a
+    // workspaceId was supplied, so filtering by their own workspace showed a workspace
+    // member an empty list while the unfiltered call returned the same project.
     const baseFilter: Record<string, unknown> = {
       OR: [
         { ownerId: session.user.id },
         { members: { some: { userId: session.user.id } } },
-        // Also include projects in workspaces where the user is a workspace member
-        ...(workspaceId
-          ? []
-          : [
-              {
-                workspace: {
-                  owner: buildBillingAccessWhereInput(),
-                  members: { some: { userId: session.user.id } },
-                },
-              },
-            ]),
+        { workspace: { members: { some: { userId: session.user.id } } } },
       ],
       workspace: {
         owner: buildBillingAccessWhereInput(),

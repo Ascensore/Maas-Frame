@@ -53,6 +53,7 @@ export function getPartByteRange(
 
 /** Whole-percent progress for a single-request upload. */
 export function getUploadProgressPercent(loadedBytes: number, totalBytes: number): number {
+  if (totalBytes <= 0) return 0;
   return Math.round((loadedBytes / totalBytes) * 100);
 }
 
@@ -60,11 +61,43 @@ export function getUploadProgressPercent(loadedBytes: number, totalBytes: number
  * Whole-percent progress across a multipart upload, given the bytes reported so
  * far for each part. Clamped at 100: parts report their own progress
  * independently and a re-tried part can briefly double-count.
+ *
+ * A total of zero reports 0 rather than dividing. The division produced NaN, which
+ * reached the UI as "Uploading... NaN%".
  */
 export function getMultipartProgressPercent(
   loadedBytesPerPart: number[],
   totalBytes: number
 ): number {
+  if (totalBytes <= 0) return 0;
   const loaded = loadedBytesPerPart.reduce((sum, value) => sum + value, 0);
   return Math.min(100, Math.round((loaded / totalBytes) * 100));
+}
+
+/**
+ * Whether a failed attempt is worth repeating.
+ *
+ * The retry loop used to repeat every rejection, including the user's own cancellation
+ * and permanently-failing statuses. Cancelling an upload therefore did not cancel it: the
+ * part sat through the full 2s, 5s and 10s backoff and fired three more PUTs before the
+ * error surfaced. An expired presigned URL behaved the same way, turning one dead part
+ * into four requests and 17 seconds of apparent hanging.
+ */
+export function isRetryableUploadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/aborted/i.test(message)) return false;
+
+  const status = statusFromUploadErrorMessage(message);
+  if (status === null) return true; // A network error has no status and is worth a retry.
+  if (status === 408 || status === 429) return true;
+  return status < 400 || status >= 500;
+}
+
+/** The status code an upload error message carries, if it carries one. */
+export function statusFromUploadErrorMessage(message: string): number | null {
+  const match = /failed with status (\d{3})\b/i.exec(message);
+  if (!match) return null;
+  const status = Number(match[1]);
+  return Number.isFinite(status) ? status : null;
 }

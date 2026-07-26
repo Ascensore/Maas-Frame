@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   RATE_LIMIT_CONFIGS,
@@ -16,6 +17,17 @@ vi.mock('@/lib/db', () => ({ db: dbMock, default: dbMock, disconnectDb: vi.fn() 
 
 function requestWith(headers: Record<string, string>): Request {
   return new Request('https://example.com/api/comments', { headers });
+}
+
+/**
+ * The interpolated values of the most recent `$queryRaw` tagged template, in order:
+ * the stored key, the stored action, then the window length twice.
+ */
+function valuesOfLastQuery(): unknown[] {
+  const calls = dbMock.$queryRaw.mock.calls;
+  const last = calls[calls.length - 1];
+  if (!last) throw new Error('no $queryRaw call was recorded');
+  return last.slice(1);
 }
 
 beforeEach(() => {
@@ -221,24 +233,68 @@ describe('checkRateLimit', () => {
     expect(dbMock.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the query for an over-long key', async () => {
-    const result = await checkRateLimit('k'.repeat(257), 'comment');
-
-    expect(result.allowed).toBe(true);
-    expect(dbMock.$queryRaw).not.toHaveBeenCalled();
-  });
-
-  it('queries for a key at exactly the 256 character limit', async () => {
+  // A key wider than rate_limits.key used to be skipped, which meant no limit applied at
+  // all. It is hashed instead, so the query still runs and the caller is still counted.
+  it('hashes a key wider than the column instead of skipping the query', async () => {
     dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
 
     await checkRateLimit('k'.repeat(256), 'comment');
 
     expect(dbMock.$queryRaw).toHaveBeenCalledTimes(1);
+    const storedKey = valuesOfLastQuery()[0] as string;
+    expect(storedKey).toBe(createHash('sha256').update('k'.repeat(256)).digest('hex'));
+    expect(storedKey.length).toBeLessThanOrEqual(255);
   });
 
-  it('skips the query for an over-long action', async () => {
-    await checkRateLimit('1.2.3.4', 'a'.repeat(65));
-    expect(dbMock.$queryRaw).not.toHaveBeenCalled();
+  it('gives the same over-long key the same bucket every time', async () => {
+    dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
+
+    await checkRateLimit('k'.repeat(300), 'comment');
+    const first = valuesOfLastQuery()[0];
+    await checkRateLimit('k'.repeat(300), 'comment');
+    const second = valuesOfLastQuery()[0];
+
+    expect(first).toBe(second);
+  });
+
+  it('gives two different over-long keys different buckets', async () => {
+    dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
+
+    await checkRateLimit(`a${'k'.repeat(300)}`, 'comment');
+    const first = valuesOfLastQuery()[0];
+    await checkRateLimit(`b${'k'.repeat(300)}`, 'comment');
+    const second = valuesOfLastQuery()[0];
+
+    expect(first).not.toBe(second);
+  });
+
+  it('passes a key that fits the column through untouched', async () => {
+    dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
+
+    await checkRateLimit('k'.repeat(255), 'comment');
+
+    expect(valuesOfLastQuery()[0]).toBe('k'.repeat(255));
+  });
+
+  it('hashes an action wider than its narrower column', async () => {
+    dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
+
+    await checkRateLimit('1.2.3.4', 'a'.repeat(51));
+
+    expect(dbMock.$queryRaw).toHaveBeenCalledTimes(1);
+    const storedAction = valuesOfLastQuery()[1] as string;
+    expect(storedAction).toBe(
+      createHash('sha256').update('a'.repeat(51)).digest('hex').slice(0, 50)
+    );
+    expect(storedAction.length).toBe(50);
+  });
+
+  it('passes an action that fits its column through untouched', async () => {
+    dbMock.$queryRaw.mockResolvedValue(rowsWithCount(1));
+
+    await checkRateLimit('1.2.3.4', 'comment');
+
+    expect(valuesOfLastQuery()[1]).toBe('comment');
   });
 
   it('reports the remaining budget and the reset instant from the stored window', async () => {

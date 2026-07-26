@@ -2,7 +2,7 @@ import { unstable_cache } from 'next/cache';
 import { db } from '@/lib/db';
 import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
 import { ListObjectsV2Command, type ListObjectsV2CommandInput } from '@aws-sdk/client-s3';
-import { isBunnyUploadsFeatureEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
+import { isBunnyUploadsEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
 import { getStripe, getStripePriceId } from '@/lib/stripe';
 import { logError } from '@/lib/logger';
 
@@ -117,14 +117,31 @@ async function getR2StorageSnapshot(): Promise<R2StorageSnapshot> {
 }
 
 export async function refreshR2StorageSnapshot(): Promise<string> {
-  const snapshot = await buildR2StorageSnapshot();
-  globalForAdminStats.adminR2StorageSnapshot = snapshot;
-  globalForAdminStats.adminR2StorageSnapshotPromise = undefined;
-  return snapshot.refreshedAt;
+  // Single-flight. The promise slot was declared and cleared but never read, so two
+  // concurrent admin refreshes each walked the whole bucket. A second caller now joins
+  // the walk already in progress.
+  const inFlight = globalForAdminStats.adminR2StorageSnapshotPromise;
+  if (inFlight) {
+    return (await inFlight).refreshedAt;
+  }
+
+  const pending = buildR2StorageSnapshot();
+  globalForAdminStats.adminR2StorageSnapshotPromise = pending;
+  try {
+    const snapshot = await pending;
+    globalForAdminStats.adminR2StorageSnapshot = snapshot;
+    return snapshot.refreshedAt;
+  } finally {
+    globalForAdminStats.adminR2StorageSnapshotPromise = undefined;
+  }
 }
 
 async function fetchBunnyStorageStats(): Promise<BunnyStorageStats> {
-  if (!isBunnyUploadsFeatureEnabled()) {
+  // isBunnyUploadsEnabled(), not isBunnyUploadsFeatureEnabled(): the flag alone defaults
+  // to on, so a self-hosted install that never configured Bunny threw
+  // "Missing Bunny Stream credentials." out of getBunnyConfig() below and the dashboard
+  // reported -1 instead of zero.
+  if (!isBunnyUploadsEnabled()) {
     return { totalBytes: 0, byVideoId: {} };
   }
 
@@ -219,7 +236,12 @@ export const getCachedUserBunnyStorage = unstable_cache(
             video: {
               select: {
                 project: {
-                  select: { ownerId: true },
+                  // The workspace owner, not the project owner. lib/storage-quota.ts bills
+                  // R2 versions to the workspace owner and comment media below does the
+                  // same, and getCachedUserBunnyStorage feeds getUserTotalStorageBytes, so
+                  // the moment project and workspace ownership can differ one workspace's
+                  // Bunny bytes and its R2 bytes would count against two different quotas.
+                  select: { workspace: { select: { ownerId: true } } },
                 },
               },
             },
@@ -239,7 +261,7 @@ export const getCachedUserBunnyStorage = unstable_cache(
 
       const seenVideoIds = new Set<string>();
       for (const version of bunnyVersions) {
-        const ownerId = version.video.project.ownerId;
+        const ownerId = version.video.project.workspace.ownerId;
         const dedupeKey = `${ownerId}:${version.videoId}`;
         if (seenVideoIds.has(dedupeKey)) continue;
         seenVideoIds.add(dedupeKey);
@@ -427,6 +449,8 @@ export interface StripeStats {
   pastDueUsers: number;
   canceledUsers: number;
   freeUsers: number;
+  /** UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED, which belong to none of the buckets above. */
+  otherStatusUsers: number;
   mrrCents: number;
   currency: string;
 }
@@ -445,8 +469,7 @@ export const getCachedStripeStats = unstable_cache(
 
       const counts: Record<string, number> = {};
       for (const row of statusCounts) {
-        const key = row.subscriptionStatus ?? 'UNKNOWN';
-        counts[key] = row._count.id;
+        counts[row.subscriptionStatus] = row._count.id;
       }
 
       const activeSubscribers = counts['ACTIVE'] ?? 0;
@@ -454,6 +477,11 @@ export const getCachedStripeStats = unstable_cache(
       const pastDueUsers = counts['PAST_DUE'] ?? 0;
       const canceledUsers = counts['CANCELED'] ?? 0;
       const freeUsers = counts['FREE'] ?? 0;
+      // UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED belonged to none of the five buckets
+      // above, so those users were counted nowhere and the totals silently did not add
+      // up to the user table.
+      const otherStatusUsers =
+        (counts['UNPAID'] ?? 0) + (counts['INCOMPLETE'] ?? 0) + (counts['INCOMPLETE_EXPIRED'] ?? 0);
 
       let mrrCents = 0;
       let currency = 'usd';
@@ -475,6 +503,7 @@ export const getCachedStripeStats = unstable_cache(
         pastDueUsers,
         canceledUsers,
         freeUsers,
+        otherStatusUsers,
         mrrCents,
         currency,
       };

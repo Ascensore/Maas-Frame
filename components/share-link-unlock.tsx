@@ -59,7 +59,11 @@ export function ShareLinkUnlock({ videoId }: ShareLinkUnlockProps) {
         </div>
 
         <div className="space-y-3">
+          <label htmlFor="share-link-password" className="sr-only">
+            Password
+          </label>
           <Input
+            id="share-link-password"
             type="password"
             placeholder="Password"
             value={password}
@@ -74,7 +78,14 @@ export function ShareLinkUnlock({ videoId }: ShareLinkUnlockProps) {
           />
 
           <Button className="w-full" disabled={isSubmitting} onClick={() => void submitPassword()}>
-            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Continue'}
+            {isSubmitting ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                <span className="sr-only">Unlocking</span>
+              </>
+            ) : (
+              'Continue'
+            )}
           </Button>
 
           {error && <p className="text-sm text-destructive">{error}</p>}

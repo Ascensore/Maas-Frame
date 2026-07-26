@@ -23,25 +23,22 @@ describe('normalizeFrameRate', () => {
     expect(normalizeFrameRate(24.9)).toBe(25);
   });
 
-  it('returns an exact standard rate unchanged, except the NTSC-shadowed ones', () => {
-    for (const rate of [23.976, 25, 29.97, 48, 50, 59.94, 120]) {
+  it('returns an exact standard rate unchanged', () => {
+    for (const rate of [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120]) {
       expect(normalizeFrameRate(rate)).toBe(rate);
     }
   });
 
-  // KNOWN PRODUCTION BUG, pinned rather than fixed. The tolerance is +/-1.5%
-  // but 23.976/24, 29.97/30 and 59.94/60 are only 0.1% apart, and the lookup
-  // takes the FIRST entry within tolerance rather than the closest. The NTSC
-  // rate always comes first in STANDARD_FRAME_RATES, so 24, 30 and 60 can
-  // never be returned: an exactly-30fps source is reported as 29.97fps, which
-  // is the very frame-count drift the snapping is meant to prevent (~18 frames
-  // off after 10 minutes).
-  it('mislabels exact 24, 30 and 60 fps as their NTSC neighbours', () => {
-    expect(normalizeFrameRate(24)).toBe(23.976);
-    expect(normalizeFrameRate(30)).toBe(29.97);
-    expect(normalizeFrameRate(60)).toBe(59.94);
-    // 30.07 is closer to 30 than to 29.97 and still loses.
-    expect(normalizeFrameRate(30.07)).toBe(29.97);
+  // The tolerance is 1.5 percent but the NTSC pairs are only 0.1 percent apart, so taking
+  // the first entry within tolerance made 24, 30 and 60 unreachable and reported an
+  // exactly 30 fps source as 29.97: the very drift the snapping exists to prevent.
+  it('picks the nearest standard rather than the first within tolerance', () => {
+    expect(normalizeFrameRate(30.07)).toBe(30);
+    expect(normalizeFrameRate(29.99)).toBe(30);
+    expect(normalizeFrameRate(29.96)).toBe(29.97);
+    expect(normalizeFrameRate(23.99)).toBe(24);
+    expect(normalizeFrameRate(59.98)).toBe(60);
+    expect(normalizeFrameRate(59.95)).toBe(59.94);
   });
 
   it('keeps a plausible non-standard rate rather than forcing a snap', () => {

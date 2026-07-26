@@ -86,10 +86,19 @@ function getSafeDirectDownloadUrl(rawUrl: string): string | null {
   }
 }
 
+// A file extension is appended after sanitizeFileName() has run, so it has to be safe on
+// its own: anything that is not a short alphanumeric run falls back. Slicing from the last
+// dot of a whole URL would otherwise let `https://example.com/download` contribute
+// `.com/download`, a path separator inside an archive entry name.
+const SAFE_EXTENSION = /^[a-z0-9]{1,10}$/i;
+
 function extensionFromUrl(url: string, fallback: string): string {
   const withoutQuery = url.split('?')[0] ?? url;
-  const ext = withoutQuery.includes('.') ? withoutQuery.slice(withoutQuery.lastIndexOf('.')) : '';
-  return ext || fallback;
+  const baseName = withoutQuery.slice(withoutQuery.lastIndexOf('/') + 1);
+  const dotIndex = baseName.lastIndexOf('.');
+  if (dotIndex <= 0) return fallback;
+  const ext = baseName.slice(dotIndex + 1);
+  return SAFE_EXTENSION.test(ext) ? `.${ext.toLowerCase()}` : fallback;
 }
 
 type VersionRow = {
@@ -162,18 +171,15 @@ function buildAssetFileName(videoIndex: number, videoTitle: string, asset: Asset
 
   if (asset.provider === VideoAssetProvider.R2_IMAGE) {
     const fileName = extractImageFileNameFromProxyUrl(asset.sourceUrl);
-    const ext = fileName?.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.png';
-    return `${stem}${ext}`;
+    return `${stem}${extensionFromUrl(fileName ?? '', '.png')}`;
   }
   if (asset.provider === VideoAssetProvider.R2_AUDIO) {
     const fileName = extractAudioFileNameFromProxyUrl(asset.sourceUrl);
-    const ext = fileName?.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.webm';
-    return `${stem}${ext}`;
+    return `${stem}${extensionFromUrl(fileName ?? '', '.webm')}`;
   }
   if (asset.provider === VideoAssetProvider.R2_VIDEO) {
     const fileName = extractVideoFileNameFromProxyUrl(asset.sourceUrl);
-    const ext = fileName?.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.mp4';
-    return `${stem}${ext}`;
+    return `${stem}${extensionFromUrl(fileName ?? '', '.mp4')}`;
   }
   if (asset.provider === VideoAssetProvider.BUNNY) {
     return `${stem}.mp4`;
@@ -189,9 +195,10 @@ function versionDownloadUrl(version: VersionRow): string | null {
     return `/api/versions/${version.id}/download?source=original`;
   }
   if (version.providerId === 'r2') {
-    if (version.originalUrl.startsWith('/api/upload/video/')) {
-      return version.originalUrl;
-    }
+    // Only the strict proxy-path shape is accepted. A `startsWith` check here would let
+    // `/api/upload/video/clip.mp4/../../../../etc/passwd` through as a download URL.
+    // Every r2 version is written through finalizeR2VideoUpload(), which stores exactly
+    // this shape, so nothing legitimate is lost.
     const fileName = extractVideoFileNameFromProxyUrl(version.originalUrl);
     if (fileName) return `/api/upload/video/${fileName}`;
   }
@@ -294,6 +301,11 @@ export function validateProjectDownloadManifest(manifest: ProjectDownloadManifes
   }
 
   if (manifest.totalBytes) {
+    // The contract is to return a message, so a malformed total has to become one rather
+    // than a SyntaxError escaping into the route as a 500.
+    if (!/^\d+$/.test(manifest.totalBytes)) {
+      return 'Could not determine the size of this download';
+    }
     const knownTotal = BigInt(manifest.totalBytes);
     if (knownTotal > maxBytes) {
       const maxGiB = Number(maxBytes / BigInt(1024 * 1024 * 1024));

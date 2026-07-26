@@ -5,7 +5,7 @@ import { db } from '@/lib/db';
 import { logCleanupWarnings } from '@/lib/cleanup-warnings';
 import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
-import { deleteProjectVideosWithCleanup } from '@/lib/video-delete';
+import { deleteProjectVideosWithCleanup, VideoStorageCleanupError } from '@/lib/video-delete';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Only project owner or admin can delete videos');
     }
@@ -58,6 +58,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     } catch (error) {
       if (error instanceof Error && error.message === 'VIDEO_NOT_FOUND') {
         return apiErrors.badRequest('One or more selected videos do not belong to this project');
+      }
+      // Storage refused a delete, so nothing was removed and the videos are still there.
+      // Saying so lets the caller retry, which is the whole point of leaving the rows.
+      if (error instanceof VideoStorageCleanupError) {
+        logCleanupWarnings(
+          { entityType: 'video', entityId: `bulk:${normalizedIds.join(',')}` },
+          error.cleanupInput
+        );
+        return apiErrors.internalError(
+          'Could not delete the stored media for these videos. Nothing was deleted; please try again.'
+        );
       }
       throw error;
     }

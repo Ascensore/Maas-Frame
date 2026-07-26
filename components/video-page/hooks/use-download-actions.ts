@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type {
   BunnyDownloadPreference,
@@ -70,10 +70,14 @@ interface UseDownloadActionsParams {
 export function useDownloadActions({ activeVersion, video }: UseDownloadActionsParams) {
   const [activeDownloadTarget, setActiveDownloadTarget] = useState<DownloadTarget | null>(null);
   const isDownloadingVideo = activeDownloadTarget !== null;
+  // The guard reads a ref, not the state. Two calls originating in the same render both
+  // saw the old state value and both proceeded, so a fast double-click downloaded the
+  // file twice.
+  const isDownloadingRef = useRef(false);
 
   const startDownload = useCallback(
     async (preference: BunnyDownloadPreference = 'compressed') => {
-      if (!activeVersion || !video || isDownloadingVideo) return;
+      if (!activeVersion || !video || isDownloadingRef.current) return;
       if (!video.canDownload) {
         toast.error('Download is disabled for this shared link');
         return;
@@ -88,6 +92,7 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
       }
 
       const target: DownloadTarget = activeVersion.providerId === 'bunny' ? preference : 'direct';
+      isDownloadingRef.current = true;
       setActiveDownloadTarget(target);
       let progressToast: DownloadProgressToastHandle | null = null;
       try {
@@ -191,10 +196,11 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
           toast.error('Failed to start download');
         }
       } finally {
+        isDownloadingRef.current = false;
         setActiveDownloadTarget(null);
       }
     },
-    [activeVersion, video, isDownloadingVideo]
+    [activeVersion, video]
   );
 
   return {

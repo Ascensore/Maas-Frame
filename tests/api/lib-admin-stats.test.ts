@@ -437,16 +437,18 @@ describe('getCachedBunnyStorageStats', () => {
     expect(await getCachedBunnyStorageStats()).toEqual({ totalBytes: -1, byVideoId: {} });
   });
 
-  // The flag defaults to on, so a self-hosted deployment that never configured
-  // Bunny lands here: credentials missing while the feature is nominally
-  // enabled.
-  it('degrades to -1 when the Bunny credentials are not configured', async () => {
+  // The flag defaults to on, so a self-hosted deployment that never configured Bunny
+  // lands here: credentials missing while the feature is nominally enabled. That used to
+  // key on the flag alone, throw "Missing Bunny Stream credentials." out of
+  // getBunnyConfig() and report -1, which reads as "we could not measure" rather than
+  // "there is nothing to measure".
+  it('reports a genuine zero when the Bunny credentials are not configured', async () => {
     vi.stubEnv('BUNNY_STREAM_API_KEY', undefined);
     vi.stubEnv('BUNNY_STREAM_LIBRARY_ID', undefined);
     vi.stubEnv('NEXT_PUBLIC_BUNNY_STREAM_LIBRARY_ID', undefined);
     const calls = stubBunnyPages([]);
 
-    expect(await getCachedBunnyStorageStats()).toEqual({ totalBytes: -1, byVideoId: {} });
+    expect(await getCachedBunnyStorageStats()).toEqual({ totalBytes: 0, byVideoId: {} });
     expect(calls.urls).toEqual([]);
   });
 
@@ -875,16 +877,18 @@ describe('getCachedStripeStats', () => {
       pastDueUsers: 1,
       canceledUsers: 1,
       freeUsers: 3,
+      otherStatusUsers: 0,
       mrrCents: 3800,
       currency: 'eur',
     });
     expect(stripe.retrievedPriceIds).toEqual(['price_admin_stats_test']);
   });
 
-  // UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED are real values of the enum that
-  // the report has no bucket for. They must not be silently folded into one of
-  // the five that are reported.
-  it('leaves statuses it does not report out of every bucket', async () => {
+  // UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED are real values of the enum that used to
+  // belong to none of the reported buckets, so those users were counted nowhere and the
+  // five totals silently did not add up to the user table. They must not be folded into
+  // one of the five either.
+  it('counts the statuses the five named buckets do not cover', async () => {
     await createUser({ subscriptionStatus: 'UNPAID' });
     await createUser({ subscriptionStatus: 'INCOMPLETE' });
     await createUser({ subscriptionStatus: 'INCOMPLETE_EXPIRED' });
@@ -898,6 +902,7 @@ describe('getCachedStripeStats', () => {
       pastDueUsers: 0,
       canceledUsers: 0,
       freeUsers: 0,
+      otherStatusUsers: 3,
       mrrCents: 0,
       currency: 'usd',
     });
@@ -912,6 +917,7 @@ describe('getCachedStripeStats', () => {
       pastDueUsers: 0,
       canceledUsers: 0,
       freeUsers: 0,
+      otherStatusUsers: 0,
       mrrCents: 0,
       currency: 'usd',
     });
@@ -932,6 +938,7 @@ describe('getCachedStripeStats', () => {
       pastDueUsers: 0,
       canceledUsers: 0,
       freeUsers: 0,
+      otherStatusUsers: 0,
       mrrCents: 0,
       currency: 'usd',
     });

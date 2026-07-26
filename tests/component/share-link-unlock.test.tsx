@@ -21,13 +21,13 @@ vi.mock('next/link', () => ({
 let fetchMock: ReturnType<typeof vi.fn>;
 
 /**
- * ACCESSIBILITY FINDING: the password field has no <label>, no aria-label and
- * no aria-labelledby, only a placeholder. A password input has no ARIA role
- * either, so there is no `getByRole` route to it at all. Reported, not papered
- * over: this helper documents that the placeholder is the only handle we have.
+ * A password input has no ARIA role, so `getByRole` cannot reach it whatever the
+ * markup does. `getByLabelText` can, and it only works because the field now has a
+ * visually hidden <label> associated by id: it used to have no label, no aria-label and
+ * no aria-labelledby, which left the placeholder as the only handle anything had.
  */
 function passwordField() {
-  return screen.getByPlaceholderText('Password');
+  return screen.getByLabelText('Password');
 }
 
 beforeEach(() => {
@@ -177,14 +177,13 @@ describe('ShareLinkUnlock', () => {
     render(<ShareLinkUnlock videoId="vid1" />);
 
     await userEvent.type(passwordField(), 'hunter2');
-    // Capture the node first: while submitting, the label is swapped for a
-    // spinner, which leaves the button with no accessible name to query by.
-    // ACCESSIBILITY FINDING, reported rather than worked around.
     const submit = screen.getByRole('button', { name: 'Continue' });
     await userEvent.click(submit);
 
     expect(submit).toBeDisabled();
-    expect(submit).toHaveAccessibleName('');
+    // The spinner that replaces the label carries a visually hidden name, so the button
+    // stays findable and announceable while it submits.
+    expect(submit).toHaveAccessibleName('Unlocking');
 
     release({ ok: true, json: () => Promise.resolve({}) });
     await waitFor(() => expect(replace).toHaveBeenCalledTimes(1));

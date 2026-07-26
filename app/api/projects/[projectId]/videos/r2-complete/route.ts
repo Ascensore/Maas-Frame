@@ -26,7 +26,7 @@ async function getProjectWithEditAccess(projectId: string, userId: string) {
 
   if (!project) return null;
 
-  const access = await checkProjectAccess(project, userId, { intent: 'manage' });
+  const access = await checkProjectAccess(project, userId);
   if (!access.canEdit) return null;
 
   return project;

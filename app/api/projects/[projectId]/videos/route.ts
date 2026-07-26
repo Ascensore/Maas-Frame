@@ -83,7 +83,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Access denied');
     }

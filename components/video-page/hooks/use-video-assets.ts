@@ -57,13 +57,18 @@ export function useVideoAssets({
   const [assets, setAssets] = useState<VideoAsset[]>([]);
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
   const [isCreatingAsset, setIsCreatingAsset] = useState(false);
-  const [activeDeleteAssetId, setActiveDeleteAssetId] = useState<string | null>(null);
+  // A set, not a single slot. Two overlapping deletes used to clear each other's
+  // spinner, so the first one stopped indicating progress while it was still running.
+  const [deletingAssetIds, setDeletingAssetIds] = useState<string[]>([]);
   const [activeDownloadAssetId, setActiveDownloadAssetId] = useState<string | null>(null);
   const [hasMoreAssets, setHasMoreAssets] = useState(false);
   const [nextAssetsOffset, setNextAssetsOffset] = useState(0);
   const [isLoadingMoreAssets, setIsLoadingMoreAssets] = useState(false);
   const assetsEtagRef = useRef<string | null>(null);
   const isMutatingRef = useRef(false);
+  // The double-call guard reads a ref, not the state: two calls originating in the same
+  // render both saw the old state value and both fetched the next page.
+  const isLoadingMoreRef = useRef(false);
 
   const fetchAssets = useCallback(
     async (options?: { useEtag?: boolean; silent?: boolean }) => {
@@ -106,7 +111,8 @@ export function useVideoAssets({
   );
 
   const loadMoreAssets = useCallback(async () => {
-    if (isLoadingMoreAssets || !hasMoreAssets) return;
+    if (isLoadingMoreRef.current || !hasMoreAssets) return;
+    isLoadingMoreRef.current = true;
     setIsLoadingMoreAssets(true);
     try {
       const res = await fetch(
@@ -129,9 +135,10 @@ export function useVideoAssets({
     } catch {
       toast.error('Failed to load more assets');
     } finally {
+      isLoadingMoreRef.current = false;
       setIsLoadingMoreAssets(false);
     }
-  }, [hasMoreAssets, isLoadingMoreAssets, nextAssetsOffset, videoId]);
+  }, [hasMoreAssets, nextAssetsOffset, videoId]);
 
   useEffect(() => {
     void fetchAssets({ useEtag: true });
@@ -198,7 +205,7 @@ export function useVideoAssets({
 
   const deleteAsset = useCallback(
     async (assetId: string) => {
-      setActiveDeleteAssetId(assetId);
+      setDeletingAssetIds((prev) => (prev.includes(assetId) ? prev : [...prev, assetId]));
       isMutatingRef.current = true;
       try {
         const res = await fetch(`/api/videos/${videoId}/assets/${assetId}`, {
@@ -217,7 +224,7 @@ export function useVideoAssets({
         toast.error('Failed to delete asset');
         return false;
       } finally {
-        setActiveDeleteAssetId(null);
+        setDeletingAssetIds((prev) => prev.filter((id) => id !== assetId));
         isMutatingRef.current = false;
       }
     },
@@ -292,7 +299,7 @@ export function useVideoAssets({
     assets,
     isLoadingAssets,
     isCreatingAsset,
-    activeDeleteAssetId,
+    deletingAssetIds,
     activeDownloadAssetId,
     hasMoreAssets,
     isLoadingMoreAssets,

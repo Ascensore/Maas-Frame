@@ -28,7 +28,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Access denied');
     }
@@ -98,7 +98,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, session.user.id, { intent: 'manage' });
+    const access = await checkProjectAccess(project, session.user.id);
     if (!access.canEdit) {
       return apiErrors.forbidden('Access denied');
     }

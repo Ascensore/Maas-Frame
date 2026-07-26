@@ -133,11 +133,29 @@ describe('buildContentSecurityPolicy', () => {
     expect(mediaSrc).not.toContain('https://public.b-cdn.net');
   });
 
-  it('always allows the local MinIO defaults in connect-src', () => {
+  it('allows the local MinIO defaults in connect-src outside production', () => {
+    vi.stubEnv('NODE_ENV', 'development');
     const connectSrc = directives()['connect-src'];
 
     expect(connectSrc).toContain('http://localhost:9000');
     expect(connectSrc).toContain('http://127.0.0.1:9000');
+  });
+
+  // They are a local development convenience, and allowing plaintext loopback object
+  // storage in every deployment weakened the policy for a case production never has.
+  it('drops the local MinIO defaults from connect-src in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const connectSrc = directives()['connect-src'];
+
+    expect(connectSrc).not.toContain('http://localhost:9000');
+    expect(connectSrc).not.toContain('http://127.0.0.1:9000');
+  });
+
+  it('still allows a loopback R2_ENDPOINT in production when one is configured', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('R2_ENDPOINT', 'http://127.0.0.1:9000');
+
+    expect(directives()['connect-src']).toContain('http://127.0.0.1:9000');
   });
 
   it('reduces a custom R2 endpoint to its origin', () => {

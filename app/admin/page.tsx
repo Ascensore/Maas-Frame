@@ -275,6 +275,17 @@ export default async function AdminDashboardPage() {
                 <div className="text-2xl font-bold">{stripeStats.canceledUsers}</div>
               </CardContent>
             </Card>
+            {/* UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED, which belonged to none of the
+                buckets above and so were counted nowhere. */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Unpaid or Incomplete</CardTitle>
+                <AlertCircle className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{stripeStats.otherStatusUsers}</div>
+              </CardContent>
+            </Card>
           </div>
         </>
       )}

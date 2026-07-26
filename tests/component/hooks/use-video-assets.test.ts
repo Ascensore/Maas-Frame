@@ -580,7 +580,7 @@ describe('useVideoAssets deleting', () => {
     expect(callsTo(`/api/videos/${VIDEO_ID}/assets/a1`, 'DELETE')).toHaveLength(1);
     expect(deleted).toBe(true);
     expect(assetIds(harness)).toEqual(['a2']);
-    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+    expect(harness.result.current.deletingAssetIds).toEqual([]);
   });
 
   it('marks which row is being deleted while the request runs', async () => {
@@ -592,13 +592,13 @@ describe('useVideoAssets deleting', () => {
     act(() => {
       removal = harness.result.current.deleteAsset('a1');
     });
-    expect(harness.result.current.activeDeleteAssetId).toBe('a1');
+    expect(harness.result.current.deletingAssetIds).toEqual(['a1']);
 
     await act(async () => {
       pending.resolve(jsonResponse(true, {}));
       await removal;
     });
-    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+    expect(harness.result.current.deletingAssetIds).toEqual([]);
   });
 
   it('keeps the row when the server refuses the delete', async () => {
@@ -615,7 +615,7 @@ describe('useVideoAssets deleting', () => {
     expect(deleted).toBe(false);
     expect(assetIds(harness)).toEqual(['a1']);
     expect(toastError).toHaveBeenCalledWith('Only the uploader can delete');
-    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+    expect(harness.result.current.deletingAssetIds).toEqual([]);
   });
 
   it('keeps the row when the delete throws', async () => {
@@ -644,7 +644,35 @@ describe('useVideoAssets deleting', () => {
     });
 
     expect(assetIds(harness)).toEqual([]);
-    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+    expect(harness.result.current.deletingAssetIds).toEqual([]);
+  });
+
+  // A single slot meant the second delete cleared the first one's spinner, so the first
+  // row stopped indicating progress while its request was still in flight.
+  it('marks both rows while two deletes overlap', async () => {
+    listed = listResponse({ assets: [makeAsset(), makeAsset({ id: 'a2' })] });
+    const harness = await renderAssets();
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    let removals: Promise<boolean[]> | undefined;
+    act(() => {
+      removals = Promise.all([
+        harness.result.current.deleteAsset('a1'),
+        harness.result.current.deleteAsset('a2'),
+      ]);
+    });
+
+    expect(harness.result.current.deletingAssetIds).toEqual(['a1', 'a2']);
+
+    await act(async () => {
+      first.resolve(jsonResponse(true, {}));
+      second.resolve(jsonResponse(true, {}));
+      await removals;
+    });
+
+    expect(harness.result.current.deletingAssetIds).toEqual([]);
   });
 });
 

@@ -129,6 +129,14 @@ export function useVideoPageData({ mode, videoId, propProjectId }: UseVideoPageD
     void fetchVersionComments(activeVersionId, true);
   }, [activeVersionId, fetchVersionComments]);
 
+  // The auto-select reads the current selection from a ref rather than the dependency
+  // array. Depending on `selectedTagId` meant setting it re-ran the effect, so
+  // /api/projects/<id>/tags was requested a second time on every page load.
+  const selectedTagIdRef = useRef(selectedTagId);
+  useEffect(() => {
+    selectedTagIdRef.current = selectedTagId;
+  }, [selectedTagId]);
+
   useEffect(() => {
     if (!projectId) return;
     async function fetchTags() {
@@ -139,7 +147,7 @@ export function useVideoPageData({ mode, videoId, propProjectId }: UseVideoPageD
           const data = await res.json();
           const tags = data.data || [];
           setAvailableTags(tags);
-          if (tags.length > 0 && !selectedTagId) {
+          if (tags.length > 0 && !selectedTagIdRef.current) {
             setSelectedTagId(tags[0].id);
           }
         }
@@ -148,7 +156,7 @@ export function useVideoPageData({ mode, videoId, propProjectId }: UseVideoPageD
       }
     }
     void fetchTags();
-  }, [projectId, selectedTagId, videoId]);
+  }, [projectId, videoId]);
 
   return {
     video,

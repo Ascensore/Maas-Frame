@@ -332,7 +332,10 @@ describe('GET /api/projects/[projectId]/download', () => {
 // DownloadEgressEvent row was written, because that row is the billing record: a
 // refusal that still bills the workspace owner would be its own bug.
 describe('GET /api/versions/[versionId]/download', () => {
-  it('returns 403 to a signed-in stranger and records no egress', async () => {
+  // 404 rather than 403 for a caller with no relationship to the project: a 403 would
+  // confirm the id exists. The comment export route has always answered 404 for the
+  // identical shape, and the three download paths now agree.
+  it('returns 404 to a signed-in stranger and records no egress', async () => {
     const fixture = await seedDownloadable({ allowDownloads: true });
     await seedProject();
     const stranger = await createUser();
@@ -344,7 +347,7 @@ describe('GET /api/versions/[versionId]/download', () => {
       { versionId: fixture.version.id }
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(await db.downloadEgressEvent.count()).toBe(0);
   });
 
@@ -429,9 +432,9 @@ describe('GET /api/versions/[versionId]/download', () => {
 
   // Straight identifier substitution. There is no projectId in this URL to
   // cross-check against, so the version id alone decides which project gets
-  // authorized. A caller who owns a perfectly good project of their own gets 403
+  // authorized. A caller who owns a perfectly good project of their own gets 404
   // for somebody else's version, and never learns whether it exists.
-  it('returns 403 for a version id belonging to another workspace', async () => {
+  it('returns 404 for a version id belonging to another workspace', async () => {
     const mine = await seedDownloadable({ allowDownloads: true });
     const theirs = await seedDownloadable({ allowDownloads: true });
     signedInAs(mine.owner);
@@ -442,7 +445,7 @@ describe('GET /api/versions/[versionId]/download', () => {
       { versionId: theirs.version.id }
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(await db.downloadEgressEvent.count()).toBe(0);
   });
 

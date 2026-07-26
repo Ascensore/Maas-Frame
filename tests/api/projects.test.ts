@@ -151,11 +151,10 @@ describe('GET /api/projects', () => {
     expect(projects.projects.map((entry) => entry.id)).toEqual([scenario.project.id]);
   });
 
-  // Documents current behaviour, which looks like a bug. See the note in the
-  // report: the workspace-membership branch of the OR is dropped as soon as
-  // ?workspaceId is supplied, so filtering by workspace hides exactly the
-  // projects the unfiltered call returns.
-  it('stops listing workspace-member projects once ?workspaceId is supplied', async () => {
+  // The workspace-membership branch of the OR used to be dropped as soon as ?workspaceId
+  // was supplied, so filtering by their own workspace showed a member an empty list while
+  // the unfiltered call returned the same project.
+  it('still lists workspace-member projects when ?workspaceId is supplied', async () => {
     const scenario = await seedProject();
     const member = await createUser();
     await addWorkspaceMember({ workspaceId: scenario.workspace.id, userId: member.id });
@@ -166,7 +165,7 @@ describe('GET /api/projects', () => {
     );
 
     expect(unfiltered.projects.map((entry) => entry.id)).toEqual([scenario.project.id]);
-    expect(filtered.projects).toEqual([]);
+    expect(filtered.projects.map((entry) => entry.id)).toEqual([scenario.project.id]);
   });
 
   it('scopes ?workspaceId to that workspace for an owner of several', async () => {

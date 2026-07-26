@@ -152,8 +152,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
 });
 
-type ProjectAccessIntent = 'view' | 'manage' | 'delete';
-
 // ---------------------------------------------------------------------------
 // Fast-path: pre-fetch access data alongside any existing DB query so that
 // computeProjectAccess() can resolve the result with zero extra round-trips.
@@ -313,13 +311,20 @@ export function computeProjectAccess(
   });
 }
 
-// Helper to check project access including workspace membership
+/**
+ * Helper to check project access including workspace membership.
+ *
+ * This used to take an `intent`, which skipped both workspace queries for an owner at
+ * `view` intent. That made it report `isWorkspaceMember: false, isWorkspaceAdmin: false`
+ * for the actor computeProjectAccess reports `true, true` for: the project owner who also
+ * owns the workspace, which is the shape every real signup produces. The two are meant to
+ * answer the same question, so they resolve their inputs the same way now and the option
+ * is gone rather than kept as a parameter that changes nothing.
+ */
 export async function checkProjectAccess(
   project: { id: string; ownerId: string; workspaceId: string; visibility: string },
-  userId: string | undefined,
-  options?: { intent?: ProjectAccessIntent }
+  userId: string | undefined
 ) {
-  const intent = options?.intent ?? 'view';
   const isOwner = userId === project.ownerId;
   const isPublic = project.visibility === 'PUBLIC';
 
@@ -333,50 +338,18 @@ export async function checkProjectAccess(
   const isProjectAdmin = projectMember?.role === ProjectMemberRole.ADMIN;
 
   // The workspace role decides `canEdit`/`isWorkspaceMember`, not just whether the viewer
-  // gets in at all, so it has to be resolved for every signed-in non-owner. Skipping it
-  // once access was already granted some other way (public project, or an existing project
-  // membership) silently downgraded workspace admins to read-only on `intent: 'view'`,
-  // the intent that pages and GET routes use to decide which actions to render.
-  // Owners pass every check on their own; resolve their role only when they mutate.
-  const shouldLoadWorkspaceRole = !!userId && (!isOwner || intent !== 'view');
-
-  // Check workspace membership/role
-  let workspaceRole: WorkspaceMemberRole | 'OWNER' | null = null;
-  let workspaceOwnerBillingAccess = false;
-  if (shouldLoadWorkspaceRole && userId) {
-    const [wsMember, wsOwner] = await Promise.all([
-      db.workspaceMember.findUnique({
-        where: { workspaceId_userId: { workspaceId: project.workspaceId, userId } },
-      }),
-      db.workspace.findUnique({
-        where: { id: project.workspaceId },
-        select: {
-          ownerId: true,
-          owner: {
-            select: {
-              subscriptionStatus: true,
-              trialEndsAt: true,
-              stripeCurrentPeriodEnd: true,
-              billingAccessEndedAt: true,
-            },
-          },
-        },
-      }),
-    ]);
-
-    if (wsOwner?.ownerId === userId) {
-      workspaceRole = 'OWNER';
-    } else if (wsMember) {
-      workspaceRole = wsMember.role;
-    }
-
-    if (wsOwner?.owner) {
-      workspaceOwnerBillingAccess = hasBillingAccess(wsOwner.owner);
-    }
-  } else {
-    const wsOwner = await db.workspace.findUnique({
+  // gets in at all, so it is resolved for every signed-in caller, owners included. The two
+  // queries run together, so this costs one extra indexed lookup and no extra latency.
+  const [wsMember, wsOwner] = await Promise.all([
+    userId
+      ? db.workspaceMember.findUnique({
+          where: { workspaceId_userId: { workspaceId: project.workspaceId, userId } },
+        })
+      : null,
+    db.workspace.findUnique({
       where: { id: project.workspaceId },
       select: {
+        ownerId: true,
         owner: {
           select: {
             subscriptionStatus: true,
@@ -386,9 +359,18 @@ export async function checkProjectAccess(
           },
         },
       },
-    });
-    workspaceOwnerBillingAccess = wsOwner?.owner ? hasBillingAccess(wsOwner.owner) : false;
+    }),
+  ]);
+
+  let workspaceRole: WorkspaceMemberRole | 'OWNER' | null = null;
+  if (userId && wsOwner?.ownerId === userId) {
+    workspaceRole = 'OWNER';
+  } else if (wsMember) {
+    workspaceRole = wsMember.role;
   }
+
+  const workspaceOwnerBillingAccess = wsOwner?.owner ? hasBillingAccess(wsOwner.owner) : false;
+
   return resolveProjectPermissions({
     isOwner,
     isPublic,

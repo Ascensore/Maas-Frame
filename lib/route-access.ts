@@ -9,15 +9,19 @@ const LOGIN_REDIRECT = '/login';
 const FORBIDDEN_REDIRECT = '/dashboard';
 const BILLING_REDIRECT = '/settings';
 
-function redirectForMissingAuth() {
+// `never` rather than `void`, so a caller that puts a second redirect after one of these
+// gets a compile error instead of silently unreachable code. `redirect()` throws, and
+// these are authorization decisions: a helper that ever returned would let the branch
+// below it run.
+function redirectForMissingAuth(): never {
   redirect(LOGIN_REDIRECT);
 }
 
-function redirectForForbidden() {
+function redirectForForbidden(): never {
   redirect(FORBIDDEN_REDIRECT);
 }
 
-function redirectForBilling() {
+function redirectForBilling(): never {
   redirect(BILLING_REDIRECT);
 }
 
@@ -46,7 +50,7 @@ async function assertProjectAccessOrRedirect(
 
   ensureGuestPolicy({ userId, intent, allowPublicView });
 
-  const access = await checkProjectAccess(project, userId, { intent });
+  const access = await checkProjectAccess(project, userId);
 
   if (!access.hasAccess) {
     if (!userId) {
@@ -162,15 +166,22 @@ export async function requireWorkspaceAccessOrRedirect(options: {
 
   const access = await checkWorkspaceAccess(workspace, resolvedUserId);
 
+  // Only the owner is sent to billing. Keying this off the owner's billing status alone
+  // made the redirect target an oracle: a signed-in stranger probing workspace ids landed
+  // on /dashboard when the owner was paying and on /settings when the owner had lapsed,
+  // which reads off whose subscription is in arrears. It also sent a member whose owner
+  // had lapsed to their own billing page, where nothing they can do resolves it.
+  const ownerWithLapsedBilling = access.isOwner && !access.ownerBillingActive;
+
   if (!access.hasAccess) {
-    if (!access.ownerBillingActive) {
+    if (ownerWithLapsedBilling) {
       redirectForBilling();
     }
     redirectForForbidden();
   }
 
   if (intent === 'manage' && !access.canEdit) {
-    if (!access.ownerBillingActive) {
+    if (ownerWithLapsedBilling) {
       redirectForBilling();
     }
     redirectForForbidden();

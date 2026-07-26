@@ -38,7 +38,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return apiErrors.notFound('Project');
     }
 
-    const access = await checkProjectAccess(project, userId, { intent: 'manage' });
+    const access = await checkProjectAccess(project, userId);
     if (!access.canEdit) {
       return apiErrors.forbidden('Access denied');
     }
@@ -141,8 +141,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const [sourceAccess, targetAccess] = await Promise.all([
-      checkProjectAccess(sourceProject, userId, { intent: 'manage' }),
-      checkProjectAccess(targetProject, userId, { intent: 'manage' }),
+      checkProjectAccess(sourceProject, userId),
+      checkProjectAccess(targetProject, userId),
     ]);
     if (!sourceAccess.canEdit) {
       return apiErrors.forbidden('You cannot move videos out of this project');

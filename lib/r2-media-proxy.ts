@@ -19,6 +19,17 @@ type ProxyR2MediaOptions = {
   internalErrorMessage: string;
 };
 
+// Every key this proxy is ever asked for is a prefix plus a stored uuid file name. The
+// guard lives here rather than in each caller so it travels with the function: all three
+// call sites gate the file name on a strict pattern first, and a fourth that forgot would
+// otherwise hand a traversal straight to GetObject.
+const SAFE_MEDIA_OBJECT_KEY =
+  /^(?:images|voice|videos)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
+
+export function isSafeR2MediaKey(key: string): boolean {
+  return SAFE_MEDIA_OBJECT_KEY.test(key);
+}
+
 type R2LikeError = {
   name?: string;
   Code?: string;
@@ -92,6 +103,10 @@ export async function proxyR2MediaObject({
   notFoundLabel = 'File',
   internalErrorMessage,
 }: ProxyR2MediaOptions): Promise<NextResponse> {
+  if (!isSafeR2MediaKey(key)) {
+    return apiErrors.badRequest('Invalid media key');
+  }
+
   const range = request.headers.get('range');
   const ifRange = request.headers.get('if-range');
   const commandInput: GetObjectCommandInput = {

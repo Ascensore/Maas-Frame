@@ -8,6 +8,7 @@ import {
   emailRow,
   escapeAttr,
   escapeHtml,
+  rawEmailHtml,
 } from '@/lib/email-brand';
 
 describe('escapeHtml', () => {
@@ -30,10 +31,10 @@ describe('escapeHtml', () => {
     expect(escapeHtml('&lt;')).toBe('&amp;lt;');
   });
 
-  it('leaves a single quote unescaped', () => {
-    // Documents the current behaviour: values interpolated into single-quoted
-    // attributes are not protected by this helper.
-    expect(escapeHtml("it's")).toBe("it's");
+  // Single-quoted attributes exist in the templates, so leaving the quote alone left a
+  // value able to close one.
+  it('escapes the single quote', () => {
+    expect(escapeHtml("it's")).toBe('it&#39;s');
   });
 
   it('leaves plain text untouched', () => {
@@ -152,12 +153,47 @@ describe('email fragment builders', () => {
     expect(highlighted).not.toContain(EMAIL_COLORS.textSecondary);
   });
 
-  it('emailButton escapes the href but not the label', () => {
+  it('emailButton escapes both the href and the label', () => {
     const html = emailButton('<b>Open</b>', 'https://x.com" onclick="alert(1)');
 
     expect(html).toContain('&quot; onclick=&quot;alert(1)');
-    // Documents that the label is inserted raw, so callers must escape it.
-    expect(html).toContain('<b>Open</b>');
+    expect(html).toContain('&lt;b&gt;Open&lt;/b&gt;');
+    expect(html).not.toContain('<b>Open</b>');
+  });
+
+  // The escaping lives in the helpers rather than in every call site, so a project name
+  // or a display name is safe whether or not the next caller remembers to escape it.
+  it.each([
+    ['emailHeading title', () => emailHeading('*', '<script>alert(1)</script>')],
+    ['emailRow label', () => emailRow('<script>alert(1)</script>', 'value')],
+    ['emailRow value', () => emailRow('label', '<script>alert(1)</script>')],
+    ['emailHighlight text', () => emailHighlight('<script>alert(1)</script>')],
+    ['emailButton label', () => emailButton('<script>alert(1)</script>', 'https://x.test')],
+  ])('%s is escaped', (_label, build) => {
+    const html = build();
+
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('rawEmailHtml opts a value out of escaping', () => {
+    const html = emailRow('From', rawEmailHtml('<span>Alice</span>'));
+
+    expect(html).toContain('<span>Alice</span>');
+  });
+
+  it('escapes the footer text', () => {
+    const html = brandedEmailTemplate('<tr><td>body</td></tr>', {
+      footerText: '<script>alert(1)</script>',
+    });
+
+    expect(html).not.toContain('<script>');
+  });
+
+  it('inserts the body markup verbatim', () => {
+    const html = brandedEmailTemplate('<tr><td>body</td></tr>');
+
+    expect(html).toContain('<tr><td>body</td></tr>');
   });
 
   it('emailHighlight wraps the text in a bordered block', () => {

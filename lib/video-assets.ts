@@ -38,6 +38,13 @@ export type VideoAssetAccessContext = {
     };
   };
   hasViewAccess: boolean;
+  /**
+   * Whether the viewer has any relationship to the project: owner, project member,
+   * workspace member, or a valid share link. Distinguishes "you may not" from "there is
+   * no such thing", so a route can answer 404 for another tenant's id without answering
+   * 404 to somebody whose access merely lapsed.
+   */
+  viewerBelongsToProject: boolean;
   canUploadAssets: boolean;
   canDownloadAssets: boolean;
   canManageAssets: boolean;
@@ -96,18 +103,6 @@ export function extractVideoFileNameFromProxyUrl(url: string): string | null {
   if (!SAFE_VIDEO_PROXY_PATH.test(url)) return null;
   const filename = url.slice(VIDEO_PROXY_PREFIX.length);
   return filename || null;
-}
-
-export function mediaUrlToR2Key(url: string): string | null {
-  if (url.includes(IMAGE_PROXY_PREFIX)) {
-    const filename = url.slice(url.indexOf(IMAGE_PROXY_PREFIX) + IMAGE_PROXY_PREFIX.length);
-    return filename ? `images/${filename}` : null;
-  }
-  if (url.includes(AUDIO_PROXY_PREFIX)) {
-    const filename = url.slice(url.indexOf(AUDIO_PROXY_PREFIX) + AUDIO_PROXY_PREFIX.length);
-    return filename ? `voice/${filename}` : null;
-  }
-  return null;
 }
 
 export function canDeleteAssetForViewer(
@@ -194,9 +189,13 @@ export async function getVideoAssetAccessContext(
   const viewerUserId = session?.user?.id ?? null;
   const viewerGuestIdentityId = viewerUserId ? null : getGuestIdentityFromRequest(request);
 
+  const viewerBelongsToProject =
+    access.isOwner || access.isProjectMember || access.isWorkspaceMember || shareAccess.hasAccess;
+
   return {
     video,
     hasViewAccess,
+    viewerBelongsToProject,
     canUploadAssets,
     canDownloadAssets,
     canManageAssets: access.canEdit,

@@ -13,6 +13,11 @@ import type { VersionActionsConfig, VideoData } from '@/components/video-page/ty
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cleanupPendingR2VideoUpload, uploadVideoToR2 } from '@/lib/client/r2-video-upload';
 
+/** What a failed version upload has to undo, depending on which provider it started on. */
+type PendingVersionCleanup =
+  | { objectKey: string; uploadToken: string; reservationId: string | null }
+  | { bunnyVideoId: string; uploadToken: string };
+
 interface UseVersionActionsParams extends VersionActionsConfig {
   setVideo: Dispatch<SetStateAction<VideoData | null>>;
   activeVersionId: string | null;
@@ -60,7 +65,18 @@ export function useVersionActions({
     }
   };
 
-  const uploadNewVersionFile = async (file: File, title: string) => {
+  /**
+   * `onPendingCleanup` is called the moment there is something to clean up, which for a
+   * Bunny upload is when bunny-init answers and the remote video already exists. Waiting
+   * for this function to return instead meant a tus `onError` threw past the assignment,
+   * so every failed Bunny upload left a video behind on the Bunny side: billed, and
+   * invisible in the app.
+   */
+  const uploadNewVersionFile = async (
+    file: File,
+    title: string,
+    onPendingCleanup: (cleanup: PendingVersionCleanup) => void
+  ) => {
     if (!projectId) throw new Error('Missing project');
 
     if (directUploadProvider === 'r2') {
@@ -101,6 +117,9 @@ export function useVersionActions({
     const {
       data: { videoId: bunnyVideoId, libraryId, signature, expirationTime, uploadToken },
     } = await initRes.json();
+
+    // The remote video exists from here on, so it is cleanable from here on.
+    onPendingCleanup({ bunnyVideoId, uploadToken });
 
     await new Promise((resolve, reject) => {
       setNewVersionUploadStatus('Uploading video...');
@@ -154,17 +173,7 @@ export function useVersionActions({
     setIsCreatingVersion(true);
     setNewVersionUploadStatus('');
     setNewVersionUploadProgress(0);
-    let pendingCleanup:
-      | {
-          objectKey: string;
-          uploadToken: string;
-          reservationId: string | null;
-        }
-      | {
-          bunnyVideoId: string;
-          uploadToken: string;
-        }
-      | null = null;
+    let pendingCleanup: PendingVersionCleanup | null = null;
 
     try {
       let finalVideoUrl = '';
@@ -194,7 +203,9 @@ export function useVersionActions({
           title = title.replace(/\.[^/.]+$/, '');
         }
 
-        const uploaded = await uploadNewVersionFile(newVersionFile, title);
+        const uploaded = await uploadNewVersionFile(newVersionFile, title, (cleanup) => {
+          pendingCleanup = cleanup;
+        });
         finalVideoUrl = uploaded.finalVideoUrl;
         finalProviderId = uploaded.finalProviderId;
         finalProviderVideoId = uploaded.finalProviderVideoId;

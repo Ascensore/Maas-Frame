@@ -133,7 +133,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
     const project = comment.version.video.project;
     const userId = session?.user?.id ?? null;
-    const access = await checkProjectAccess(project, userId ?? undefined, { intent: 'manage' });
+    const access = await checkProjectAccess(project, userId ?? undefined);
     const isOwner = userId === project.ownerId;
     const isAuthor = !!userId && comment.authorId === userId;
     const guestIdentityId = !userId ? getGuestIdentityFromRequest(request) : null;
@@ -295,7 +295,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const isAuthor = !!userId && comment.authorId === userId;
 
     // Project owners/admins and workspace admins can delete any comment
-    const access = userId ? await checkProjectAccess(project, userId, { intent: 'manage' }) : null;
+    const access = userId ? await checkProjectAccess(project, userId) : null;
     const isPrivilegedUser = !!access?.canEdit;
 
     let canDelete = isAuthor || isPrivilegedUser;
