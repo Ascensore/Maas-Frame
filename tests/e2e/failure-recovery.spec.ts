@@ -19,6 +19,20 @@ import { db } from '@/lib/db';
 
 const SAMPLE_VIDEO = path.join(REPO_ROOT, 'tests', 'fixtures', 'sample.mp4');
 
+/**
+ * Every request to object storage, for `page.route`.
+ *
+ * Derived from R2_ENDPOINT rather than hardcoded, because the host differs by
+ * environment and a pattern that matches nothing fails silently in the worst
+ * possible way: the PUT succeeds, the upload works, and the test that claims to
+ * inject a storage failure just waits for an error message that will never
+ * come. That is exactly what happened on CI, where MinIO is published on
+ * localhost, while locally it is the `minio-test` compose service.
+ *
+ * The fallback is the compose hostname, matching playwright.config.ts.
+ */
+const STORAGE_GLOB = `${process.env.R2_ENDPOINT ?? 'http://minio-test:9000'}/**`;
+
 test.setTimeout(120_000);
 
 /** A video with an active version, cheap enough to make several of. */
@@ -54,11 +68,13 @@ test('an upload that fails at the storage PUT leaves the form up and creates not
   // Only the bytes are refused. The presign (`r2-init`) and everything else the
   // app serves still work, so the failure is exactly the one this test claims:
   // object storage rejected the upload halfway through.
-  await page.route('http://minio-test:9000/**', async (route) => {
+  let refusedPuts = 0;
+  await page.route(STORAGE_GLOB, async (route) => {
     if (route.request().method() !== 'PUT') {
       await route.continue();
       return;
     }
+    refusedPuts += 1;
     await route.fulfill({ status: 500, contentType: 'text/plain', body: 'storage is down' });
   });
 
@@ -77,6 +93,12 @@ test('an upload that fails at the storage PUT leaves the form up and creates not
     timeout: 60_000,
   });
 
+  // The interception really happened. Without this, a STORAGE_GLOB that matches
+  // nothing turns this test into an assertion about an error message that some
+  // unrelated failure happened to produce, and the diagnostic points at the
+  // message rather than at the pattern.
+  expect(refusedPuts, `no PUT to ${STORAGE_GLOB} was intercepted`).toBeGreaterThan(0);
+
   // Still on the form, so the file list and the title survive for a retry.
   await expect(page).toHaveURL(new RegExp(`/projects/${project.id}/videos/new$`));
   await expect(page.getByLabel('Title')).toHaveValue('Doomed Upload');
@@ -88,7 +110,7 @@ test('an upload that fails at the storage PUT leaves the form up and creates not
   // Positive control: with storage healthy the very same steps succeed, so the
   // assertions above are about the injected failure and not about the form
   // being broken.
-  await page.unroute('http://minio-test:9000/**');
+  await page.unroute(STORAGE_GLOB);
   await page.getByRole('button', { name: 'Add Video', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${project.id}$`), { timeout: 90_000 });
   await expect(page.getByRole('heading', { name: 'Doomed Upload', level: 3 })).toBeVisible();

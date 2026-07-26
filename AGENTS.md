@@ -15,6 +15,9 @@
   `bun run test:db:up` first.
 - If you added a batch of tests, hand them to a second reviewer before calling the work
   done. See "A batch of new tests gets an adversarial review, by somebody else" below.
+- If you added an end-to-end spec, run it under CI conditions too, not only locally. Hosts
+  differ between the two, and a `page.route()` glob that matches nothing passes locally and
+  tests nothing anywhere.
 
 ## Testing
 
@@ -47,9 +50,9 @@ For an API route, three cases are the minimum: an unauthenticated caller, a call
 signed in but not authorized, and the happy path. Assert the database row, not only the
 status code: a refused DELETE has to leave the row present.
 
-### Two ways a test can be worthless
+### Three ways a test can be worthless
 
-Both have been found in this repo, so they are worth naming.
+All three have been found in this repo, so they are worth naming.
 
 1. **A test that cannot fail.** Before you finish, name the specific mutation of the
    production code your test would catch. If you cannot name one, delete the test. When it
@@ -58,7 +61,16 @@ Both have been found in this repo, so they are worth naming.
    function looks up means deleting an entry from that constant also deletes its own test
    case. Write expected values by hand as literals.
 
-A third variant is specific to `tests/api/auth-matrix.test.ts`: a route that refuses a
+3. **A selector, route pattern or filter that matches nothing.** This one is specific to
+   `tests/e2e/`, and it fails in the worst direction: an injected failure that never gets
+   injected leaves the feature working, and the test then waits for an error message that
+   was never going to appear. Both halves need to be asserted, so count what you
+   intercepted and assert the count, the way
+   `tests/e2e/failure-recovery.spec.ts` does with `refusedPuts`. Never hardcode a host in a
+   `page.route()` glob either: CI publishes MinIO on localhost and the compose stack calls
+   it `minio-test`, and the pattern that matched locally silently matched nothing on CI.
+
+A fourth variant is specific to `tests/api/auth-matrix.test.ts`: a route that refuses a
 malformed request before it reaches its access check produces an entry that passes whether
 or not the guard exists. The suite catches it by requiring a 401 or a 403 rather than
 merely a non-2xx, and a 404 counts as suspicious rather than as a refusal, since a fixture
