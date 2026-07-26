@@ -1,15 +1,16 @@
 # Testing Plan
 
-Status: **all six phases delivered**. What actually landed, and where reality differed
-from the plan, is in Section 12. The sections below are kept as written so the reasoning
-behind each decision stays readable.
+Status: **all six phases delivered**, and a second round has since closed the coverage gaps
+the first one left. What actually landed, and where reality differed from the plan, is in
+Section 12; the gap-closing round is Section 13. The sections below are kept as written so
+the reasoning behind each decision stays readable.
 
 | Suite            | Command            | Tests    | Runtime |
 | ---------------- | ------------------ | -------- | ------- |
-| Unit + component | `bun run test`     | 1160     | 6s      |
-| API integration  | `bun run test:api` | 537      | 45s     |
-| End to end       | `bun run test:e2e` | 18       | 40s     |
-| **Total**        | `bun run test:all` | **1715** |         |
+| Unit + component | `bun run test`     | 2079     | 12s     |
+| API integration  | `bun run test:api` | 1015     | 92s     |
+| End to end       | `bun run test:e2e` | 29       | 66s     |
+| **Total**        | `bun run test:all` | **3123** |         |
 
 OpenFrame is ~56k lines across 60 API route handlers, ~90 components and ~50 `lib/`
 modules. Before this, every change was verified by hand. This document defines the stack,
@@ -731,3 +732,85 @@ in mind, and so nobody "fixes" a deliberate deviation back.
   stage, not from source files.
 - A coverage PR comment needs `pull-requests: write`, which conflicts with keeping
   `permissions: contents: read`, so CI uploads an artifact instead.
+
+---
+
+## 13. Closing the gaps
+
+The first round left an inventory of what it had not covered. This section records what
+the second round did about it, so the inventory is not read as still-current.
+
+Where it ended up:
+
+| Suite            | Before | After |
+| ---------------- | ------ | ----- |
+| Unit             | 1191   | 1702  |
+| Component + hook | 167    | 377   |
+| API integration  | 647    | 1015  |
+| End to end       | 18     | 29    |
+
+**The page-level authorization layer.** `lib/route-access.ts` had zero coverage, which
+meant the API routes were guarded by tests and the pages were not. It now has 47, with
+`next/navigation` mocked so that `redirect()` and `notFound()` throw the way they really
+do. Every redirect target was verified against a second source rather than read off the
+function under test, and one of the three the plan assumed turned out to be wrong: the
+project paths have no billing branch at all and reach `/settings` in two hops through
+`/dashboard`.
+
+**The media proxies.** Five routes served user media with only anonymous coverage, and the
+reason they had stayed that way was the positive control: no 2xx is reachable without R2
+configured, and a 403 with nothing green beside it can pass for the wrong reason. The way
+in was to stub `r2Client.send()` and leave `lib/r2-media-proxy.ts` itself real, so the
+object keys, content types and range handling are production code paths. Every one of the
+five now has a genuine 2xx in the same file as its 403.
+
+**Tests that could not fail.** The auth matrix used to assert only "not 2xx" for an
+anonymous caller. Two entries satisfied that without their guard existing at all, because
+the route refused a malformed body one line further down, and Section 12's predecessor
+recorded them as unfixable. They were fixable: requiring an authorization status (401, 403
+or 404) rather than merely a non-2xx one makes both load-bearing, and all 60 routes pass
+the stricter form, so `NON_AUTHORIZATION_REFUSALS` is empty and exists only as a drift
+guard.
+
+**A stub with the wrong shape is worse than no stub.** `tests/setup/api.ts` declared
+`readVideoObjectBytes` as returning an object wrapping a `Uint8Array` when it really
+returns the array. The object was truthy but had no `.length`, so `hasKnownVideoMagicBytes()`
+saw zero bytes and every route reaching `finalizeR2VideoUpload` took the "not a valid
+video" branch, cancelled the session and deleted both objects. Nothing failed. No test
+drove that path to success until this round, and the whole api suite had been green over
+it for weeks.
+
+**Parallel suites need parallel databases.** Eight agents wrote suites at once, and the
+api project empties every table between tests, so they cannot share one database. Each run
+got its own, created by hand in the same container and named `openframe_test_<suffix>`.
+`tests/api/infrastructure.test.ts` now accepts that shape instead of the exact name; the
+guard that matters, that the dev database is called `openframe` and does not match, is
+untouched.
+
+**Mutation testing.** `bun run test:mutation` runs StrykerJS over the authorization and
+input-validation modules listed in `stryker.config.json`, against
+`vitest.mutation.config.ts`, which is the `unit` project alone. Not a merge gate, for the
+same reason there is no coverage threshold, and CI runs it weekly and on demand rather
+than on a push, because a full run is minutes. The module list is explicit rather than a
+`lib/**` glob: a file whose only coverage is an API integration test would report every
+mutant as survived and bury the real findings.
+
+**Safari.** `playwright.config.ts` gains a `webkit-player` project behind `E2E_WEBKIT=1`,
+scoped to `player.spec.ts`. Playback is where a video review tool's Safari risk actually
+lives; running all fourteen specs under WebKit would mostly re-test React.
+
+**Reviewed by somebody else.** Every suite in this round was read by a separate agent whose
+only question was whether the tests deliver what they claim. That is now a standing rule in
+`AGENTS.md` rather than a one-off.
+
+What was deliberately left, and why:
+
+- **OAuth sign-in, Stripe checkout, and email verification end to end.** All three leave
+  the app or need a provider stub. The gate each one guards is covered at the API layer.
+- **Version comparison end to end.** Two real uploads per test against 51 KB of its own
+  client logic. Three solid specs beat five thin ones.
+- **`components/ui/*`, the marketing pages, and the three large panes.** Unchanged from
+  Section 11. The panes' real logic is reachable by extraction, which is what
+  `video-player-utils.ts` and `upload-chunking.ts` demonstrate.
+- **A coverage threshold gate.** Still a non-goal. Mutation testing answers the question a
+  threshold was a proxy for.

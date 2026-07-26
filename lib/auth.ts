@@ -215,7 +215,69 @@ export type EnrichedProjectForAccess = {
 };
 
 /**
- * Pure access computation — no DB queries.
+ * The project permission formulas, in one place.
+ *
+ * Two functions resolve the same six inputs by different routes:
+ * `computeProjectAccess` reads them off a project that was fetched with
+ * `projectAccessInclude()`, and `checkProjectAccess` queries for each relation.
+ * They then have to agree on what those inputs mean. Both used to carry a
+ * verbatim copy of the three formulas below, which is a silent-divergence
+ * hazard rather than a style complaint: change an authorization rule in one
+ * copy and not the other and a page renders for somebody the API would refuse.
+ */
+function resolveProjectPermissions(input: {
+  isOwner: boolean;
+  isPublic: boolean;
+  isProjectMember: boolean;
+  isProjectAdmin: boolean;
+  workspaceRole: WorkspaceMemberRole | 'OWNER' | null;
+  ownerBillingActive: boolean;
+}) {
+  const { isOwner, isPublic, isProjectMember, isProjectAdmin, workspaceRole, ownerBillingActive } =
+    input;
+
+  const isWorkspaceMember = !!workspaceRole;
+  const isWorkspaceAdmin = workspaceRole === WorkspaceMemberRole.ADMIN || workspaceRole === 'OWNER';
+
+  return {
+    isOwner,
+    isProjectMember,
+    isProjectAdmin,
+    isWorkspaceMember,
+    isWorkspaceAdmin,
+    hasAccess: ownerBillingActive && (isOwner || isProjectMember || isPublic || isWorkspaceMember),
+    canEdit: ownerBillingActive && (isOwner || isProjectAdmin || isWorkspaceAdmin),
+    canDelete: ownerBillingActive && (isOwner || workspaceRole === 'OWNER'),
+    ownerBillingActive,
+  };
+}
+
+/**
+ * The workspace permission formulas. Only one caller today, but it is kept
+ * beside its project twin and exported so it can be tested directly rather
+ * than only through whichever route happens to exercise it.
+ */
+export function resolveWorkspacePermissions(input: {
+  isOwner: boolean;
+  isMember: boolean;
+  isAdmin: boolean;
+  ownerBillingActive: boolean;
+}) {
+  const { isOwner, isMember, isAdmin, ownerBillingActive } = input;
+
+  return {
+    isOwner,
+    isMember,
+    isAdmin,
+    hasAccess: ownerBillingActive && (isOwner || isMember),
+    canEdit: ownerBillingActive && (isOwner || isAdmin),
+    canDelete: ownerBillingActive && isOwner,
+    ownerBillingActive,
+  };
+}
+
+/**
+ * Pure access computation, no DB queries.
  * Use after fetching a project with `projectAccessInclude(userId)`.
  */
 export function computeProjectAccess(
@@ -241,25 +303,14 @@ export function computeProjectAccess(
     if (wsMember) workspaceRole = wsMember.role;
   }
 
-  const isWorkspaceMember = !!workspaceRole;
-  const isWorkspaceAdmin = workspaceRole === WorkspaceMemberRole.ADMIN || workspaceRole === 'OWNER';
-
-  const hasAccess =
-    workspaceOwnerBillingAccess && (isOwner || isProjectMember || isPublic || isWorkspaceMember);
-  const canEdit = workspaceOwnerBillingAccess && (isOwner || isProjectAdmin || isWorkspaceAdmin);
-  const canDelete = workspaceOwnerBillingAccess && (isOwner || workspaceRole === 'OWNER');
-
-  return {
+  return resolveProjectPermissions({
     isOwner,
+    isPublic,
     isProjectMember,
     isProjectAdmin,
-    isWorkspaceMember,
-    isWorkspaceAdmin,
-    hasAccess,
-    canEdit,
-    canDelete,
+    workspaceRole,
     ownerBillingActive: workspaceOwnerBillingAccess,
-  };
+  });
 }
 
 // Helper to check project access including workspace membership
@@ -284,8 +335,8 @@ export async function checkProjectAccess(
   // The workspace role decides `canEdit`/`isWorkspaceMember`, not just whether the viewer
   // gets in at all, so it has to be resolved for every signed-in non-owner. Skipping it
   // once access was already granted some other way (public project, or an existing project
-  // membership) silently downgraded workspace admins to read-only on `intent: 'view'` —
-  // the intent pages and GET routes use to decide which actions to render.
+  // membership) silently downgraded workspace admins to read-only on `intent: 'view'`,
+  // the intent that pages and GET routes use to decide which actions to render.
   // Owners pass every check on their own; resolve their role only when they mutate.
   const shouldLoadWorkspaceRole = !!userId && (!isOwner || intent !== 'view');
 
@@ -338,25 +389,14 @@ export async function checkProjectAccess(
     });
     workspaceOwnerBillingAccess = wsOwner?.owner ? hasBillingAccess(wsOwner.owner) : false;
   }
-  const isWorkspaceMember = !!workspaceRole;
-  const isWorkspaceAdmin = workspaceRole === WorkspaceMemberRole.ADMIN || workspaceRole === 'OWNER';
-
-  const hasAccess =
-    workspaceOwnerBillingAccess && (isOwner || isProjectMember || isPublic || isWorkspaceMember);
-  const canEdit = workspaceOwnerBillingAccess && (isOwner || isProjectAdmin || isWorkspaceAdmin);
-  const canDelete = workspaceOwnerBillingAccess && (isOwner || workspaceRole === 'OWNER');
-
-  return {
+  return resolveProjectPermissions({
     isOwner,
+    isPublic,
     isProjectMember,
     isProjectAdmin,
-    isWorkspaceMember,
-    isWorkspaceAdmin,
-    hasAccess,
-    canEdit,
-    canDelete,
+    workspaceRole,
     ownerBillingActive: workspaceOwnerBillingAccess,
-  };
+  });
 }
 
 // Helper to check workspace access
@@ -386,17 +426,5 @@ export async function checkWorkspaceAccess(
   });
   const ownerBillingActive = owner ? hasBillingAccess(owner) : false;
 
-  const hasAccess = ownerBillingActive && (isOwner || isMember);
-  const canEdit = ownerBillingActive && (isOwner || isAdmin);
-  const canDelete = ownerBillingActive && isOwner;
-
-  return {
-    isOwner,
-    isMember,
-    isAdmin,
-    hasAccess,
-    canEdit,
-    canDelete,
-    ownerBillingActive,
-  };
+  return resolveWorkspacePermissions({ isOwner, isMember, isAdmin, ownerBillingActive });
 }

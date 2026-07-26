@@ -40,6 +40,8 @@ The testing stack, layout, and conventions live in [TESTING.md](TESTING.md). Rea
 | `bun run test:e2e` | Playwright end-to-end specs                        | yes                     |
 | `bun run verify`   | `bun run check` plus the unit and component suites | no                      |
 
+`scripts/test.sh mutation` is the other one worth knowing about. It runs StrykerJS over the authorization and validation modules, breaking one line at a time to find tests that pass either way. It takes minutes rather than seconds, so it is not in `all` and CI runs it weekly; reach for it after writing a batch of tests. It needs node rather than bun, which the script handles.
+
 The test database is a disposable Postgres defined in `docker-compose.test.yml`, on port `55432` so it cannot collide with your dev stack.
 
 ```bash

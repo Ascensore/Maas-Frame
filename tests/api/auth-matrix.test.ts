@@ -22,10 +22,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
 import { REPO_ROOT } from '../helpers/env';
-import { apiRequest, callRoute, type RouteHandler } from '../helpers/request';
+import { apiRequest, callRoute, readData, type RouteHandler } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
 import {
   addProjectMember,
@@ -98,6 +98,46 @@ import * as workspaceInvitationRoute from '@/app/api/workspaces/[workspaceId]/me
 import * as workspaceMemberRoute from '@/app/api/workspaces/[workspaceId]/members/[memberId]/route';
 import * as workspaceMembersRoute from '@/app/api/workspaces/[workspaceId]/members/route';
 import * as workspaceRoute from '@/app/api/workspaces/[workspaceId]/route';
+
+// ---------------------------------------------------------------------------
+// R2 boundary
+// ---------------------------------------------------------------------------
+// Only the admin half of this file needs it: POST /api/admin/stats/refresh-r2
+// walks the whole bucket through `r2Client`, which tests/setup/api.ts leaves
+// real because it only stubs the named helpers in `@/lib/r2`. The recorder below
+// is the same seam tests/api/lib-admin-stats.test.ts and
+// tests/api/lib-r2-cleanup.test.ts use, and it doubles as the proof that the
+// route ran its body rather than merely getting past the guard.
+//
+// Registering `@/lib/r2` here replaces the setup file's registration for that
+// module, so the presigners are the real ones for the rest of this file. That is
+// safe precisely because of what this suite asserts: no anonymous caller reaches
+// a line that presigns anything, they all stop at 401 or 403.
+//
+// vi.mock factories are hoisted above every const in the file, so the recorder
+// has to be hoisted with them.
+const r2 = vi.hoisted(() => ({
+  bucket: 'openframe-auth-matrix-test-bucket',
+  /** Buckets handed to ListObjectsV2, in call order. */
+  listedBuckets: [] as string[],
+}));
+
+vi.mock('@/lib/r2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/r2')>();
+  return {
+    ...actual,
+    R2_BUCKET_NAME: r2.bucket,
+    r2Client: {
+      send: async (command: { input?: { Bucket?: string } }) => {
+        r2.listedBuckets.push(command.input?.Bucket ?? '');
+        return {
+          Contents: [{ Key: 'videos/auth-matrix-fixture.mp4', Size: 2048 }],
+          IsTruncated: false,
+        };
+      },
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // The count guard
@@ -582,12 +622,10 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: assetsBunnyInitRoute,
     url: (f) => `/api/videos/${f.videoId}/assets/bunny-init`,
     params: (f) => ({ videoId: f.videoId }),
-    // This entry cannot be made load-bearing here, and it was verified to hold
-    // with `if (!context.canUploadAssets)` replaced by `if (false)`: Bunny
-    // uploads are unconfigured in the test environment, so the route answers 400
-    // one line below the guard whether or not the guard is there. The real
-    // coverage for it is in tests/api/assets-authz.test.ts, which asserts the
-    // exact 403 for a stranger next to the exact 400 for a member.
+    // Bunny uploads are unconfigured in the test environment, so this body
+    // reaches the access check and nothing beyond it. The exact-status coverage
+    // is in tests/api/assets-authz.test.ts, which asserts the 403 for a stranger
+    // next to the 400 a member gets one line below the guard.
     body: { fileName: 'a.mp4' },
   },
   {
@@ -602,13 +640,11 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: assetsRoute,
     url: (f) => `/api/videos/${f.videoId}/assets`,
     params: (f) => ({ videoId: f.videoId }),
-    // The body carries no `provider`, so POST answers 400 "Invalid provider"
-    // just below the access check. Verified: with
-    // `if (!context.canUploadAssets)` replaced by `if (false)` this entry still
-    // passes. Sending a real provider would not fix it, because every branch
-    // that could reach 201 needs a live R2 or YouTube call. The exact-status
-    // coverage lives in tests/api/assets-authz.test.ts instead. The GET half of
-    // this module is genuinely load-bearing here: it 403s on the access check.
+    // The body deliberately carries no `provider`. Every provider that could
+    // reach 201 needs a live R2 or YouTube call, so the request is built to stop
+    // at the access check: POST answers 403 there, and would answer 400
+    // "Invalid provider" one line below if the guard were gone. The
+    // exact-status coverage lives in tests/api/assets-authz.test.ts.
     body: { kind: 'IMAGE', sourceUrl: `/api/upload/image/${IMAGE_FILENAME}` },
   },
   {
@@ -668,6 +704,68 @@ const ROUTE_CASES: readonly RouteCase[] = [
 ];
 
 const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+/**
+ * The statuses a route reaches by way of its authorization check.
+ *
+ * 404 used to be in here and was taken out. Every one of the 55 guarded entries
+ * was instrumented and logged: all of them answer 401 or 403, none answers 404,
+ * so the arm was unreachable. Leaving it in was the last way an entry could pass
+ * without touching the guard it exists to protect. A fixture id that stops
+ * resolving for one route (a renamed relation, a factory that no longer writes
+ * the row) makes that route 404 *before* the access check, and with 404 accepted
+ * the entry would stay green forever while covering nothing. Now it fails and
+ * says so.
+ */
+const AUTHORIZATION_REFUSAL_STATUSES = new Set([401, 403]);
+
+/**
+ * Entries that answer an anonymous caller with something other than an
+ * authorization refusal, each with the reason and with where the route is
+ * really covered. Empty today, and the intent is that it stays that way.
+ *
+ * This map and the check that consults it are the mechanised form of a lesson
+ * this suite learned the hard way. Asserting only "not 2xx" is too weak: a
+ * route that refuses a malformed request one line below its access check
+ * satisfies it whether or not the check is there, so the entry proves nothing.
+ * Two entries here had exactly that shape and were confirmed by replacing their
+ * `if (!context.canUploadAssets)` with `if (false)` and watching the test stay
+ * green on the 400 from the line below.
+ *
+ * Requiring an authorization status instead of merely a non-2xx one fixes both
+ * of them without touching the request they send: an anonymous caller reaches
+ * the guard and gets 403, and with the guard removed the 400 from the next line
+ * now fails the assertion instead of passing it.
+ *
+ * The map remains as a drift guard, in the same spirit as REVIEWED_MIGRATIONS
+ * in tests/setup/db-global.ts. Add a route that refuses before its access
+ * check and this suite fails until somebody decides whether the request can be
+ * fixed to reach the guard (which is what happened for upload/image and
+ * upload/audio, both of which now send a real multipart body) or whether the
+ * route needs a suite of its own. It fails in the other direction too: fix an
+ * entry and the suite tells you to delete it, so nothing here can rot into a
+ * permanent exemption.
+ */
+const NON_AUTHORIZATION_REFUSALS = new Map<string, string>();
+
+/**
+ * Entries whose guard hides the existence of the row instead of refusing, so
+ * 404 *is* the authorization answer. Keyed the same way as
+ * NON_AUTHORIZATION_REFUSALS, and empty today because no route in this repo
+ * does that.
+ *
+ * It exists because the 404 arm was taken out of
+ * AUTHORIZATION_REFUSAL_STATUSES above, and a route that legitimately answers
+ * "no such thing" to a caller who may not know it exists is a real design, not
+ * a mistake. Listing it here keeps the decision visible per method rather than
+ * granting every entry a blanket 404 pass.
+ *
+ * Like its neighbour it fails in both directions. A route that 404s without an
+ * entry fails and points here; an entry whose route now answers 401 or 403
+ * fails and tells you to delete it, so nothing can rot into a permanent
+ * exemption.
+ */
+const NOT_FOUND_IS_THE_GUARD = new Map<string, string>();
 
 function discoverRouteModules(): string[] {
   const apiDir = path.join(REPO_ROOT, 'app', 'api');
@@ -765,6 +863,39 @@ describe('auth matrix', () => {
           // A crash is not a rejection. If this trips, the route threw on the
           // way to its access check instead of refusing cleanly.
           expect(status, `${method} ${entry.file} crashed instead of refusing`).not.toBe(500);
+
+          // And a validation refusal is not a rejection either. See
+          // NON_AUTHORIZATION_REFUSALS for why this is worth asserting.
+          const key = `${method} ${entry.file}`;
+          const documentedReason = NON_AUTHORIZATION_REFUSALS.get(key);
+          const hidesExistence = NOT_FOUND_IS_THE_GUARD.get(key);
+
+          if (hidesExistence !== undefined) {
+            expect(
+              status,
+              `${key} is listed in NOT_FOUND_IS_THE_GUARD, which says it hides the row's ` +
+                `existence rather than refusing, but it answered ${status}. If it now ` +
+                `refuses with 401 or 403, delete its entry.`
+            ).toBe(404);
+          } else if (documentedReason === undefined) {
+            expect(
+              AUTHORIZATION_REFUSAL_STATUSES.has(status),
+              `${key} answered ${status} to an anonymous caller, which is not an ` +
+                `authorization refusal. The route rejected the request before it reached ` +
+                `its access check, so this entry passes whether or not the guard exists. ` +
+                `Fix the request this entry sends so it reaches the guard, or add the ` +
+                `entry to NON_AUTHORIZATION_REFUSALS with the suite that covers it ` +
+                `properly. A 404 means either the fixture id no longer resolves, which is ` +
+                `the same bug wearing a different status, or the route hides existence on ` +
+                `purpose, in which case it belongs in NOT_FOUND_IS_THE_GUARD.`
+            ).toBe(true);
+          } else {
+            expect(
+              AUTHORIZATION_REFUSAL_STATUSES.has(status),
+              `${key} now answers ${status}, which is an authorization refusal, so it no ` +
+                `longer belongs in NON_AUTHORIZATION_REFUSALS. Delete its entry.`
+            ).toBe(false);
+          }
         }
       });
     }
@@ -778,22 +909,39 @@ describe('auth matrix', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Signed in, but not an admin
+  // Signed in: admin against non-admin
   // -------------------------------------------------------------------------
   // The sweep above only proves that app/api/admin/** refuses a caller with no
   // session, and `!session?.user?.isAdmin` is true for a null session for the
   // wrong reason. Nothing else in the suite touches `isAdmin` at all, so
-  // rewriting that guard as `!session?.user?.id` would leave every one of these
-  // tests green while handing the admin endpoints to any signed-in user. These
-  // two cases are what separate "no session" from "not an admin".
-  describe('admin routes reject a signed-in non-admin', () => {
+  // rewriting that guard as `!session?.user?.id` would leave every one of those
+  // tests green while handing the admin endpoints to any signed-in user. The
+  // refusals below are what separate "no session" from "not an admin".
+  //
+  // Each refusal is paired with the admin who must get through, because a
+  // refusal on its own is only half a guard. Replacing the whole check in
+  // app/api/admin/stats/refresh-r2/route.ts with an unconditional
+  // `return apiErrors.forbidden(...)`, which locks every admin out of the
+  // endpoint permanently, left all 984 api tests green until these two pairs
+  // existed. tests/e2e/admin.spec.ts does not close it either: it only POSTs as
+  // a non-admin.
+  //
+  // `isAdmin` is not a column. lib/auth.ts derives it in the jwt callback from
+  // the ADMIN_EMAILS environment variable and the session callback copies it
+  // onto session.user. The api project mocks `auth()` itself, so neither
+  // callback runs and stubbing ADMIN_EMAILS here would change nothing; the
+  // session signedInAs() builds is that derivation's output, which is all a
+  // route ever sees. The derivation itself is covered end to end by
+  // tests/e2e/admin.spec.ts.
+  describe('admin routes', () => {
     let fixtures: Fixtures;
 
     beforeEach(async () => {
+      r2.listedBuckets.length = 0;
       fixtures = await seedFixtures();
     });
 
-    it('refuses DELETE /api/admin/feedback/[feedbackId] and keeps the row', async () => {
+    it('refuses DELETE /api/admin/feedback/[feedbackId] to a non-admin and keeps the row', async () => {
       signedInAs({ id: fixtures.userId, isAdmin: false });
 
       const response = await callRoute(
@@ -806,7 +954,20 @@ describe('auth matrix', () => {
       expect(await db.userFeedback.count({ where: { id: fixtures.feedbackId } })).toBe(1);
     });
 
-    it('refuses POST /api/admin/stats/refresh-r2', async () => {
+    it('lets an admin DELETE /api/admin/feedback/[feedbackId], and the row is gone', async () => {
+      signedInAs({ id: fixtures.userId, isAdmin: true });
+
+      const response = await callRoute(
+        adminFeedbackRoute.DELETE as unknown as RouteHandler<ParamRecord>,
+        apiRequest(`/api/admin/feedback/${fixtures.feedbackId}`, { method: 'DELETE' }),
+        { feedbackId: fixtures.feedbackId }
+      );
+
+      expect(response.status).toBe(200);
+      expect(await db.userFeedback.count({ where: { id: fixtures.feedbackId } })).toBe(0);
+    });
+
+    it('refuses POST /api/admin/stats/refresh-r2 to a non-admin', async () => {
       signedInAs({ id: fixtures.userId, isAdmin: false });
 
       const response = await callRoute(
@@ -815,6 +976,28 @@ describe('auth matrix', () => {
       );
 
       expect(response.status).toBe(403);
+      // The refusal has to happen before the work, not after it.
+      expect(r2.listedBuckets).toEqual([]);
+    });
+
+    it('lets an admin POST /api/admin/stats/refresh-r2, and the bucket is walked', async () => {
+      signedInAs({ id: fixtures.userId, isAdmin: true });
+
+      const response = await callRoute(
+        adminRefreshR2Route.POST as RouteHandler<ParamRecord>,
+        apiRequest('/api/admin/stats/refresh-r2', { method: 'POST', body: {} })
+      );
+
+      expect(response.status).toBe(200);
+
+      const data = await readData<{ ok: boolean; refreshedAt: string }>(response);
+      expect(data.ok).toBe(true);
+      expect(Number.isNaN(Date.parse(data.refreshedAt))).toBe(false);
+
+      // Getting past the guard is not the same as doing the job. Without this,
+      // a handler that returned `{ ok: true }` and skipped the refresh would
+      // still pass.
+      expect(r2.listedBuckets).toEqual([r2.bucket]);
     });
   });
 });

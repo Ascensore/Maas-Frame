@@ -64,6 +64,12 @@ const APP_ENV: Record<string, string> = {
   INVITE_CODE: 'test-invite',
   TRUSTED_PROXY_MODE: 'none',
 
+  // Admin is not a database column. lib/auth.ts:143-148 derives `token.isAdmin`
+  // on every request by looking the signed-in address up in this list, so
+  // without it no account in this suite can be an admin and admin.spec.ts can
+  // only assert the refusals. The address is the one that spec signs in as.
+  ADMIN_EMAILS: process.env.ADMIN_EMAILS ?? 'e2e-admin@example.com',
+
   // Direct video uploads through the MinIO service in docker-compose.test.yml.
   // Without these the `Direct Upload` tab does not render at all, because
   // app/(dashboard)/projects/[projectId]/videos/new/page.tsx passes
@@ -138,6 +144,26 @@ export default defineConfig({
       use: { ...devices['Pixel 7'] },
       testMatch: '**/dashboard-mobile.spec.ts',
     },
+    // Safari, for the one thing that genuinely differs there.
+    //
+    // Opt-in, because it is not free: the browser is a separate download and a
+    // second full pass would roughly double a CI run that is already the longest
+    // job. Enable it with E2E_WEBKIT=1; the weekly `mutation`-style schedule in
+    // ci.yml is the intended home for it rather than every push.
+    //
+    // Scoped to player.spec.ts on purpose. A video review tool's real Safari
+    // risk is playback: codec support, whether `currentTime` commits the way
+    // Chromium's does, and hls.js, none of which the other specs touch. Running
+    // all fourteen specs under WebKit would mostly re-test React.
+    ...(process.env.E2E_WEBKIT
+      ? [
+          {
+            name: 'webkit-player',
+            use: { ...devices['Desktop Safari'] },
+            testMatch: '**/player.spec.ts',
+          },
+        ]
+      : []),
   ],
 
   webServer: MANAGES_OWN_SERVER

@@ -1,0 +1,783 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, renderHook, type RenderHookResult } from '@testing-library/react';
+import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
+import type { VideoAsset } from '@/components/video-page/types';
+
+const toastError = vi.fn();
+
+vi.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => toastError(...args),
+    success: vi.fn(),
+  },
+}));
+
+type Params = Parameters<typeof useVideoAssets>[0];
+
+const VIDEO_ID = 'vid1';
+/** The page size the hook hardcodes. */
+const PAGE_SIZE = 40;
+const FIRST_PAGE_URL = `/api/videos/${VIDEO_ID}/assets?limit=${PAGE_SIZE}&offset=0`;
+const POLL_INTERVAL_MS = 10000;
+
+function makeAsset(overrides: Partial<VideoAsset> = {}): VideoAsset {
+  return {
+    id: 'a1',
+    videoId: VIDEO_ID,
+    kind: 'IMAGE',
+    provider: 'R2_IMAGE',
+    displayName: 'Reference frame',
+    sourceUrl: '/api/upload/image/proj1/ref.png',
+    providerVideoId: null,
+    thumbnailUrl: null,
+    uploadedByUserId: 'user1',
+    uploadedByGuestName: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    uploadedByUser: { id: 'user1', name: 'Ada', image: null },
+    canDelete: true,
+    ...overrides,
+  };
+}
+
+interface ListInit {
+  ok?: boolean;
+  status?: number;
+  assets?: VideoAsset[];
+  hasMore?: boolean;
+  nextOffset?: number | null;
+  etag?: string | null;
+  error?: string;
+}
+
+function listResponse({
+  ok = true,
+  status = 200,
+  assets = [],
+  hasMore = false,
+  nextOffset = null,
+  etag = '"assets-1"',
+  error,
+}: ListInit = {}) {
+  return {
+    ok,
+    status,
+    headers: { get: (name: string) => (name.toLowerCase() === 'etag' ? etag : null) },
+    json: () =>
+      Promise.resolve(
+        ok
+          ? { data: { assets, pagination: { limit: PAGE_SIZE, offset: 0, hasMore, nextOffset } } }
+          : { error }
+      ),
+  };
+}
+
+function jsonResponse(ok: boolean, payload: unknown, status = ok ? 200 : 400) {
+  return {
+    ok,
+    status,
+    headers: { get: () => null },
+    json: () => Promise.resolve(payload),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+let clicked: string[];
+/** What the assets list endpoint answers with; reassign to change it mid-test. */
+let listed: ReturnType<typeof listResponse>;
+
+function callsTo(url: string, method?: string) {
+  return fetchMock.mock.calls.filter(
+    (call) => call[0] === url && (call[1]?.method ?? undefined) === method
+  );
+}
+
+function headersOf(call: unknown[]): Record<string, string> {
+  return ((call[1] as { headers?: Record<string, string> }).headers ?? {}) as Record<
+    string,
+    string
+  >;
+}
+
+function bodyOf(call: unknown[]): unknown {
+  return JSON.parse((call[1] as { body: string }).body);
+}
+
+type Harness = RenderHookResult<ReturnType<typeof useVideoAssets>, Params>;
+
+async function renderAssets(overrides: Partial<Params> = {}): Promise<Harness> {
+  const harness = renderHook((props: Params) => useVideoAssets(props), {
+    initialProps: {
+      videoId: VIDEO_ID,
+      isAuthenticated: true,
+      canUploadAssets: true,
+      canDownloadAssets: true,
+      ...overrides,
+    },
+  });
+  // The mount-time read has to settle before any assertion.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  return harness;
+}
+
+function assetIds(harness: Harness): string[] {
+  return harness.result.current.assets.map((asset) => asset.id);
+}
+
+beforeEach(() => {
+  clicked = [];
+  listed = listResponse({ assets: [makeAsset()] });
+  fetchMock = vi.fn((url: string) => {
+    if (typeof url === 'string' && url.startsWith(`/api/videos/${VIDEO_ID}/assets?`)) {
+      return Promise.resolve(listed);
+    }
+    return Promise.resolve(jsonResponse(true, { data: makeAsset({ id: 'a-server' }) }));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+    this: HTMLAnchorElement
+  ) {
+    clicked.push(this.getAttribute('href') ?? '');
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  toastError.mockReset();
+});
+
+describe('useVideoAssets reading the list', () => {
+  it('reads the first page on mount, bypassing the cache', async () => {
+    const harness = await renderAssets();
+
+    const call = callsTo(FIRST_PAGE_URL)[0];
+    expect(call[1]).toMatchObject({ cache: 'no-store' });
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(harness.result.current.isLoadingAssets).toBe(false);
+  });
+
+  it('sends no conditional header before an etag is known', async () => {
+    await renderAssets();
+
+    expect(headersOf(callsTo(FIRST_PAGE_URL)[0])).toEqual({});
+  });
+
+  it('sends the stored etag back on the next conditional read', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.fetchAssets({ useEtag: true });
+    });
+
+    expect(headersOf(callsTo(FIRST_PAGE_URL)[1])).toEqual({ 'If-None-Match': '"assets-1"' });
+  });
+
+  it('omits the etag when the caller wants a fresh read', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.fetchAssets();
+    });
+
+    expect(headersOf(callsTo(FIRST_PAGE_URL)[1])).toEqual({});
+  });
+
+  it('leaves the list on screen alone when the server answers 304', async () => {
+    const harness = await renderAssets();
+    listed = listResponse({ ok: false, status: 304, assets: [] });
+
+    await act(async () => {
+      await harness.result.current.fetchAssets({ useEtag: true });
+    });
+
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('records how many more assets there are', async () => {
+    listed = listResponse({ assets: [makeAsset()], hasMore: true, nextOffset: 40 });
+    const harness = await renderAssets();
+
+    expect(harness.result.current.hasMoreAssets).toBe(true);
+  });
+
+  it('shows the message the server sent when the read is refused', async () => {
+    listed = listResponse({ ok: false, status: 403, error: 'Access denied' });
+    const harness = await renderAssets();
+
+    expect(toastError).toHaveBeenCalledWith('Access denied');
+    expect(assetIds(harness)).toEqual([]);
+    expect(harness.result.current.isLoadingAssets).toBe(false);
+  });
+
+  it('falls back to a generic message when a 500 says nothing', async () => {
+    listed = listResponse({ ok: false, status: 500 });
+    await renderAssets();
+
+    expect(toastError).toHaveBeenCalledWith('Failed to fetch assets');
+  });
+
+  it('keeps the list when a later read fails', async () => {
+    const harness = await renderAssets();
+    listed = listResponse({ ok: false, status: 500 });
+
+    await act(async () => {
+      await harness.result.current.fetchAssets();
+    });
+
+    expect(assetIds(harness)).toEqual(['a1']);
+  });
+
+  it('says nothing at all on a silent read that fails', async () => {
+    const harness = await renderAssets();
+    listed = listResponse({ ok: false, status: 500, error: 'Access denied' });
+
+    await act(async () => {
+      await harness.result.current.fetchAssets({ silent: true });
+    });
+
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('leaves the visible spinner alone during a silent read', async () => {
+    const pending = deferred<unknown>();
+    const harness = await renderAssets();
+    fetchMock.mockReturnValue(pending.promise);
+
+    let read: Promise<void> | undefined;
+    act(() => {
+      read = harness.result.current.fetchAssets({ silent: true });
+    });
+    expect(harness.result.current.isLoadingAssets).toBe(false);
+
+    await act(async () => {
+      pending.resolve(listed);
+      await read;
+    });
+  });
+
+  it('reports a network failure', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    const harness = await renderAssets();
+
+    expect(toastError).toHaveBeenCalledWith('Failed to fetch assets');
+    expect(harness.result.current.isLoadingAssets).toBe(false);
+  });
+});
+
+describe('useVideoAssets loading more', () => {
+  it('does nothing when the first page was the whole list', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.loadMoreAssets();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for the offset the server named and appends the page', async () => {
+    listed = listResponse({ assets: [makeAsset()], hasMore: true, nextOffset: 40 });
+    const harness = await renderAssets();
+    listed = listResponse({ assets: [makeAsset({ id: 'a2' })], hasMore: false });
+
+    await act(async () => {
+      await harness.result.current.loadMoreAssets();
+    });
+
+    expect(callsTo(`/api/videos/${VIDEO_ID}/assets?limit=${PAGE_SIZE}&offset=40`)).toHaveLength(1);
+    expect(assetIds(harness)).toEqual(['a1', 'a2']);
+    expect(harness.result.current.hasMoreAssets).toBe(false);
+    expect(harness.result.current.isLoadingMoreAssets).toBe(false);
+  });
+
+  // The background poll can deliver a row the next page also contains.
+  it('drops a row the visible page already holds', async () => {
+    listed = listResponse({ assets: [makeAsset()], hasMore: true, nextOffset: 40 });
+    const harness = await renderAssets();
+    listed = listResponse({ assets: [makeAsset(), makeAsset({ id: 'a2' })] });
+
+    await act(async () => {
+      await harness.result.current.loadMoreAssets();
+    });
+
+    expect(assetIds(harness)).toEqual(['a1', 'a2']);
+  });
+
+  it('shows the message the server sent when the next page fails', async () => {
+    listed = listResponse({ assets: [makeAsset()], hasMore: true, nextOffset: 40 });
+    const harness = await renderAssets();
+    listed = listResponse({ ok: false, status: 500, error: 'Too many assets' });
+
+    await act(async () => {
+      await harness.result.current.loadMoreAssets();
+    });
+
+    expect(toastError).toHaveBeenCalledWith('Too many assets');
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(harness.result.current.isLoadingMoreAssets).toBe(false);
+  });
+
+  it('reports a network failure while paging', async () => {
+    listed = listResponse({ assets: [makeAsset()], hasMore: true, nextOffset: 40 });
+    const harness = await renderAssets();
+    fetchMock.mockRejectedValue(new Error('offline'));
+
+    await act(async () => {
+      await harness.result.current.loadMoreAssets();
+    });
+
+    expect(toastError).toHaveBeenCalledWith('Failed to load more assets');
+    expect(harness.result.current.isLoadingMoreAssets).toBe(false);
+  });
+});
+
+describe('useVideoAssets background polling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function renderWithTimers(overrides: Partial<Params> = {}) {
+    const harness = renderHook((props: Params) => useVideoAssets(props), {
+      initialProps: {
+        videoId: VIDEO_ID,
+        isAuthenticated: true,
+        canUploadAssets: true,
+        canDownloadAssets: true,
+        ...overrides,
+      },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    return harness;
+  }
+
+  it('re-reads the list silently every 10 seconds', async () => {
+    await renderWithTimers();
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS - 1);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(2);
+    expect(headersOf(callsTo(FIRST_PAGE_URL)[1])).toEqual({ 'If-None-Match': '"assets-1"' });
+  });
+
+  it('skips the poll while the tab is hidden', async () => {
+    await renderWithTimers();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(1);
+
+    visibility.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(2);
+  });
+
+  it('skips the poll while a write is still in flight', async () => {
+    const harness = await renderWithTimers();
+    const pending = deferred<unknown>();
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith(`/api/videos/${VIDEO_ID}/assets?`) ? Promise.resolve(listed) : pending.promise
+    );
+
+    let created: Promise<unknown> | undefined;
+    act(() => {
+      created = harness.result.current.createAsset({
+        provider: 'R2_IMAGE',
+        sourceUrl: '/api/upload/image/proj1/new.png',
+      });
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(1);
+
+    await act(async () => {
+      pending.resolve(jsonResponse(true, { data: makeAsset({ id: 'a-server' }) }));
+      await created;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(2);
+  });
+
+  it('stops polling after unmount', async () => {
+    const harness = await renderWithTimers();
+    harness.unmount();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    });
+    expect(callsTo(FIRST_PAGE_URL)).toHaveLength(1);
+  });
+});
+
+describe('useVideoAssets creating', () => {
+  const payload = {
+    provider: 'R2_IMAGE' as const,
+    displayName: 'New reference',
+    sourceUrl: '/api/upload/image/proj1/new.png',
+  };
+
+  it('refuses a viewer who cannot upload, without reaching the network', async () => {
+    const harness = await renderAssets({ canUploadAssets: false });
+    fetchMock.mockClear();
+
+    let created: VideoAsset | null | undefined;
+    await act(async () => {
+      created = await harness.result.current.createAsset(payload);
+    });
+
+    expect(created).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith('You do not have permission to upload assets');
+  });
+
+  it('posts the payload to the assets route and prepends the saved row', async () => {
+    const harness = await renderAssets();
+
+    let created: VideoAsset | null | undefined;
+    await act(async () => {
+      created = await harness.result.current.createAsset(payload);
+    });
+
+    const post = callsTo(`/api/videos/${VIDEO_ID}/assets`, 'POST')[0];
+    expect(bodyOf(post)).toEqual(payload);
+    expect(created?.id).toBe('a-server');
+    expect(assetIds(harness)).toEqual(['a-server', 'a1']);
+    expect(harness.result.current.isCreatingAsset).toBe(false);
+  });
+
+  it('signs a guest upload with the trimmed guest name', async () => {
+    const harness = await renderAssets({ isAuthenticated: false, guestName: '  Kerem  ' });
+
+    await act(async () => {
+      await harness.result.current.createAsset(payload);
+    });
+
+    expect(bodyOf(callsTo(`/api/videos/${VIDEO_ID}/assets`, 'POST')[0])).toEqual({
+      ...payload,
+      guestName: 'Kerem',
+    });
+  });
+
+  it('falls back to "Guest" when the viewer never gave a name', async () => {
+    const harness = await renderAssets({ isAuthenticated: false, guestName: '   ' });
+
+    await act(async () => {
+      await harness.result.current.createAsset(payload);
+    });
+
+    expect(bodyOf(callsTo(`/api/videos/${VIDEO_ID}/assets`, 'POST')[0])).toMatchObject({
+      guestName: 'Guest',
+    });
+  });
+
+  it('sends no guest name for a signed-in uploader', async () => {
+    const harness = await renderAssets({ isAuthenticated: true, guestName: 'Kerem' });
+
+    await act(async () => {
+      await harness.result.current.createAsset(payload);
+    });
+
+    expect(bodyOf(callsTo(`/api/videos/${VIDEO_ID}/assets`, 'POST')[0])).toEqual(payload);
+  });
+
+  it('leaves the list untouched when the server refuses the upload', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith(`/api/videos/${VIDEO_ID}/assets?`)
+        ? Promise.resolve(listed)
+        : Promise.resolve(jsonResponse(false, { error: 'Asset limit reached' }, 403))
+    );
+    const harness = await renderAssets();
+
+    let created: VideoAsset | null | undefined;
+    await act(async () => {
+      created = await harness.result.current.createAsset(payload);
+    });
+
+    expect(created).toBeNull();
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(toastError).toHaveBeenCalledWith('Asset limit reached');
+    expect(harness.result.current.isCreatingAsset).toBe(false);
+  });
+
+  // A 2xx with an empty body would otherwise push `undefined` into the list.
+  it('treats a success with no row in it as a failure', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      url.startsWith(`/api/videos/${VIDEO_ID}/assets?`)
+        ? Promise.resolve(listed)
+        : Promise.resolve(jsonResponse(true, {}))
+    );
+    const harness = await renderAssets();
+
+    let created: VideoAsset | null | undefined;
+    await act(async () => {
+      created = await harness.result.current.createAsset(payload);
+    });
+
+    expect(created).toBeNull();
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(toastError).toHaveBeenCalledWith('Failed to create asset');
+  });
+
+  it('reports a network failure without hanging the busy flag', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockRejectedValue(new Error('offline'));
+
+    let created: VideoAsset | null | undefined;
+    await act(async () => {
+      created = await harness.result.current.createAsset(payload);
+    });
+
+    expect(created).toBeNull();
+    expect(toastError).toHaveBeenCalledWith('Failed to create asset');
+    expect(harness.result.current.isCreatingAsset).toBe(false);
+  });
+});
+
+describe('useVideoAssets deleting', () => {
+  it('deletes through the asset route and drops the row', async () => {
+    listed = listResponse({ assets: [makeAsset(), makeAsset({ id: 'a2' })] });
+    const harness = await renderAssets();
+
+    let deleted: boolean | undefined;
+    await act(async () => {
+      deleted = await harness.result.current.deleteAsset('a1');
+    });
+
+    expect(callsTo(`/api/videos/${VIDEO_ID}/assets/a1`, 'DELETE')).toHaveLength(1);
+    expect(deleted).toBe(true);
+    expect(assetIds(harness)).toEqual(['a2']);
+    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+  });
+
+  it('marks which row is being deleted while the request runs', async () => {
+    const harness = await renderAssets();
+    const pending = deferred<unknown>();
+    fetchMock.mockReturnValue(pending.promise);
+
+    let removal: Promise<boolean> | undefined;
+    act(() => {
+      removal = harness.result.current.deleteAsset('a1');
+    });
+    expect(harness.result.current.activeDeleteAssetId).toBe('a1');
+
+    await act(async () => {
+      pending.resolve(jsonResponse(true, {}));
+      await removal;
+    });
+    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+  });
+
+  it('keeps the row when the server refuses the delete', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockResolvedValue(
+      jsonResponse(false, { error: 'Only the uploader can delete' }, 403)
+    );
+
+    let deleted: boolean | undefined;
+    await act(async () => {
+      deleted = await harness.result.current.deleteAsset('a1');
+    });
+
+    expect(deleted).toBe(false);
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(toastError).toHaveBeenCalledWith('Only the uploader can delete');
+    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+  });
+
+  it('keeps the row when the delete throws', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockRejectedValue(new Error('offline'));
+
+    let deleted: boolean | undefined;
+    await act(async () => {
+      deleted = await harness.result.current.deleteAsset('a1');
+    });
+
+    expect(deleted).toBe(false);
+    expect(assetIds(harness)).toEqual(['a1']);
+    expect(toastError).toHaveBeenCalledWith('Failed to delete asset');
+  });
+
+  it('removes both rows when two deletes are fired back to back', async () => {
+    listed = listResponse({ assets: [makeAsset(), makeAsset({ id: 'a2' })] });
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await Promise.all([
+        harness.result.current.deleteAsset('a1'),
+        harness.result.current.deleteAsset('a2'),
+      ]);
+    });
+
+    expect(assetIds(harness)).toEqual([]);
+    expect(harness.result.current.activeDeleteAssetId).toBeNull();
+  });
+});
+
+describe('useVideoAssets downloading', () => {
+  const downloadUrl = `/api/videos/${VIDEO_ID}/assets/a1/download`;
+
+  it('refuses a guest who cannot download', async () => {
+    const harness = await renderAssets({ canDownloadAssets: false });
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset());
+    });
+
+    expect(clicked).toEqual([]);
+    expect(toastError).toHaveBeenCalledWith('Asset downloads require an authenticated account');
+  });
+
+  it('refuses a YouTube asset, which has no file behind it', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset({ provider: 'YOUTUBE' }));
+    });
+
+    expect(clicked).toEqual([]);
+    expect(toastError).toHaveBeenCalledWith('YouTube assets cannot be downloaded');
+  });
+
+  it('navigates straight to the download route for an R2 asset', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockClear();
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset());
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(clicked).toEqual([downloadUrl]);
+    expect(document.querySelectorAll('a')).toHaveLength(0);
+  });
+
+  it('asks Bunny to prepare the file before navigating', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset({ provider: 'BUNNY' }), 'original');
+    });
+
+    expect(callsTo(`${downloadUrl}?source=original&prepare=1`)[0][1]).toEqual({
+      cache: 'no-store',
+    });
+    expect(clicked).toEqual([`${downloadUrl}?source=original`]);
+  });
+
+  it('defaults a Bunny asset to the compressed file', async () => {
+    const harness = await renderAssets();
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset({ provider: 'BUNNY' }));
+    });
+
+    expect(clicked).toEqual([`${downloadUrl}?source=compressed`]);
+  });
+
+  it('shows the message Bunny sent and navigates nowhere when preparing fails', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockResolvedValue(jsonResponse(false, { error: 'Still encoding' }, 409));
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset({ provider: 'BUNNY' }));
+    });
+
+    expect(clicked).toEqual([]);
+    expect(toastError).toHaveBeenCalledWith('Still encoding');
+    expect(harness.result.current.activeDownloadAssetId).toBeNull();
+  });
+
+  it('reports a network failure while preparing', async () => {
+    const harness = await renderAssets();
+    fetchMock.mockRejectedValue(new Error('offline'));
+
+    await act(async () => {
+      await harness.result.current.downloadAsset(makeAsset({ provider: 'BUNNY' }));
+    });
+
+    expect(toastError).toHaveBeenCalledWith('Failed to start download');
+    expect(harness.result.current.activeDownloadAssetId).toBeNull();
+  });
+});
+
+describe('useVideoAssets guest upload tokens', () => {
+  it('needs no token for a signed-in uploader', async () => {
+    const harness = await renderAssets({ isAuthenticated: true });
+    fetchMock.mockClear();
+
+    let token: string | null | undefined;
+    await act(async () => {
+      token = await harness.result.current.getGuestUploadToken('image');
+    });
+
+    expect(token).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('asks the watch route for a token scoped to the intent', async () => {
+    const harness = await renderAssets({ isAuthenticated: false });
+    fetchMock.mockResolvedValue(jsonResponse(true, { data: { token: 'guest-token' } }));
+
+    let token: string | null | undefined;
+    await act(async () => {
+      token = await harness.result.current.getGuestUploadToken('audio');
+    });
+
+    const post = callsTo(`/api/watch/${VIDEO_ID}/upload-token`, 'POST')[0];
+    expect(bodyOf(post)).toEqual({ intent: 'audio' });
+    expect(token).toBe('guest-token');
+  });
+
+  it('throws the message the server sent when the grant is refused', async () => {
+    const harness = await renderAssets({ isAuthenticated: false });
+    fetchMock.mockResolvedValue(jsonResponse(false, { error: 'Guest uploads are disabled' }, 403));
+
+    await expect(harness.result.current.getGuestUploadToken('image')).rejects.toThrow(
+      'Guest uploads are disabled'
+    );
+  });
+
+  it('throws when a 200 comes back with no token in it', async () => {
+    const harness = await renderAssets({ isAuthenticated: false });
+    fetchMock.mockResolvedValue(jsonResponse(true, { data: {} }));
+
+    await expect(harness.result.current.getGuestUploadToken('image')).rejects.toThrow(
+      'Failed to prepare upload'
+    );
+  });
+});

@@ -74,16 +74,43 @@ vi.mock('@/lib/r2', async (importOriginal) => {
     uploadAudio: vi.fn(async (key: string) => `https://r2.test/object/${key}`),
     deleteVideoObject: vi.fn(async () => undefined),
     deleteR2Object: vi.fn(async () => undefined),
-    headVideoObject: vi.fn(async () => ({
-      contentLength: 1024,
-      contentType: 'video/mp4',
-      etag: 'test-etag',
-    })),
-    readVideoObjectBytes: vi.fn(async () => ({
-      body: new Uint8Array(0),
-      contentLength: 0,
-      contentType: 'video/mp4',
-    })),
+    // These two must match the real return shapes exactly, and for a while they
+    // did not. `headVideoObject` really answers `contentLength: bigint`, and
+    // `readVideoObjectBytes` really answers `Uint8Array | null`, not an object
+    // wrapping one.
+    //
+    // The wrong shapes were not inert. `finalizeR2VideoUpload` passes the head
+    // result straight through as `sizeBytes`, so a `number` reached a BigInt
+    // column and only survived on Prisma's coercion. Worse, the old
+    // `readVideoObjectBytes` stub returned a truthy object with no `.length`,
+    // so `hasKnownVideoMagicBytes()` saw zero bytes and every route reaching
+    // finalize took the "Uploaded file is not a valid video" branch, cancelled
+    // the session and deleted both objects. Nothing caught it because no test
+    // drove that path to success until tests/api/lib-r2-video-finalize.test.ts.
+    // Both keep the guards the real functions apply before they ever speak to
+    // S3: neither will touch a key outside the `videos/` prefix, and
+    // readVideoObjectBytes also refuses a non-positive length (lib/r2.ts:407 and
+    // :440). A stub that answers for any key disarms those guards for every api
+    // suite at once, so a route that heads or reads the wrong object key would
+    // look perfectly healthy. The prefix is written out here rather than imported
+    // from lib/video-upload-validation, so that changing it fails loudly instead
+    // of the stub agreeing with the change.
+    headVideoObject: vi.fn(async (key: string) => {
+      if (!key.startsWith('videos/')) return null;
+      return { contentLength: BigInt(1024), contentType: 'video/mp4' };
+    }),
+    // 64 bytes with an `ftyp` box at offset 4, the ISO base media signature the
+    // first branch of hasKnownVideoMagicBytes() looks for, trimmed to the length
+    // the caller asked for the way a real ranged GET would be. A suite that needs
+    // a rejected upload overrides this per test.
+    readVideoObjectBytes: vi.fn(async (key: string, byteLength: number) => {
+      if (!key.startsWith('videos/') || byteLength <= 0) return null;
+      const header = new Uint8Array(64);
+      header.set([0x00, 0x00, 0x00, 0x20], 0);
+      header.set([0x66, 0x74, 0x79, 0x70], 4); // 'ftyp'
+      header.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
+      return header.slice(0, Math.min(header.length, byteLength));
+    }),
     ensureR2BucketExists: vi.fn(async () => undefined),
     ensureR2UploadCors: vi.fn(async () => []),
   };

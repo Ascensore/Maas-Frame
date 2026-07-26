@@ -1,0 +1,61 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": [
+    "Mutation testing. Stryker rewrites one line of a source file at a time and reruns",
+    "the suite; a mutant that survives is a line no test disagrees with, which is the",
+    "machine-checkable version of 'this test cannot fail'.",
+    "",
+    "This suite was built with three tests that could not fail, all found by hand. This",
+    "config is what finds the fourth. It is diagnostic and it does not gate a merge: see",
+    "`break: null` below, and TESTING.md section 11 for the same reasoning applied to",
+    "coverage.",
+    "",
+    "Run it with `bun run test:mutation`, which puts it in a node container because",
+    "Stryker needs node and the report lands in reports/mutation/. CI runs it weekly and",
+    "on demand, never on a push, because a full run is minutes rather than seconds."
+  ],
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "vitest": {
+    "configFile": "vitest.mutation.config.ts"
+  },
+  "reporters": ["html", "clear-text", "progress"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "coverageAnalysis": "perTest",
+  "timeoutMS": 60000,
+  "concurrency": 4,
+  "_mutate_comment": [
+    "Listed one by one rather than globbed as `lib/**`, and the reason matters. Stryker",
+    "reports every mutant in a file with no unit coverage as survived, so globbing the",
+    "whole of lib/ would bury the real findings under modules whose only coverage is an",
+    "API integration test that this config deliberately does not run (see",
+    "vitest.mutation.config.ts). A report that is mostly noise gets ignored.",
+    "",
+    "So the list is the authorization and input-validation surface, the places where a",
+    "test that cannot fail is actually dangerous. Add a module here once it has real",
+    "unit coverage."
+  ],
+  "mutate": [
+    "lib/route-access.ts",
+    "lib/rate-limit.ts",
+    "lib/share-links.ts",
+    "lib/r2-upload-token.ts",
+    "lib/bunny-upload-token.ts",
+    "lib/request-origin.ts",
+    "lib/logger.ts",
+    "lib/validation.ts",
+    "lib/email-validation.ts",
+    "lib/image-upload-validation.ts",
+    "lib/video-upload-validation.ts",
+    "lib/guest-identity.ts",
+    "lib/billing.ts",
+    "lib/content-security-policy.ts"
+  ],
+  "thresholds": {
+    "high": 85,
+    "low": 70,
+    "break": null
+  }
+}

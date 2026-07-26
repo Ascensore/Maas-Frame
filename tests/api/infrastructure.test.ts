@@ -18,12 +18,21 @@ import {
 } from '../factories';
 
 describe('api test infrastructure', () => {
-  it('points at the test database and not at the dev one', async () => {
+  it('points at a test database and not at the dev one', async () => {
     const [{ current_database: name }] = await db.$queryRaw<
       Array<{ current_database: string }>
     >`SELECT current_database()`;
 
-    expect(name).toBe('openframe_test');
+    // `openframe_test` is what everything uses by default. The optional suffix
+    // exists because this suite empties every table after every test, so two
+    // runs against one database destroy each other: writing several suites in
+    // parallel means giving each run its own database, created by hand in the
+    // same container and named `openframe_test_<something>`.
+    //
+    // The guard that matters is the one this leaves intact: the dev database is
+    // called `openframe`, which does not match, so a stray DATABASE_URL still
+    // cannot get this suite to truncate real data.
+    expect(name).toMatch(/^openframe_test(_[a-z0-9]+)?$/);
   });
 
   it('discovers every table from information_schema, so resetDb cannot drift', async () => {

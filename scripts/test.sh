@@ -1,10 +1,11 @@
 #!/usr/bin/env sh
 # One entry point for the OpenFrame test suites.
 #
-#   scripts/test.sh unit   vitest unit + component projects
-#   scripts/test.sh api    vitest api project (needs the test database)
-#   scripts/test.sh e2e    playwright specs (needs the test database)
-#   scripts/test.sh all    unit, then api, then e2e
+#   scripts/test.sh unit      vitest unit + component projects
+#   scripts/test.sh api       vitest api project (needs the test database)
+#   scripts/test.sh e2e       playwright specs (needs the test database)
+#   scripts/test.sh all       unit, then api, then e2e
+#   scripts/test.sh mutation  StrykerJS over the authorization modules (slow)
 #
 # Run the api and e2e suites one at a time, never side by side. They share one
 # database, and the api suite empties every table after each of its tests, so a
@@ -17,6 +18,11 @@
 set -eu
 
 bun_image='docker.io/oven/bun:alpine'
+# StrykerJS is the one thing here that cannot run under bun: its instrumenter and
+# its vitest runner both want a node runtime, and @stryker-mutator/core declares
+# `engines.node >= 20`. `bun run test:mutation` would resolve the bin and then
+# execute it under bun, so the mutation mode below uses node explicitly.
+node_image='docker.io/library/node:22-alpine'
 # Pinned to the installed @playwright/test version. The image carries the
 # matching browser build, and Playwright refuses a mismatched pair. Microsoft
 # publishes the image some time after the npm release, so check the tag exists
@@ -47,13 +53,18 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: scripts/test.sh <unit|api|e2e|all>
+Usage: scripts/test.sh <unit|api|e2e|all|mutation>
 
-  unit  Unit and component suites. No database, no browser.
-  api   API integration suites. Starts the disposable test Postgres first.
-  e2e   Playwright end-to-end specs. Starts the test Postgres and MinIO first,
-        then builds and starts the app itself on port 3100.
-  all   unit, then api, then e2e.
+  unit      Unit and component suites. No database, no browser.
+  api       API integration suites. Starts the disposable test Postgres first.
+  e2e       Playwright end-to-end specs. Starts the test Postgres and MinIO
+            first, then builds and starts the app itself on port 3100.
+  all       unit, then api, then e2e.
+  mutation  StrykerJS over the authorization and validation modules listed in
+            stryker.config.json. Minutes, not seconds, and not part of `all`:
+            it answers "which of my tests cannot fail", which is a question you
+            ask after writing a batch of them, not on every run. The report
+            lands in reports/mutation/index.html.
 
 The containers keep running afterwards so the next run is fast. Stop them
 with: podman compose -f docker-compose.test.yml --profile e2e down -v
@@ -233,6 +244,16 @@ run_unit() {
   run_in_bun_image '' "$install_step && bun run test"
 }
 
+run_mutation() {
+  say 'mutation testing'
+  # No install step: the node image has npm, and letting it touch node_modules
+  # that bun installed is a good way to end up with two package managers
+  # disagreeing. Run `scripts/test.sh unit` once first if the tree is cold.
+  run_cmd podman run --rm ${tty_flag:+"$tty_flag"} \
+    -v "$repo_root:/workspace:z" -w /workspace "$node_image" \
+    node node_modules/@stryker-mutator/core/bin/stryker.js run
+}
+
 run_api() {
   say 'api suites'
   require_compose_file
@@ -293,6 +314,9 @@ case "$1" in
     run_unit
     run_api
     run_e2e
+    ;;
+  mutation)
+    run_mutation
     ;;
   *)
     printf 'scripts/test.sh: unknown mode "%s"\n\n' "$1" >&2

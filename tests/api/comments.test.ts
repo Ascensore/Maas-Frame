@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
+import { notifyProjectOwner } from '@/lib/notifications';
 import { createShareSessionValue, getShareSessionCookieName } from '@/lib/share-session';
 import {
   GET as listComments,
@@ -281,6 +282,46 @@ describe('POST /api/versions/[versionId]/comments', () => {
 
     expect(response.status, label).toBe(400);
     expect(await db.comment.count()).toBe(0);
+  });
+
+  // The "do not email somebody about their own comment" rule lives in the route
+  // (`const isOwnProject = session?.user?.id === project.ownerId`), not in
+  // lib/notifications.ts: notifyUsers() takes no actor argument and has no way
+  // to know. So it cannot be covered by a unit test of the notification module,
+  // and until these two it was covered nowhere: deleting the guard turned
+  // nothing red. They are written as a pair on purpose, because the negative one
+  // alone would also pass if notifications stopped firing altogether.
+  it('does not notify the project owner about the owner’s own comment', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+    vi.mocked(notifyProjectOwner).mockClear();
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), { body: { content: 'hi', timestamp: 1 } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    expect(notifyProjectOwner).not.toHaveBeenCalled();
+  });
+
+  it('notifies the project owner about a collaborator’s comment', async () => {
+    const scenario = await seedVersion();
+    const collaborator = await createUser();
+    await addProjectMember({ projectId: scenario.project.id, userId: collaborator.id });
+    signedInAs(collaborator);
+    vi.mocked(notifyProjectOwner).mockClear();
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), { body: { content: 'hi', timestamp: 1 } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    expect(notifyProjectOwner).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(notifyProjectOwner).mock.calls[0][0]).toBe(scenario.owner.id);
   });
 
   it('accepts a timestamp exactly equal to the duration', async () => {

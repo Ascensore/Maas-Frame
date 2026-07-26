@@ -1,4 +1,11 @@
 import { captureVideoThumbnail } from '@/lib/client/video-thumbnail';
+import {
+  getMultipartProgressPercent,
+  getPartByteRange,
+  getRetryDelayMs,
+  getUploadProgressPercent,
+  PART_RETRY_DELAYS_MS,
+} from '@/lib/client/upload-chunking';
 
 export type R2MultipartPart = { partNumber: number; url: string };
 
@@ -21,8 +28,6 @@ export type R2VideoInitResponse = {
   multipart: R2MultipartInit | null;
 };
 
-const PART_RETRY_DELAYS = [0, 2000, 5000, 10000];
-
 export type R2VideoUploadResult = R2VideoInitResponse & {
   duration: number | null;
   thumbnailUrl: string | null;
@@ -43,7 +48,7 @@ function uploadBytesWithProgress(
 
     xhr.upload.onprogress = (event) => {
       if (!onProgress || !event.lengthComputable) return;
-      onProgress(Math.round((event.loaded / event.total) * 100));
+      onProgress(getUploadProgressPercent(event.loaded, event.total));
     };
 
     xhr.onload = () => {
@@ -117,7 +122,7 @@ async function withRetry<T>(fn: () => Promise<T>, delays: number[]): Promise<T> 
   let lastError: unknown;
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
     if (attempt > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      await new Promise((resolve) => setTimeout(resolve, getRetryDelayMs(attempt, delays)));
     }
     try {
       return await fn();
@@ -160,16 +165,14 @@ async function uploadVideoMultipart(
 
   const reportProgress = () => {
     if (!onProgress) return;
-    const loaded = loadedPerPart.reduce((sum, value) => sum + value, 0);
-    onProgress(Math.min(100, Math.round((loaded / totalBytes) * 100)));
+    onProgress(getMultipartProgressPercent(loadedPerPart, totalBytes));
   };
 
   const completedParts: Array<{ partNumber: number; etag: string }> = [];
 
   for (let index = 0; index < multipart.parts.length; index += 1) {
     const part = multipart.parts[index];
-    const start = (part.partNumber - 1) * partSize;
-    const end = Math.min(start + partSize, totalBytes);
+    const { start, end } = getPartByteRange(part.partNumber, partSize, totalBytes);
     const blob = file.slice(start, end);
 
     const etag = await withRetry(
@@ -178,7 +181,7 @@ async function uploadVideoMultipart(
           loadedPerPart[index] = loadedBytes;
           reportProgress();
         }),
-      PART_RETRY_DELAYS
+      PART_RETRY_DELAYS_MS
     );
 
     loadedPerPart[index] = end - start;

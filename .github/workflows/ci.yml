@@ -1,6 +1,14 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # For the `mutation` job below, which is too slow to run on a push. Everything
+  # else runs on the schedule too, which costs nothing and catches the class of
+  # breakage that comes from a dependency rather than from a commit.
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -74,6 +82,40 @@ jobs:
           path: coverage/
           if-no-files-found: ignore
           retention-days: 7
+
+  mutation:
+    # Mutation testing on the authorization and validation surface. Not a gate:
+    # it reports, it never fails the build (`break: null` in stryker.config.json),
+    # for the same reason there is no coverage threshold. See TESTING.md
+    # section 11.
+    #
+    # Weekly and on demand only. A full run is minutes rather than seconds,
+    # because Stryker reruns the suite once per mutant, and nobody waits that
+    # long on a pull request. The findings it produces are not the kind that
+    # need catching within the hour: it finds tests that cannot fail, which is a
+    # slow leak rather than a regression.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # node, not bun: Stryker's instrumenter and its vitest runner both expect
+      # a node runtime, and @stryker-mutator/core declares `engines.node >= 20`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      # bun for the install (it owns bun.lock), node for the run.
+      - run: bun install
+      - name: Mutation testing
+        run: node node_modules/@stryker-mutator/core/bin/stryker.js run
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          if-no-files-found: ignore
+          retention-days: 30
 
   e2e:
     runs-on: ubuntu-latest
