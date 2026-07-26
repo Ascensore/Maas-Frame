@@ -7,7 +7,10 @@ const BUNNY_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 const ITEMS_PER_PAGE = 100;
 const MAX_PAGES = 200;
 const CHUNK_SIZE = 500;
-const DEFAULT_GRACE_HOURS = 24;
+// Seven days, not one. A video only counts as abandoned once nothing has claimed it for
+// long enough that no upload, retry or delayed finalisation could still be in flight, and
+// a day is short enough that an upload interrupted overnight looks abandoned by morning.
+const DEFAULT_GRACE_HOURS = 7 * 24;
 
 type BunnyConfig = {
   apiKey: string;
@@ -17,6 +20,7 @@ type BunnyConfig = {
 type BunnyVideo = {
   id: string;
   uploadedAt: Date;
+  title: string | null;
 };
 
 function getBunnyConfig(): BunnyConfig {
@@ -46,6 +50,17 @@ function parseVideoId(item: unknown): string | null {
       const trimmed = candidate.trim();
       if (BUNNY_VIDEO_ID_PATTERN.test(trimmed)) return trimmed;
     }
+  }
+
+  return null;
+}
+
+function parseTitle(item: unknown): string | null {
+  const record = toRecord(item);
+  if (!record) return null;
+
+  for (const candidate of [record.title, record.Title]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
   }
 
   return null;
@@ -133,7 +148,7 @@ async function listBunnyVideos(
         skippedInvalid += 1;
         continue;
       }
-      videos.push({ id, uploadedAt });
+      videos.push({ id, uploadedAt, title: parseTitle(item) });
     }
 
     if (totalItems !== null && page * ITEMS_PER_PAGE >= totalItems) break;
@@ -180,6 +195,73 @@ async function findReferencedVideoIds(videoIds: string[]): Promise<Set<string>> 
   }
 
   return referenced;
+}
+
+/**
+ * Best-effort owner for an orphan, by matching its Bunny title against titles still in the
+ * database.
+ *
+ * An orphan is by definition a video nothing in the database points at, so there is no
+ * authoritative owner to look up: `bunny-init` sends Bunny a title and nothing else, no
+ * user id and no email. What is left is the title, and it is worth matching because the
+ * common way an orphan appears is a version upload that failed and was then retried
+ * successfully, which leaves a live row carrying the same title.
+ *
+ * A hit is therefore a hint, not a fact, and the output says so. A miss means the video
+ * cannot be attributed at all from what Bunny and the database hold today.
+ */
+async function findOwnerHintsByTitle(titles: string[]): Promise<Map<string, string[]>> {
+  const hints = new Map<string, Set<string>>();
+  const unique = [...new Set(titles.filter((title): title is string => Boolean(title)))];
+
+  const remember = (title: string | null, emails: Array<string | null | undefined>) => {
+    if (!title) return;
+    const existing = hints.get(title) ?? new Set<string>();
+    for (const email of emails) {
+      if (email) existing.add(email);
+    }
+    if (existing.size > 0) hints.set(title, existing);
+  };
+
+  const ownerSelect = {
+    project: {
+      select: {
+        owner: { select: { email: true } },
+        workspace: { select: { owner: { select: { email: true } } } },
+      },
+    },
+  } as const;
+
+  for (const group of chunk(unique, CHUNK_SIZE)) {
+    const [videos, versions, assets] = await Promise.all([
+      db.video.findMany({
+        where: { title: { in: group } },
+        select: { title: true, ...ownerSelect },
+      }),
+      db.videoVersion.findMany({
+        where: { title: { in: group } },
+        select: { title: true, video: { select: ownerSelect } },
+      }),
+      db.videoAsset.findMany({
+        where: { displayName: { in: group } },
+        select: { displayName: true, video: { select: ownerSelect } },
+      }),
+    ]);
+
+    for (const row of videos) {
+      remember(row.title, [row.project.owner?.email, row.project.workspace.owner?.email]);
+    }
+    for (const row of versions) {
+      const project = row.video.project;
+      remember(row.title, [project.owner?.email, project.workspace.owner?.email]);
+    }
+    for (const row of assets) {
+      const project = row.video.project;
+      remember(row.displayName, [project.owner?.email, project.workspace.owner?.email]);
+    }
+  }
+
+  return new Map([...hints].map(([title, emails]) => [title, [...emails].sort()]));
 }
 
 async function deleteBunnyVideo(
@@ -238,6 +320,32 @@ async function main() {
   const referenced = await findReferencedVideoIds(eligibleIds);
 
   const orphanIds = eligibleIds.filter((id) => !referenced.has(id));
+
+  // A dry run that only reports a count cannot be acted on: the point of it is to see
+  // what would go before anything does. Deleting prints the same list, so a real run is
+  // auditable after the fact too.
+  if (orphanIds.length > 0) {
+    const byId = new Map(eligible.map((video) => [video.id, video]));
+    const orphanTitles = orphanIds
+      .map((orphanId) => byId.get(orphanId)?.title)
+      .filter((title): title is string => Boolean(title));
+    const ownerHints = await findOwnerHintsByTitle(orphanTitles);
+
+    console.log(
+      `[bunny-orphan-cleanup] Orphans ${dryRun ? 'that would be deleted' : 'to delete'}:`
+    );
+    for (const orphanId of orphanIds) {
+      const video = byId.get(orphanId);
+      const uploadedAt = video?.uploadedAt.toISOString() ?? 'unknown date';
+      const title = video?.title ?? 'untitled';
+      const emails = video?.title ? (ownerHints.get(video.title) ?? []) : [];
+      // "possibly" is load-bearing: this is a title match, not a stored owner.
+      const owner =
+        emails.length > 0 ? `possibly ${emails.join(', ')}` : 'owner unknown (no title match)';
+      console.log(`[bunny-orphan-cleanup]   ${orphanId}  ${uploadedAt}  ${title}  ${owner}`);
+    }
+  }
+
   let deleted = 0;
   let alreadyMissing = 0;
   let failed = 0;
