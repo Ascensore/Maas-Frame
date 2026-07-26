@@ -166,32 +166,53 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+/**
+ * Every Bunny id the database still points at.
+ *
+ * A Bunny id is stored in two places per row, and both are checked. `VideoVersion.videoId`
+ * and `VideoAsset.providerVideoId` hold the guid on its own, while `originalUrl` and
+ * `sourceUrl` embed the same guid inside
+ * `https://iframe.mediadelivery.net/embed/<library>/<guid>`. They are written together, so
+ * they normally agree, but this decides what gets deleted: a row whose id column was left
+ * empty or drifted while its url still carried the guid would make a live video look
+ * orphaned. Reading both makes disagreement harmless rather than destructive.
+ */
 async function findReferencedVideoIds(videoIds: string[]): Promise<Set<string>> {
   const referenced = new Set<string>();
 
   for (const group of chunk(videoIds, CHUNK_SIZE)) {
     const [versionRows, assetRows] = await Promise.all([
       db.videoVersion.findMany({
-        where: {
-          providerId: 'bunny',
-          videoId: { in: group },
-        },
-        select: { videoId: true },
+        where: { providerId: 'bunny' },
+        select: { videoId: true, originalUrl: true },
       }),
       db.videoAsset.findMany({
-        where: {
-          provider: 'BUNNY',
-          providerVideoId: { in: group },
-        },
-        select: { providerVideoId: true },
+        where: { provider: 'BUNNY' },
+        select: { providerVideoId: true, sourceUrl: true },
       }),
     ]);
-    versionRows.forEach((row) => {
-      if (row.videoId) referenced.add(row.videoId);
-    });
-    assetRows.forEach((row) => {
-      if (row.providerVideoId) referenced.add(row.providerVideoId);
-    });
+
+    // Every Bunny row is read rather than filtered by id, because the url has to be
+    // searched for a guid it merely contains. There are as many of these rows as there
+    // are Bunny videos in the product, so this is one small scan instead of one LIKE per
+    // candidate id.
+    const ids = new Set(group);
+    const urls: string[] = [];
+
+    for (const row of versionRows) {
+      if (row.videoId && ids.has(row.videoId)) referenced.add(row.videoId);
+      if (row.originalUrl) urls.push(row.originalUrl);
+    }
+    for (const row of assetRows) {
+      if (row.providerVideoId && ids.has(row.providerVideoId)) referenced.add(row.providerVideoId);
+      if (row.sourceUrl) urls.push(row.sourceUrl);
+    }
+
+    for (const url of urls) {
+      for (const id of group) {
+        if (!referenced.has(id) && url.includes(id)) referenced.add(id);
+      }
+    }
   }
 
   return referenced;
