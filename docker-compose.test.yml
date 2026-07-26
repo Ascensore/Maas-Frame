@@ -1,0 +1,159 @@
+# Disposable infrastructure for the automated test suites. Everything here is
+# on non-default ports so it can never collide with the dev stack in
+# docker-compose.yml.
+#
+# The `openframe-test` network is declared external so that the test runner
+# container can reach these services by service name. Create it once with:
+#   podman network create openframe-test
+#
+# Two tiers, split by compose profile:
+#
+#   (no profile)  postgres-test. Needed by the `api` Vitest project and by the
+#                 Playwright suite. Started by `bun run test:db:up`.
+#   e2e           minio-test + minio-test-init (real S3-compatible storage for
+#                 the direct video upload flow) and app-test (the app under
+#                 test). Started by `scripts/test.sh e2e`.
+#
+# Usage:
+#   podman compose -f docker-compose.test.yml up -d --wait postgres-test
+#   podman run --rm --network openframe-test -v "$PWD":/workspace:z -w /workspace \
+#     docker.io/oven/bun:alpine sh -c "bun run test:api"
+#
+#   podman compose -f docker-compose.test.yml --profile e2e up -d --wait \
+#     postgres-test minio-test
+#   scripts/test.sh e2e
+#
+# app-test is opt-in and only needed when you want the app under test to run as
+# a container instead of being started by Playwright's own `webServer`:
+#   podman compose -f docker-compose.test.yml --profile e2e up -d --wait app-test
+#   E2E_BASE_URL=http://app-test:3100 scripts/test.sh e2e
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: openframe-postgres-test
+    environment:
+      POSTGRES_USER: openframe
+      POSTGRES_PASSWORD: openframe
+      POSTGRES_DB: openframe_test
+    # fsync off: the data directory is a tmpfs that is thrown away anyway, so
+    # durability buys nothing and costs a lot of wall clock time.
+    command: ['postgres', '-c', 'fsync=off', '-c', 'full_page_writes=off']
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U openframe -d openframe_test']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - '127.0.0.1:55432:5432'
+    networks:
+      - openframe-test
+
+  # S3-compatible object storage for the direct video upload path. The browser
+  # PUTs the file straight at this endpoint with a presigned URL, so the
+  # hostname the app signs for has to be the hostname the browser resolves:
+  # both the Playwright container and the app under test are on this network,
+  # so both use `minio-test:9000`. MinIO's default CORS policy allows every
+  # origin and exposes ETag, which is exactly what lib/client/r2-video-upload.ts
+  # needs, so no bucket CORS configuration is involved.
+  minio-test:
+    profiles: ['e2e']
+    image: docker.io/minio/minio:latest
+    container_name: openframe-minio-test
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: openframe
+      MINIO_ROOT_PASSWORD: openframe-test-secret
+      # lib/r2.ts builds its S3 client with `region: 'auto'`, so MinIO has to
+      # accept that region name in the SigV4 signature.
+      MINIO_REGION_NAME: auto
+    # Same reasoning as postgres-test: the data is disposable, so keep it in RAM.
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - '127.0.0.1:59000:9000'
+      - '127.0.0.1:59001:9001'
+    networks:
+      - openframe-test
+
+  # Creates the bucket. Nothing at runtime does: ensureR2BucketExists() lives in
+  # scripts/self-host-bootstrap.ts, not on the request path, so a missing bucket
+  # would surface as a presigned PUT returning NoSuchBucket.
+  minio-test-init:
+    profiles: ['e2e']
+    image: docker.io/minio/mc:latest
+    container_name: openframe-minio-test-init
+    depends_on:
+      minio-test:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - >
+        mc alias set testminio http://minio-test:9000 openframe openframe-test-secret &&
+        mc mb --ignore-existing testminio/openframe-test &&
+        mc ls testminio
+    networks:
+      - openframe-test
+
+  # The app under test, for the case where you do not want Playwright to start
+  # it. This is the same command playwright.config.ts uses for its `webServer`,
+  # run against the mounted working tree so `.next` stays warm between runs.
+  #
+  # NODE_ENV is left to `next build` / `next start` (production). The runtime
+  # values below are duplicated from .env.test.example on purpose: `next build`
+  # never loads `.env.test`, and NEXT_PUBLIC_APP_URL is inlined at build time.
+  app-test:
+    profiles: ['e2e']
+    image: docker.io/oven/bun:alpine
+    container_name: openframe-app-test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      minio-test:
+        condition: service_healthy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:z
+    environment:
+      DATABASE_URL: postgresql://openframe:openframe@postgres-test:5432/openframe_test?schema=public
+      NEXTAUTH_URL: http://app-test:3100
+      NEXTAUTH_SECRET: test-secret-not-used-for-anything-real
+      NEXT_PUBLIC_APP_URL: http://app-test:3100
+      OPENFRAME_ENABLE_STRIPE: 'true'
+      STRIPE_SECRET_KEY: sk_test_openframe_dummy
+      STRIPE_PRICE_ID: price_test_openframe_dummy
+      OPENFRAME_REQUIRE_INVITE_CODE: 'true'
+      INVITE_CODE: test-invite
+      TRUSTED_PROXY_MODE: none
+      OPENFRAME_ENABLE_S3_VIDEO_UPLOADS: 'true'
+      OPENFRAME_ENABLE_BUNNY_UPLOADS: 'false'
+      R2_ENDPOINT: http://minio-test:9000
+      R2_ACCESS_KEY_ID: openframe
+      R2_SECRET_ACCESS_KEY: openframe-test-secret
+      R2_BUCKET_NAME: openframe-test
+      PORT: '3100'
+    command:
+      - sh
+      - -c
+      - './node_modules/.bin/next build && ./node_modules/.bin/next start -p 3100 -H 0.0.0.0'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:3100/login']
+      interval: 5s
+      timeout: 5s
+      retries: 120
+    ports:
+      - '127.0.0.1:3100:3100'
+    networks:
+      - openframe-test
+
+networks:
+  openframe-test:
+    external: true

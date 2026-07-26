@@ -13,3 +13,186 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install
       - run: bun run check
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # Postgres for the `api` Vitest project. This job runs directly on the
+      # runner, so the service is reachable on localhost through the published
+      # port, not by service name.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openframe
+          POSTGRES_PASSWORD: openframe
+          POSTGRES_DB: openframe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openframe -d openframe_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgresql://openframe:openframe@localhost:5432/openframe_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Create .env.test from the committed example
+        # The `api` project's setup files read `.env.test`, which is gitignored.
+        # The example carries every value the suites need; only the database host
+        # differs, because locally it is the compose service and here it is a
+        # service container. The appended line wins inside the file and the
+        # exported job env wins over the file, so the override holds either way.
+        run: |
+          cp .env.test.example .env.test
+          printf '\nDATABASE_URL=%s\n' "$DATABASE_URL" >> .env.test
+      # No migration step here on purpose. The api project's globalSetup
+      # (tests/setup/db-global.ts) builds the schema itself, and it cannot use
+      # `prisma migrate deploy`: prisma/migrations is a stack of patches on top
+      # of a baseline that was never captured, so the second migration alters an
+      # enum that nothing in the history creates. That file explains it in full.
+      - name: Unit and component tests
+        run: bun run test
+      - name: API integration tests
+        run: bun run test:api
+      - name: Coverage report
+        # Diagnostic only. There is no coverage threshold gate on purpose, see
+        # TESTING.md section 11.
+        #
+        # Run under node rather than `bun run test:coverage`: @vitest/coverage-v8
+        # needs the V8 inspector API, which bun does not implement, so under bun
+        # every file reports "Coverage APIs are not supported" and the numbers
+        # come out as zero. The suite itself passes under both runtimes.
+        run: node node_modules/vitest/vitest.mjs run --project unit --coverage
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [check]
+    container:
+      # Must stay pinned to the installed @playwright/test version, because the
+      # image carries the matching browser build and Playwright refuses a
+      # mismatched pair. Microsoft publishes the image a while after the npm
+      # release, which is why package.json pins 1.61.1 rather than the newer
+      # 1.62.0: no v1.62.0-noble image exists yet. Bump both together, and check
+      # the tag is published first:
+      # curl -sI https://mcr.microsoft.com/v2/playwright/manifests/v1.61.1-noble
+      image: mcr.microsoft.com/playwright:v1.61.1-noble
+      # Chromium needs a real /dev/shm in a container.
+      options: --ipc=host
+      # No --user override on purpose: the image has no bun, and installing one
+      # needs root. The runner is ephemeral, so root-owned files do no harm.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openframe
+          POSTGRES_PASSWORD: openframe
+          POSTGRES_DB: openframe_test
+        options: >-
+          --health-cmd "pg_isready -U openframe -d openframe_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      # Object storage for video-upload.spec.ts. The browser PUTs the file
+      # straight at the presigned URL, so there is nothing to mock at that
+      # boundary from inside a browser. Mirrors the minio-test service in
+      # docker-compose.test.yml.
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: openframe
+          MINIO_ROOT_PASSWORD: openframe-test-secret
+          # lib/r2.ts signs with `region: 'auto'`, so MinIO has to accept it.
+          MINIO_REGION_NAME: auto
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # This job runs inside a container, so it shares a network with its
+      # services and reaches them by service name. No published ports are
+      # involved, which is why there are no `ports:` blocks above.
+      DATABASE_URL: postgresql://openframe:openframe@postgres:5432/openframe_test?schema=public
+      # The Playwright web server builds and starts the app, and `next build`
+      # does not run with NODE_ENV=test, so it never picks up `.env.test`. These
+      # values are therefore set on the job itself. Port 3100 matches
+      # playwright.config.ts.
+      NEXTAUTH_URL: http://localhost:3100
+      NEXTAUTH_SECRET: ci-secret-not-used-for-anything-real
+      NEXT_PUBLIC_APP_URL: http://localhost:3100
+      # Required. NextAuth v5 answers every /api/auth/* request with
+      # `UntrustedHost` in a production build unless the host is trusted, which
+      # is why .env.docker.example sets the same variable for real deployments.
+      AUTH_TRUST_HOST: 'true'
+      # Stripe ON, with dummy credentials, and deliberately not 'false'.
+      # hasBillingAccess() short-circuits to `true` when the flag is off and
+      # buildBillingAccessWhereInput() returns `{}`, which disarms the whole
+      # billing gate: billing-gate.spec.ts would then assert nothing. No spec
+      # walks into checkout, so nothing reaches Stripe. This also keeps the
+      # e2e job consistent with .env.test, which the api suite already runs
+      # with the flag on for the same reason.
+      OPENFRAME_ENABLE_STRIPE: 'true'
+      STRIPE_SECRET_KEY: sk_test_openframe_dummy
+      STRIPE_PRICE_ID: price_test_openframe_dummy
+      STRIPE_WEBHOOK_SECRET: whsec_test_openframe_dummy
+      OPENFRAME_REQUIRE_INVITE_CODE: 'true'
+      INVITE_CODE: test-invite
+      TRUSTED_PROXY_MODE: none
+      # Direct video uploads, pointed at the MinIO service. Without these the
+      # `Direct Upload` tab is not rendered and video-upload.spec.ts fails on its
+      # first assertion rather than silently testing nothing.
+      OPENFRAME_ENABLE_S3_VIDEO_UPLOADS: 'true'
+      OPENFRAME_ENABLE_BUNNY_UPLOADS: 'false'
+      R2_ENDPOINT: http://minio:9000
+      R2_ACCESS_KEY_ID: openframe
+      R2_SECRET_ACCESS_KEY: openframe-test-secret
+      R2_BUCKET_NAME: openframe-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bun
+        # oven-sh/setup-bun cannot be used inside this container: it unpacks a
+        # zip archive and the Playwright image ships no unzip. It ships node and
+        # npm, so npm installs the bun binary instead. bun is needed both for
+        # `bun run test:e2e` and for the web server command in
+        # playwright.config.ts.
+        run: npm install --global bun
+      - run: bun install
+      - name: Create .env.test from the committed example
+        run: |
+          cp .env.test.example .env.test
+          printf '\nDATABASE_URL=%s\n' "$DATABASE_URL" >> .env.test
+      - name: Create the MinIO bucket
+        # Nothing at runtime creates it: ensureR2BucketExists() lives in
+        # scripts/self-host-bootstrap.ts, not on the request path, so a missing
+        # bucket would surface as a presigned PUT returning NoSuchBucket. The
+        # Playwright image has no mc, so this goes through the same image the
+        # service container uses.
+        run: |
+          curl -sSfL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/mc
+          mc alias set ciminio "$R2_ENDPOINT" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY"
+          mc mb --ignore-existing "ciminio/$R2_BUCKET_NAME"
+      # No `bun run test:db:bootstrap` step: tests/e2e/global-setup.ts calls the
+      # same setup function before the web server starts, and also clears the
+      # rate_limits table so a retry does not inherit a spent window.
+      - name: End-to-end tests
+        run: bun run test:e2e
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

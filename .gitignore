@@ -12,6 +12,9 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
+/.playwright
 
 # next.js
 /.next/
@@ -34,6 +37,7 @@ yarn-error.log*
 .env*
 !.env.example
 !.env.docker.example
+!.env.test.example
 
 # vercel
 .vercel
