@@ -49,7 +49,14 @@ test('a new account can be registered with the invite code and then signed in', 
 
   // SMTP is unset for the app under test, so isEmailVerificationEnabled() is
   // false and the account is auto-verified rather than parked on /verify-email.
-  await expect(page).toHaveURL(/\/login\?registered=true$/);
+  //
+  // Deliberately tolerant of extra query parameters rather than anchored with
+  // `$`. What the register flow promises is the login page plus `registered=true`;
+  // the rest of the query string is not part of that contract. On CI the login
+  // page arrives carrying `callbackUrl=%2Fdashboard`, which it derives from its
+  // own default in getSafeCallbackUrl(null), and an anchored pattern turned that
+  // into a deterministic CI-only failure while passing locally.
+  await expect(page).toHaveURL(/\/login\?(?:.*&)?registered=true(?:&|$)/);
   await expect(page.getByText('Account created successfully!')).toBeVisible();
 
   await page.getByLabel('Email').fill(email);
