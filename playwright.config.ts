@@ -1,5 +1,22 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import {
+  developmentEnvKeys,
+  forgetAutoloadedDotenv,
+  readTestEnvValue,
+} from './tests/helpers/dev-env';
+import { assertTestDatabase } from './tests/helpers/test-database';
+
+// Undo bun's automatic `.env` load before anything below reads process.env.
+// APP_ENV is built while this file is evaluated, so without this the suite
+// would build and start the app against whatever deployment `.env` describes,
+// with that deployment's R2 credentials, and then write test fixtures into it.
+//
+// Note this is not `import './tests/helpers/env'`: that would pull all of
+// `.env.test` in, DISABLE_RATE_LIMIT included, and the production `next build`
+// below refuses to run with that set.
+forgetAutoloadedDotenv();
+
 // ---------------------------------------------------------------------------
 // End-to-end suite. See TESTING.md section 6.
 //
@@ -27,7 +44,7 @@ const MANAGES_OWN_SERVER = !process.env.E2E_BASE_URL;
 /**
  * Environment for the app under test.
  *
- * `.env.test` is deliberately not reused here. Two reasons:
+ * `.env.test` is deliberately not loaded here. Two reasons:
  *
  *  1. `next build` runs with NODE_ENV=production and never loads `.env.test`,
  *     and NEXT_PUBLIC_APP_URL is inlined into the client bundle at build time,
@@ -36,11 +53,23 @@ const MANAGES_OWN_SERVER = !process.env.E2E_BASE_URL;
  *     `hasR2Config()` is derived from them, so putting them in `.env.test`
  *     would flip `isDirectFileUploadEnabled()` to true for 537 API tests that
  *     currently assert the unconfigured branch.
+ *
+ * DATABASE_URL is the exception, read out of `.env.test` on its own below: the
+ * app and the global setup that seeds it must never disagree about which
+ * database is under test.
  */
+const DATABASE_URL =
+  process.env.DATABASE_URL ??
+  readTestEnvValue('DATABASE_URL') ??
+  'postgresql://openframe:openframe@postgres-test:5432/openframe_test?schema=public';
+
+// The e2e suite registers users, uploads videos and deletes projects. Whatever
+// it is pointed at ends up holding test fixtures, so it has to be a test
+// database, and this is the last point before `next build` inherits the value.
+assertTestDatabase(DATABASE_URL);
+
 const APP_ENV: Record<string, string> = {
-  DATABASE_URL:
-    process.env.DATABASE_URL ??
-    'postgresql://openframe:openframe@postgres-test:5432/openframe_test?schema=public',
+  DATABASE_URL,
 
   NEXTAUTH_URL: BASE_URL,
   NEXT_PUBLIC_APP_URL: BASE_URL,
@@ -92,6 +121,25 @@ const APP_ENV: Record<string, string> = {
   // PASSWORD, so leaving those unset is what disables it. .env.test sets them
   // for the api suite, which mocks nodemailer; nothing mocks it here.
 };
+
+// Blank every variable a development env file defines and this config does not.
+//
+// forgetAutoloadedDotenv() above cleared them out of process.env, which is not
+// enough on its own: `next build` and `next start` run @next/env themselves and
+// read `.env` again, filling anything still undefined. So on a developer machine
+// the app under test would come up with that machine's configuration. SMTP_HOST
+// alone turns email verification on and fails the registration spec, and
+// DISABLE_RATE_LIMIT fails the production build outright, from inside
+// lib/rate-limit.ts, reported as an unrelated "Failed to collect page data".
+//
+// An empty value rather than a deletion, because deletion is what @next/env
+// undoes. The result is the environment CI already runs with, where these
+// variables simply do not exist.
+for (const key of developmentEnvKeys()) {
+  if (!(key in APP_ENV)) {
+    APP_ENV[key] = '';
+  }
+}
 
 export default defineConfig({
   testDir: './tests/e2e',

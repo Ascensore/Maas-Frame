@@ -23,7 +23,7 @@
     "verify": "bun run check && bun run test",
     "test:db:up": "podman compose -f docker-compose.test.yml up -d --wait postgres-test",
     "test:db:down": "podman compose -f docker-compose.test.yml down -v",
-    "test:db:bootstrap": "bun run scripts/test-db-bootstrap.ts",
+    "test:db:bootstrap": "bun run tests/setup/db-bootstrap.ts",
     "prepare": "husky",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",

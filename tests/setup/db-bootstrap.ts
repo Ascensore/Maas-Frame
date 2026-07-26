@@ -6,11 +6,15 @@
  * schema in place before the server starts. Both paths therefore call the same
  * setup function, so there is exactly one description of how a test database is
  * built (including why it uses `prisma db push` rather than `migrate deploy`,
- * which is documented at the top of tests/setup/db-global.ts).
+ * which is documented at the top of db-global.ts).
+ *
+ * This lives under tests/ rather than scripts/ because the production image
+ * ignores tests/ entirely, and a script that imports from it would break the
+ * typecheck that runs before every build.
  *
  * Usage: bun run test:db:bootstrap
  */
-import { setup } from '../tests/setup/db-global';
+import { setup } from './db-global';
 
 setup()
   .then(() => {

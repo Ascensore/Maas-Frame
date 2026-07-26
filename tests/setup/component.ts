@@ -93,3 +93,51 @@ Object.defineProperty(navigator, 'sendBeacon', {
   writable: true,
   value: () => true,
 });
+
+/**
+ * `localStorage` goes missing on Node 24 and newer, and only `localStorage`.
+ *
+ * Node ships its own experimental Web Storage global now, which evaluates to
+ * `undefined` unless the process was started with `--localstorage-file`. Vitest
+ * leaves an already-present global alone when it copies jsdom's window onto
+ * globalThis, so jsdom's implementation never lands and Node's empty one wins.
+ * `sessionStorage` has no counterpart in Node and comes through untouched,
+ * which is what makes the asymmetry visible.
+ *
+ * CI pins Node 22 and never sees this; a developer on a current Node does, as
+ * every test in guest-gate.test.tsx failing on `localStorage.clear()`. The
+ * guard means that when jsdom's own implementation is the one in scope, this
+ * leaves it alone.
+ */
+function createMemoryStorage(): Storage {
+  const entries = new Map<string, string>();
+
+  return {
+    get length() {
+      return entries.size;
+    },
+    key(index: number) {
+      return Array.from(entries.keys())[index] ?? null;
+    },
+    getItem(key: string) {
+      return entries.get(String(key)) ?? null;
+    },
+    setItem(key: string, value: string) {
+      entries.set(String(key), String(value));
+    },
+    removeItem(key: string) {
+      entries.delete(String(key));
+    },
+    clear() {
+      entries.clear();
+    },
+  };
+}
+
+if (typeof localStorage === 'undefined') {
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: createMemoryStorage(),
+  });
+}
