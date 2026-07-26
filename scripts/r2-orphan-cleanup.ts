@@ -8,7 +8,12 @@ import { r2Client, R2_BUCKET_NAME } from '../lib/r2';
 import { cleanupExpiredBillingWorkspaces } from './expired-billing-cleanup';
 import { logError } from '@/lib/logger';
 
-const UNATTACHED_UPLOAD_TTL_MS = 15 * 60 * 1000;
+// Seven days. This was fifteen minutes, which is shorter than a slow multipart upload of
+// a large file: an object still being written, or written but not yet finalised into a
+// row, looked abandoned and could be deleted out from under the upload that was creating
+// it. An object only counts as abandoned once nothing has claimed it for long enough that
+// no upload, retry or delayed finalisation could still be in flight.
+const UNATTACHED_UPLOAD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CHUNK_SIZE = 500;
 const PREFIXES = ['images/', 'voice/', 'videos/'] as const;
 
@@ -38,6 +43,50 @@ function keyToProxyUrl(key: string): string | null {
     return filename ? `/api/upload/video/${filename}` : null;
   }
   return null;
+}
+
+/**
+ * The owner of each orphaned object key, from the upload session that created it.
+ *
+ * Unlike the Bunny side, this is an answer rather than a guess: `videoUploadSession` keeps
+ * `objectKey` alongside the user who initiated the upload, and the row survives even when
+ * the upload never became a video, which is exactly the case that produces an orphan.
+ * Both the initiating user and the billed user are reported when they differ, because the
+ * billed one is who paid for the bytes.
+ */
+async function findUploadSessionOwners(keys: string[]): Promise<Map<string, string>> {
+  const owners = new Map<string, string>();
+
+  for (const group of chunk(keys, CHUNK_SIZE)) {
+    // VideoUploadSession holds the ids but declares no relation to User, so the addresses
+    // are resolved in a second query rather than by widening the schema for a script.
+    const sessions = await db.videoUploadSession.findMany({
+      where: { objectKey: { in: group } },
+      select: { objectKey: true, status: true, userId: true, billedUserId: true },
+    });
+    if (sessions.length === 0) continue;
+
+    const userIds = [
+      ...new Set(sessions.flatMap((session) => [session.userId, session.billedUserId])),
+    ];
+    const users = await db.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, email: true },
+    });
+    const emailById = new Map(users.map((user) => [user.id, user.email]));
+
+    for (const session of sessions) {
+      const initiator = emailById.get(session.userId) ?? null;
+      const billed = emailById.get(session.billedUserId) ?? null;
+      const who =
+        billed && billed !== initiator
+          ? `${initiator ?? 'unknown'} (billed: ${billed})`
+          : (initiator ?? billed ?? 'unknown');
+      owners.set(session.objectKey, `${who} [session ${session.status.toLowerCase()}]`);
+    }
+  }
+
+  return owners;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -181,16 +230,27 @@ async function main() {
 
   let deleted = 0;
   let failed = 0;
-  let orphaned = 0;
-  let referencedCount = 0;
 
-  for (const candidate of candidates) {
-    if (referenced.has(candidate.url)) {
-      referencedCount += 1;
-      continue;
+  // A dry run that only reports a count cannot be acted on: the point of it is to see
+  // what would go before anything does. Deleting prints the same list, so a real run is
+  // auditable after the fact too.
+  const orphanCandidates = candidates.filter((candidate) => !referenced.has(candidate.url));
+  const referencedCount = candidates.length - orphanCandidates.length;
+  const orphaned = orphanCandidates.length;
+
+  if (orphanCandidates.length > 0) {
+    const owners = await findUploadSessionOwners(orphanCandidates.map((c) => c.key));
+
+    console.log(`[r2-orphan-cleanup] Orphans ${dryRun ? 'that would be deleted' : 'to delete'}:`);
+    for (const candidate of orphanCandidates) {
+      const email = owners.get(candidate.key);
+      console.log(
+        `[r2-orphan-cleanup]   ${candidate.key}  ${email ?? 'owner unknown (no upload session)'}`
+      );
     }
+  }
 
-    orphaned += 1;
+  for (const candidate of orphanCandidates) {
     if (dryRun) continue;
 
     try {
