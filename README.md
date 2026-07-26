@@ -208,6 +208,28 @@ bun run check
 
 Feature flags and self-hosting environment variables are documented in `.env.example` and `.env.docker.example`.
 
+### Running The Tests
+
+The testing stack, layout, and conventions are documented in [TESTING.md](TESTING.md).
+
+```bash
+bun run test        # unit and component suites, no database needed
+bun run test:api    # API integration suites, needs the test database
+bun run test:e2e    # Playwright end-to-end specs, needs the test database
+bun run verify      # bun run check plus the unit and component suites
+```
+
+The API and end-to-end suites need the disposable Postgres defined in `docker-compose.test.yml`, and the end-to-end suite also needs the MinIO service in its `e2e` profile. Start Postgres with `bun run test:db:up` and stop everything with `bun run test:db:down`. Run those two suites one at a time: they share a database, and the API suite empties every table between its tests.
+
+`scripts/test.sh <unit|api|e2e|all>` is the shortcut: it runs a suite inside a container, so no package manager runs on your host, and it starts the test database first when the suite needs one.
+
+```bash
+./scripts/test.sh unit
+./scripts/test.sh api
+```
+
+The `pre-push` Git hook runs `bun run verify` on every push. It leaves `bun run test:api` out on purpose, because that suite needs the database container.
+
 ## License
 
 OpenFrame is Fair Source, licensed under the [Functional Source License](https://fsl.software/) (FSL-1.1-ALv2). The full source code is publicly available, you can self-host it, and every release automatically becomes Apache 2.0 open source two years after its publication. See [LICENCE](LICENCE) for the full terms.

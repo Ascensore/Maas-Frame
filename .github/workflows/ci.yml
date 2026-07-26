@@ -1,6 +1,14 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # For the `mutation` job below, which is too slow to run on a push. Everything
+  # else runs on the schedule too, which costs nothing and catches the class of
+  # breakage that comes from a dependency rather than from a commit.
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,3 +21,217 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install
       - run: bun run check
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # Postgres for the `api` Vitest project. This job runs directly on the
+      # runner, so the service is reachable on localhost through the published
+      # port, not by service name.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openframe
+          POSTGRES_PASSWORD: openframe
+          POSTGRES_DB: openframe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openframe -d openframe_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgresql://openframe:openframe@localhost:5432/openframe_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Create .env.test from the committed example
+        # The `api` project's setup files read `.env.test`, which is gitignored.
+        # The example carries every value the suites need; only the database host
+        # differs, because locally it is the compose service and here it is a
+        # service container. The appended line wins inside the file and the
+        # exported job env wins over the file, so the override holds either way.
+        run: |
+          cp .env.test.example .env.test
+          printf '\nDATABASE_URL=%s\n' "$DATABASE_URL" >> .env.test
+      # No migration step here on purpose. The api project's globalSetup
+      # (tests/setup/db-global.ts) builds the schema itself, and it cannot use
+      # `prisma migrate deploy`: prisma/migrations is a stack of patches on top
+      # of a baseline that was never captured, so the second migration alters an
+      # enum that nothing in the history creates. That file explains it in full.
+      - name: Unit and component tests
+        run: bun run test
+      - name: API integration tests
+        run: bun run test:api
+      - name: Coverage report
+        # Diagnostic only. There is no coverage threshold gate on purpose, see
+        # TESTING.md section 11.
+        #
+        # Run under node rather than `bun run test:coverage`: @vitest/coverage-v8
+        # needs the V8 inspector API, which bun does not implement, so under bun
+        # every file reports "Coverage APIs are not supported" and the numbers
+        # come out as zero. The suite itself passes under both runtimes.
+        run: node node_modules/vitest/vitest.mjs run --project unit --coverage
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  mutation:
+    # Mutation testing on the authorization and validation surface. Not a gate:
+    # it reports, it never fails the build (`break: null` in stryker.config.json),
+    # for the same reason there is no coverage threshold. See TESTING.md
+    # section 11.
+    #
+    # Weekly and on demand only. A full run is minutes rather than seconds,
+    # because Stryker reruns the suite once per mutant, and nobody waits that
+    # long on a pull request. The findings it produces are not the kind that
+    # need catching within the hour: it finds tests that cannot fail, which is a
+    # slow leak rather than a regression.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # node, not bun: Stryker's instrumenter and its vitest runner both expect
+      # a node runtime, and @stryker-mutator/core declares `engines.node >= 20`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      # bun for the install (it owns bun.lock), node for the run.
+      - run: bun install
+      - name: Mutation testing
+        run: node node_modules/@stryker-mutator/core/bin/stryker.js run
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [check]
+    # Runs directly on the runner rather than in the Playwright container image.
+    # Two reasons, both learned the hard way. MinIO cannot be a `services:` entry
+    # (see the step that starts it below), and starting it as a step needs a
+    # docker CLI, which a container job does not have. And the Playwright image
+    # ships neither bun nor unzip, so bun had to be installed through npm and the
+    # image tag had to be kept in lockstep with the npm package. Installing the
+    # browser here costs about a minute and removes all of that.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openframe
+          POSTGRES_PASSWORD: openframe
+          POSTGRES_DB: openframe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openframe -d openframe_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      DATABASE_URL: postgresql://openframe:openframe@localhost:5432/openframe_test?schema=public
+      # The Playwright web server builds and starts the app, and `next build`
+      # does not run with NODE_ENV=test, so it never picks up `.env.test`. These
+      # values are therefore set on the job itself. Port 3100 matches
+      # playwright.config.ts.
+      NEXTAUTH_URL: http://localhost:3100
+      NEXTAUTH_SECRET: ci-secret-not-used-for-anything-real
+      NEXT_PUBLIC_APP_URL: http://localhost:3100
+      # Required. NextAuth v5 answers every /api/auth/* request with
+      # `UntrustedHost` in a production build unless the host is trusted, which
+      # is why .env.docker.example sets the same variable for real deployments.
+      AUTH_TRUST_HOST: 'true'
+      # Stripe ON, with dummy credentials, and deliberately not 'false'.
+      # hasBillingAccess() short-circuits to `true` when the flag is off and
+      # buildBillingAccessWhereInput() returns `{}`, which disarms the whole
+      # billing gate: billing-gate.spec.ts would then assert nothing. No spec
+      # walks into checkout, so nothing reaches Stripe. This also keeps the
+      # e2e job consistent with .env.test, which the api suite already runs
+      # with the flag on for the same reason.
+      OPENFRAME_ENABLE_STRIPE: 'true'
+      STRIPE_SECRET_KEY: sk_test_openframe_dummy
+      STRIPE_PRICE_ID: price_test_openframe_dummy
+      STRIPE_WEBHOOK_SECRET: whsec_test_openframe_dummy
+      OPENFRAME_REQUIRE_INVITE_CODE: 'true'
+      INVITE_CODE: test-invite
+      TRUSTED_PROXY_MODE: none
+      # Direct video uploads, pointed at the MinIO container started below.
+      # Without these the `Direct Upload` tab is not rendered and
+      # video-upload.spec.ts fails on its first assertion rather than silently
+      # testing nothing. The browser PUTs the file straight at the presigned URL,
+      # so the app and the browser have to agree on this host, and both run on
+      # the runner.
+      OPENFRAME_ENABLE_S3_VIDEO_UPLOADS: 'true'
+      OPENFRAME_ENABLE_BUNNY_UPLOADS: 'false'
+      R2_ENDPOINT: http://localhost:9000
+      R2_ACCESS_KEY_ID: openframe
+      R2_SECRET_ACCESS_KEY: openframe-test-secret
+      R2_BUCKET_NAME: openframe-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Create .env.test from the committed example
+        run: |
+          cp .env.test.example .env.test
+          printf '\nDATABASE_URL=%s\n' "$DATABASE_URL" >> .env.test
+      - name: Start MinIO
+        # Not a `services:` entry, because a service block cannot pass a command
+        # to the container and the MinIO entrypoint requires `server /data`.
+        # Without arguments the container prints its usage text, exits, and the
+        # job dies at "Failed to initialize container minio/minio:latest".
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER="$R2_ACCESS_KEY_ID" \
+            -e MINIO_ROOT_PASSWORD="$R2_SECRET_ACCESS_KEY" \
+            -e MINIO_REGION_NAME=auto \
+            minio/minio:latest server /data
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
+              echo 'minio is ready'
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'minio did not become ready within 60 seconds' >&2
+          docker logs minio >&2
+          exit 1
+      - name: Create the MinIO bucket
+        # Nothing at runtime creates it: ensureR2BucketExists() lives in
+        # scripts/self-host-bootstrap.ts, not on the request path, so a missing
+        # bucket would surface as a presigned PUT returning NoSuchBucket.
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/mc" https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x "$RUNNER_TEMP/mc"
+          "$RUNNER_TEMP/mc" alias set ciminio "$R2_ENDPOINT" "$R2_ACCESS_KEY_ID" "$R2_SECRET_ACCESS_KEY"
+          "$RUNNER_TEMP/mc" mb --ignore-existing "ciminio/$R2_BUCKET_NAME"
+      - name: Install the Playwright browser
+        # Only chromium: playwright.config.ts runs a desktop Chromium project and
+        # a Pixel 7 project, and the mobile one is Chromium too.
+        run: bunx playwright install --with-deps chromium
+      # No `bun run test:db:bootstrap` step: tests/e2e/global-setup.ts calls the
+      # same setup function before the web server starts, and also clears the
+      # rate_limits table so a retry does not inherit a spent window.
+      - name: End-to-end tests
+        run: bun run test:e2e
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

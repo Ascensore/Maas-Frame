@@ -1,0 +1,859 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useState } from 'react';
+import { act, renderHook, type RenderHookResult } from '@testing-library/react';
+import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
+import type { Comment, CommentTag, VideoData } from '@/components/video-page/types';
+
+const toastError = vi.fn();
+const toastSuccess = vi.fn();
+
+vi.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => toastError(...args),
+    success: (...args: unknown[]) => toastSuccess(...args),
+  },
+}));
+
+type Params = Parameters<typeof useCommentActions>[0];
+
+const ACTIVE_VERSION = 'ver1';
+const TAGS: CommentTag[] = [
+  { id: 'tag-audio', name: 'Audio', color: '#f00' },
+  { id: 'tag-colour', name: 'Colour', color: '#0f0' },
+];
+
+function makeComment(overrides: Partial<Comment> = {}): Comment {
+  return {
+    id: 'c1',
+    content: 'Existing note',
+    timestamp: 5,
+    timestampEnd: null,
+    voiceUrl: null,
+    voiceDuration: null,
+    imageUrl: null,
+    annotationData: null,
+    isResolved: false,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    author: { id: 'user1', name: 'Ada', image: null },
+    guestName: null,
+    canEdit: true,
+    canDelete: true,
+    tag: TAGS[0],
+    replies: [],
+    ...overrides,
+  };
+}
+
+function makeVideo(): VideoData {
+  return {
+    id: 'vid1',
+    title: 'Cut 3',
+    description: null,
+    projectId: 'proj1',
+    project: { name: 'Ad campaign', ownerId: 'user1' },
+    isAuthenticated: true,
+    currentUserId: 'user1',
+    currentUserName: 'Ada',
+    versions: [
+      {
+        id: ACTIVE_VERSION,
+        versionNumber: 1,
+        versionLabel: null,
+        providerId: 'bunny',
+        videoId: 'vid1',
+        originalUrl: 'https://cdn.example.com/a.mp4',
+        title: null,
+        thumbnailUrl: null,
+        duration: 600,
+        isActive: true,
+        _count: { comments: 2 },
+        comments: [
+          makeComment({
+            id: 'c1',
+            replies: [
+              {
+                id: 'r1',
+                content: 'Agreed',
+                timestamp: 5,
+                timestampEnd: null,
+                voiceUrl: null,
+                voiceDuration: null,
+                imageUrl: null,
+                annotationData: null,
+                createdAt: '2026-01-01T00:01:00.000Z',
+                author: { id: 'user2', name: 'Linus', image: null },
+                guestName: null,
+                canEdit: false,
+                canDelete: false,
+                tag: null,
+              },
+            ],
+          }),
+          makeComment({ id: 'c2', content: 'Already handled', isResolved: true, replies: [] }),
+        ],
+      },
+      {
+        id: 'ver2',
+        versionNumber: 2,
+        versionLabel: null,
+        providerId: 'bunny',
+        videoId: 'vid1',
+        originalUrl: 'https://cdn.example.com/b.mp4',
+        title: null,
+        thumbnailUrl: null,
+        duration: 600,
+        isActive: false,
+        _count: { comments: 1 },
+        comments: [makeComment({ id: 'other', content: 'On another version' })],
+      },
+    ],
+  };
+}
+
+function ok(payload: unknown) {
+  return { ok: true, json: () => Promise.resolve(payload) };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+let serverComment: Comment;
+let stableDeps: Pick<
+  Params,
+  | 'setSelectedTagId'
+  | 'setAnnotationStrokes'
+  | 'setIsAnnotating'
+  | 'setViewingAnnotation'
+  | 'fetchVersionComments'
+  | 'fetchAssets'
+>;
+
+function useHarness(overrides: Partial<Params>) {
+  const [video, setVideo] = useState<VideoData | null>(makeVideo());
+  const activeVersion = video?.versions.find((v) => v.id === ACTIVE_VERSION);
+  const actions = useCommentActions({
+    videoId: 'vid1',
+    setVideo,
+    activeVersionId: ACTIVE_VERSION,
+    activeVersion,
+    currentTime: 12,
+    isGuest: false,
+    normalizedGuestName: '',
+    currentUserName: 'Ada',
+    canResolveComments: true,
+    availableTags: TAGS,
+    selectedTagId: null,
+    annotationStrokes: null,
+    isAnnotating: false,
+    annotationCanvasRef: { current: null },
+    editAnnotationCanvasRef: { current: null },
+    ...stableDeps,
+    ...overrides,
+  });
+  return { video, actions };
+}
+
+type Harness = RenderHookResult<ReturnType<typeof useHarness>, Partial<Params>>;
+
+function renderActions(overrides: Partial<Params> = {}): Harness {
+  return renderHook((props: Partial<Params>) => useHarness(props), { initialProps: overrides });
+}
+
+function comments(harness: Harness): Comment[] {
+  const version = harness.result.current.video?.versions.find((v) => v.id === ACTIVE_VERSION);
+  return version?.comments ?? [];
+}
+
+function commentIds(harness: Harness): string[] {
+  return comments(harness).map((c) => c.id);
+}
+
+function findComment(harness: Harness, id: string): Comment | undefined {
+  return comments(harness).find((c) => c.id === id);
+}
+
+function otherVersionComments(harness: Harness): Comment[] {
+  return harness.result.current.video?.versions.find((v) => v.id === 'ver2')?.comments ?? [];
+}
+
+function bodyOf(call: unknown[]): Record<string, unknown> {
+  return JSON.parse((call[1] as { body: string }).body);
+}
+
+function callsTo(url: string, method?: string) {
+  return fetchMock.mock.calls.filter(
+    (call) => call[0] === url && (method === undefined || call[1]?.method === method)
+  );
+}
+
+beforeEach(() => {
+  serverComment = makeComment({ id: 'c-server', content: 'Colour is off', timestamp: 12 });
+  stableDeps = {
+    setSelectedTagId: vi.fn(),
+    setAnnotationStrokes: vi.fn(),
+    setIsAnnotating: vi.fn(),
+    setViewingAnnotation: vi.fn(),
+    fetchVersionComments: vi.fn().mockResolvedValue(undefined),
+    fetchAssets: vi.fn().mockResolvedValue(undefined),
+  };
+  fetchMock = vi.fn((url: string) => {
+    if (url === '/api/upload/image') {
+      return Promise.resolve(ok({ data: { url: 'https://cdn.example.com/note.png' } }));
+    }
+    if (url === '/api/upload/audio') {
+      return Promise.resolve(ok({ data: { url: 'https://cdn.example.com/note.webm' } }));
+    }
+    if (url === '/api/watch/vid1/upload-token') {
+      return Promise.resolve(ok({ data: { token: 'guest-token' } }));
+    }
+    if (url === `/api/versions/${ACTIVE_VERSION}/comments`) {
+      return Promise.resolve(ok({ data: serverComment }));
+    }
+    return Promise.resolve(ok({ data: {} }));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  toastError.mockReset();
+  toastSuccess.mockReset();
+});
+
+describe('useCommentActions adding a comment', () => {
+  it('shows the comment before the server answers, then swaps in the saved row', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleAddComment();
+    });
+
+    expect(commentIds(harness)).toHaveLength(3);
+    const optimistic = comments(harness)[2];
+    expect(optimistic.id).toMatch(/^temp-/);
+    expect(optimistic.content).toBe('Colour is off');
+    expect(optimistic.timestamp).toBe(12);
+    expect(optimistic.isResolved).toBe(false);
+    expect(optimistic.author).toEqual({ id: 'current-user', name: 'Ada', image: null });
+    expect(harness.result.current.actions.commentText).toBe('');
+    expect(harness.result.current.actions.isSubmittingComment).toBe(true);
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: serverComment }));
+      await submitted;
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2', 'c-server']);
+    expect(harness.result.current.actions.isSubmittingComment).toBe(false);
+  });
+
+  it('posts the text, timestamp and tag to the active version', async () => {
+    const harness = renderActions({ selectedTagId: 'tag-colour' });
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    const call = callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0];
+    expect(bodyOf(call)).toEqual({
+      content: 'Colour is off',
+      timestamp: 12,
+      tagId: 'tag-colour',
+    });
+  });
+
+  it('rolls the comment back out of the list when the server rejects it', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(toastError).toHaveBeenCalledWith('Failed to add comment');
+    expect(harness.result.current.actions.isSubmittingComment).toBe(false);
+  });
+
+  it('rolls the comment back out of the list when the request throws', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(toastError).toHaveBeenCalledWith('Failed to add comment');
+  });
+
+  it('leaves other versions untouched on both success and rollback', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(otherVersionComments(harness).map((c) => c.id)).toEqual(['other']);
+  });
+
+  it('refuses to post an empty or whitespace-only comment', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('   '));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')).toHaveLength(0);
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+  });
+
+  it('does nothing while no version is loaded', async () => {
+    const harness = renderActions({ activeVersion: undefined });
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('resets the tag picker to the first tag rather than to none', async () => {
+    const harness = renderActions({ selectedTagId: 'tag-colour' });
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(stableDeps.setSelectedTagId).toHaveBeenCalledWith('tag-audio');
+  });
+
+  it('identifies a guest by name instead of by author', async () => {
+    const harness = renderActions({ isGuest: true, normalizedGuestName: 'Kerem' });
+
+    act(() => harness.result.current.actions.setCommentText('Nice'));
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleAddComment();
+    });
+
+    const optimistic = comments(harness)[2];
+    expect(optimistic.author).toBeNull();
+    expect(optimistic.guestName).toBe('Kerem');
+
+    await act(async () => {
+      await submitted;
+    });
+
+    const call = callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0];
+    expect(bodyOf(call).guestName).toBe('Kerem');
+  });
+
+  it('sends a range comment with both ends', async () => {
+    const harness = renderActions();
+
+    // First toggle opens the range at the current time, second closes it.
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    harness.rerender({ currentTime: 30 });
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+
+    expect(harness.result.current.actions.commentRangeStart).toBe(12);
+    expect(harness.result.current.actions.commentRangeEnd).toBe(30);
+
+    act(() => harness.result.current.actions.setCommentText('Fix this stretch'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    const call = callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0];
+    expect(bodyOf(call)).toMatchObject({ timestamp: 12, timestampEnd: 30 });
+    expect(harness.result.current.actions.commentRangeStart).toBeNull();
+    expect(harness.result.current.actions.commentRangeEnd).toBeNull();
+  });
+
+  it('orders a backwards range selection low to high', () => {
+    const harness = renderActions({ currentTime: 30 });
+
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    harness.rerender({ currentTime: 10 });
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+
+    expect(harness.result.current.actions.commentRangeStart).toBe(10);
+    expect(harness.result.current.actions.commentRangeEnd).toBe(30);
+  });
+
+  it('restarts the range when toggled a third time', () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    harness.rerender({ currentTime: 30 });
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    harness.rerender({ currentTime: 44 });
+    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+
+    expect(harness.result.current.actions.commentRangeStart).toBe(44);
+    expect(harness.result.current.actions.commentRangeEnd).toBeNull();
+  });
+});
+
+describe('useCommentActions replying', () => {
+  const serverReply = {
+    id: 'r-server',
+    content: 'On it',
+    timestamp: 12,
+    timestampEnd: null,
+    voiceUrl: null,
+    voiceDuration: null,
+    imageUrl: null,
+    annotationData: null,
+    createdAt: '2026-01-02T00:00:00.000Z',
+    author: { id: 'user1', name: 'Ada', image: null },
+    guestName: null,
+    canEdit: true,
+    canDelete: true,
+    tag: null,
+  };
+
+  it('nests the optimistic reply under its parent, and nowhere else', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setReplyText('On it'));
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual([
+      'r1',
+      expect.stringMatching(/^temp-reply-/),
+    ]);
+    expect(findComment(harness, 'c2')?.replies).toEqual([]);
+    expect(harness.result.current.actions.replyText).toBe('');
+    expect(harness.result.current.actions.replyingTo).toBeNull();
+    expect(harness.result.current.actions.isSubmittingReply).toBe(true);
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: serverReply }));
+      await submitted;
+    });
+
+    expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1', 'r-server']);
+  });
+
+  it('posts the reply with its parent id', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(ok({ data: serverReply })));
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setReplyText('On it'));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    const call = callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0];
+    expect(bodyOf(call)).toEqual({ content: 'On it', timestamp: 12, parentId: 'c1' });
+  });
+
+  it('removes only the failed reply and keeps the parent comment', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setReplyText('On it'));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1']);
+    expect(toastError).toHaveBeenCalledWith('Failed to add reply');
+  });
+
+  it('removes the failed reply when the request throws', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setReplyText('On it'));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1']);
+    expect(toastError).toHaveBeenCalledWith('Failed to add reply');
+  });
+
+  it('refuses to post an empty reply', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setReplyText('  '));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(findComment(harness, 'c1')?.replies).toHaveLength(1);
+  });
+
+  it('keeps its own range selection separate from the comment composer', () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.toggleReplyRangeSelection());
+    harness.rerender({ currentTime: 30 });
+    act(() => harness.result.current.actions.toggleReplyRangeSelection());
+
+    expect(harness.result.current.actions.replyRangeStart).toBe(12);
+    expect(harness.result.current.actions.replyRangeEnd).toBe(30);
+    expect(harness.result.current.actions.commentRangeStart).toBeNull();
+  });
+});
+
+describe('useCommentActions resolving', () => {
+  it('flips the comment immediately and tells the server the new value', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleResolveComment('c1', false);
+    });
+
+    expect(findComment(harness, 'c1')?.isResolved).toBe(true);
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: {} }));
+      await submitted;
+    });
+
+    const call = callsTo('/api/comments/c1', 'PATCH')[0];
+    expect(bodyOf(call)).toEqual({ isResolved: true });
+    expect(findComment(harness, 'c1')?.isResolved).toBe(true);
+  });
+
+  it('unresolves an already resolved comment', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleResolveComment('c2', true);
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c2', 'PATCH')[0])).toEqual({ isResolved: false });
+    expect(findComment(harness, 'c2')?.isResolved).toBe(false);
+  });
+
+  it('reverts the flip when the request fails', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleResolveComment('c1', false);
+    });
+
+    expect(findComment(harness, 'c1')?.isResolved).toBe(false);
+    expect(toastError).toHaveBeenCalledWith('Failed to update comment');
+  });
+
+  it('reverts the flip when the request throws', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleResolveComment('c1', false);
+    });
+
+    expect(findComment(harness, 'c1')?.isResolved).toBe(false);
+    expect(toastError).toHaveBeenCalledWith('Failed to update comment');
+  });
+
+  it('refuses non-admins without touching state or the network', async () => {
+    const harness = renderActions({ canResolveComments: false });
+
+    await act(async () => {
+      await harness.result.current.actions.handleResolveComment('c1', false);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(findComment(harness, 'c1')?.isResolved).toBe(false);
+    expect(toastError).toHaveBeenCalledWith('Only admins can resolve comments');
+  });
+
+  // KNOWN FRAGILITY, pinned rather than fixed. The optimistic flip is relative
+  // (`!c.isResolved`) but both the request body and the rollback are absolute,
+  // derived from the caller's `currentlyResolved` argument. When the two
+  // disagree the rollback restores a value the comment never had: here an
+  // unresolved comment ends up resolved after a FAILED request.
+  it('rolls back to the caller-supplied value, not the value it started at', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    expect(findComment(harness, 'c1')?.isResolved).toBe(false);
+    await act(async () => {
+      await harness.result.current.actions.handleResolveComment('c1', true);
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0])).toEqual({ isResolved: false });
+    expect(findComment(harness, 'c1')?.isResolved).toBe(true);
+  });
+});
+
+describe('useCommentActions deleting', () => {
+  it('removes the comment at once and keeps it gone when the server agrees', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleDeleteComment('c1');
+    });
+
+    expect(callsTo('/api/comments/c1', 'DELETE')).toHaveLength(1);
+    expect(commentIds(harness)).toEqual(['c2']);
+  });
+
+  it('removes a reply by id without removing its parent', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleDeleteComment('r1');
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(findComment(harness, 'c1')?.replies).toEqual([]);
+  });
+
+  it('puts the comment back when the delete fails', async () => {
+    fetchMock.mockResolvedValue({ ok: false });
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleDeleteComment('c1');
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1']);
+  });
+
+  it('puts the comment back when the delete throws', async () => {
+    fetchMock.mockRejectedValue(new Error('offline'));
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handleDeleteComment('c1');
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+  });
+});
+
+describe('useCommentActions editing', () => {
+  it('applies the new text only after the server confirms', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    act(() => {
+      harness.result.current.actions.setEditingCommentId('c1');
+      harness.result.current.actions.setEditText('Reworded note');
+    });
+
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleEditComment('c1');
+    });
+
+    // No optimistic update here: the old text is still on screen.
+    expect(findComment(harness, 'c1')?.content).toBe('Existing note');
+    expect(harness.result.current.actions.isSubmittingEdit).toBe(true);
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: {} }));
+      await submitted;
+    });
+
+    expect(findComment(harness, 'c1')?.content).toBe('Reworded note');
+    expect(harness.result.current.actions.editingCommentId).toBeNull();
+    expect(harness.result.current.actions.editText).toBe('');
+  });
+
+  it('leaves the comment alone when the edit fails', async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setEditText('Reworded note'));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(findComment(harness, 'c1')?.content).toBe('Existing note');
+    expect(harness.result.current.actions.isSubmittingEdit).toBe(false);
+  });
+
+  it('edits a reply by id', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setEditText('Reworded reply'));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('r1');
+    });
+
+    expect(findComment(harness, 'c1')?.replies[0].content).toBe('Reworded reply');
+  });
+
+  it('refuses an edit that would blank the comment', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setEditText('   '));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(findComment(harness, 'c1')?.content).toBe('Existing note');
+  });
+
+  // KNOWN BUG, pinned rather than fixed. `editTagId` is typed `string | null`
+  // and initialised to `null`, so the `editTagId !== undefined` guard in the
+  // hook can never be false: every edit PATCH carries a `tagId`, and every
+  // successful edit overwrites the comment's tag with whatever `editTagId`
+  // happens to hold. The comment editor in comments-pane.tsx seeds it from the
+  // comment, but the REPLY editor (comments-pane.tsx, "Edit" on a reply) sets
+  // only editingCommentId and editText, so editing a reply's text silently
+  // sends tagId: null.
+  it('always sends a tagId, and clears the tag, even when the caller never set one', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setEditText('Reworded note'));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0])).toEqual({
+      content: 'Reworded note',
+      tagId: null,
+    });
+    expect(findComment(harness, 'c1')?.tag).toBeNull();
+  });
+
+  it('keeps the tag when the editor seeded editTagId from the comment', async () => {
+    const harness = renderActions();
+
+    act(() => {
+      harness.result.current.actions.setEditText('Reworded note');
+      harness.result.current.actions.setEditTagId('tag-audio');
+    });
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0]).tagId).toBe('tag-audio');
+    expect(findComment(harness, 'c1')?.tag).toEqual(TAGS[0]);
+  });
+});
+
+describe('useCommentActions background refresh', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('re-reads the comment list every 10 seconds', async () => {
+    renderActions();
+
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9999);
+    });
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledWith(ACTIVE_VERSION, true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips the refresh while a write is still in flight', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleAddComment();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000);
+    });
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: serverComment }));
+      await submitted;
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the refresh while the tab is hidden', async () => {
+    renderActions();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+
+    visibility.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledTimes(1);
+    visibility.mockRestore();
+  });
+
+  it('stops refreshing after unmount', async () => {
+    const harness = renderActions();
+    harness.unmount();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+  });
+});

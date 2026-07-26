@@ -20,17 +20,19 @@ import type {
   Version,
 } from '@/components/video-page/types';
 import { validateAnnotationStrokes } from '@/lib/validation';
-
-// A frame number is only meaningful against a stable rate: a raw measurement
-// drifts (29.94, 30.07, ...) and would slide the count by whole frames late in a
-// long video. Snap to the nearest broadcast standard when we are close enough.
-const STANDARD_FRAME_RATES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120];
-
-function normalizeFrameRate(rate: number | undefined): number | null {
-  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 12 || rate > 120) return null;
-  const standard = STANDARD_FRAME_RATES.find((value) => Math.abs(rate - value) / value < 0.015);
-  return standard ?? rate;
-}
+import {
+  clampSeekTime,
+  getAdjacentPlaybackSpeed,
+  getFrameIndexAtTime,
+  getFrameStepLabel,
+  getFrameStepSeconds,
+  getPlayheadPercent,
+  isTypingTarget,
+  normalizeFrameRate,
+  resolvePlayerShortcut,
+  resolveSkipAmount as resolveSkipAmountFor,
+  timeFromClientX as timeFromClientXWithin,
+} from '@/components/video-page/hooks/video-player-utils';
 
 interface UseVideoPlayerParams {
   activeVersion: Version | undefined;
@@ -133,19 +135,12 @@ export function useVideoPlayer({
     };
   }, []);
 
-  const frameStepSeconds = useMemo(() => {
-    if (estimatedFrameRate && Number.isFinite(estimatedFrameRate) && estimatedFrameRate > 0) {
-      return 1 / estimatedFrameRate;
-    }
-    return 1;
-  }, [estimatedFrameRate]);
+  const frameStepSeconds = useMemo(
+    () => getFrameStepSeconds(estimatedFrameRate),
+    [estimatedFrameRate]
+  );
 
-  const frameStepLabel = useMemo(() => {
-    if (estimatedFrameRate && Number.isFinite(estimatedFrameRate) && estimatedFrameRate > 0) {
-      return '1f';
-    }
-    return '1s';
-  }, [estimatedFrameRate]);
+  const frameStepLabel = useMemo(() => getFrameStepLabel(estimatedFrameRate), [estimatedFrameRate]);
 
   const stopBunnyFrameTracking = useCallback(() => {
     const videoEl = videoRef.current;
@@ -950,7 +945,7 @@ export function useVideoPlayer({
   const applyPlayhead = useCallback(
     (time: number) => {
       const d = durationRef.current;
-      const percent = d > 0 ? Math.max(0, Math.min(100, (time / d) * 100)) : 0;
+      const percent = getPlayheadPercent(time, d);
       if (progressRef.current) progressRef.current.style.width = `${percent}%`;
       if (playheadRef.current) playheadRef.current.style.left = `calc(${percent}% - 2px)`;
 
@@ -963,11 +958,7 @@ export function useVideoPlayer({
         if (rate === null) {
           readoutEl.textContent = formatTime(time);
         } else {
-          // Frame N covers [N/rate, (N+1)/rate); the epsilon keeps a time that
-          // lands exactly on a boundary from floating-point-ing down to N-1.
-          const lastFrame = d > 0 ? Math.max(0, Math.ceil(d * rate) - 1) : 0;
-          const frame = Math.min(Math.floor(time * rate + 1e-6), lastFrame);
-          readoutEl.textContent = `${formatTime(time)} · f${frame}`;
+          readoutEl.textContent = `${formatTime(time)} · f${getFrameIndexAtTime(time, rate, d)}`;
         }
       }
     },
@@ -1043,11 +1034,7 @@ export function useVideoPlayer({
   }, [currentTime, isPlaying, isDragging, applyPlayhead]);
 
   const resolveSkipAmount = useCallback(
-    (seconds: number) => {
-      if (!isFrameMode) return seconds;
-      const direction = seconds === 0 ? 1 : Math.sign(seconds);
-      return frameStepSeconds * direction;
-    },
+    (seconds: number) => resolveSkipAmountFor(seconds, { isFrameMode, frameStepSeconds }),
     [frameStepSeconds, isFrameMode]
   );
 
@@ -1118,7 +1105,7 @@ export function useVideoPlayer({
 
   const handleSkip = useCallback(
     (seconds: number) => {
-      const newTime = Math.max(0, Math.min(duration, currentTime + resolveSkipAmount(seconds)));
+      const newTime = clampSeekTime(currentTime + resolveSkipAmount(seconds), duration);
       handleSeekToTimestamp(newTime);
       flashSeekReadout();
     },
@@ -1131,15 +1118,23 @@ export function useVideoPlayer({
         return;
       }
 
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+      if (isTypingTarget(e.target as HTMLElement)) {
         return;
       }
 
-      switch (e.code) {
-        case 'Space':
-        case 'KeyK':
-          e.preventDefault();
+      const shortcut = resolvePlayerShortcut(e);
+      if (shortcut === null) return;
+      e.preventDefault();
+
+      const stepPlaybackSpeed = (direction: 1 | -1) => {
+        const newSpeed = getAdjacentPlaybackSpeed(speedOptions, playbackSpeed, direction);
+        if (newSpeed === null) return;
+        setPlaybackSpeed(newSpeed);
+        playerRef.current?.setPlaybackRate(newSpeed);
+      };
+
+      switch (shortcut) {
+        case 'toggle-play':
           if (playerRef.current) {
             if (isPlaying) {
               playerRef.current.pauseVideo();
@@ -1148,60 +1143,19 @@ export function useVideoPlayer({
             }
           }
           break;
-        case 'ArrowLeft':
-          e.preventDefault();
+        case 'skip-back':
           handleSkip(-5);
           break;
-        case 'ArrowRight':
-          e.preventDefault();
+        case 'skip-forward':
           handleSkip(5);
           break;
-        case 'ArrowUp':
-          e.preventDefault();
-          {
-            const currentIndex = speedOptions.indexOf(playbackSpeed);
-            if (currentIndex < speedOptions.length - 1) {
-              const newSpeed = speedOptions[currentIndex + 1];
-              setPlaybackSpeed(newSpeed);
-              playerRef.current?.setPlaybackRate(newSpeed);
-            }
-          }
+        case 'speed-up':
+          stepPlaybackSpeed(1);
           break;
-        case 'ArrowDown':
-          e.preventDefault();
-          {
-            const currentIndex = speedOptions.indexOf(playbackSpeed);
-            if (currentIndex > 0) {
-              const newSpeed = speedOptions[currentIndex - 1];
-              setPlaybackSpeed(newSpeed);
-              playerRef.current?.setPlaybackRate(newSpeed);
-            }
-          }
+        case 'speed-down':
+          stepPlaybackSpeed(-1);
           break;
-        case 'Comma':
-          if (e.shiftKey) {
-            e.preventDefault();
-            const currentIndex = speedOptions.indexOf(playbackSpeed);
-            if (currentIndex > 0) {
-              const newSpeed = speedOptions[currentIndex - 1];
-              setPlaybackSpeed(newSpeed);
-              playerRef.current?.setPlaybackRate(newSpeed);
-            }
-          }
-          break;
-        case 'Period':
-          if (e.shiftKey) {
-            e.preventDefault();
-            const currentIndex = speedOptions.indexOf(playbackSpeed);
-            if (currentIndex < speedOptions.length - 1) {
-              const newSpeed = speedOptions[currentIndex + 1];
-              setPlaybackSpeed(newSpeed);
-              playerRef.current?.setPlaybackRate(newSpeed);
-            }
-          }
-          break;
-        case 'KeyM':
-          e.preventDefault();
+        case 'toggle-mute':
           if (playerRef.current) {
             if (isMuted) {
               playerRef.current.unMute();
@@ -1211,8 +1165,7 @@ export function useVideoPlayer({
             setIsMuted(!isMuted);
           }
           break;
-        case 'KeyJ':
-          e.preventDefault();
+        case 'jump-back':
           if (playerRef.current?.seekTo) {
             const newTime = Math.max(0, currentTime - 10);
             playerRef.current.seekTo(newTime, true);
@@ -1220,8 +1173,7 @@ export function useVideoPlayer({
             flashSeekReadout();
           }
           break;
-        case 'KeyL':
-          e.preventDefault();
+        case 'jump-forward':
           if (playerRef.current?.seekTo) {
             const newTime = Math.min(duration, currentTime + 10);
             playerRef.current.seekTo(newTime, true);
@@ -1229,8 +1181,7 @@ export function useVideoPlayer({
             flashSeekReadout();
           }
           break;
-        case 'KeyF':
-          e.preventDefault();
+        case 'toggle-fullscreen':
           toggleFullscreen();
           break;
       }
@@ -1308,10 +1259,7 @@ export function useVideoPlayer({
   // Convert a clientX into a time using the timeline rect captured at drag start
   // (avoids a layout read on every move).
   const timeFromClientX = useCallback((clientX: number) => {
-    const rect = dragRectRef.current;
-    if (!rect || rect.width === 0) return 0;
-    const percentage = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    return percentage * durationRef.current;
+    return timeFromClientXWithin(clientX, dragRectRef.current, durationRef.current);
   }, []);
 
   const handleTimelineMouseDown = useCallback(
