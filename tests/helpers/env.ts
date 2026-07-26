@@ -13,55 +13,26 @@
 // Contract: an already-exported variable always wins. `.env.test` fills the
 // gaps. That is what lets CI export DATABASE_URL for a service container
 // without needing a `.env.test` file at all.
+//
+// With one correction, see forgetAutoloadedDotenv in helpers/dev-env.ts: bun
+// populates process.env from a plain `.env` before any of this runs, which the
+// contract above would otherwise read as a deliberate export.
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { config as loadDotenv } from 'dotenv';
 
-/**
- * Walks up from the working directory until it finds the checkout.
- *
- * This deliberately avoids `import.meta.url`, which would be the obvious way to
- * resolve a path relative to this file: Playwright transpiles TypeScript to
- * CommonJS unless package.json declares `"type": "module"`, and in CommonJS
- * `import.meta` is a *syntax* error, so the e2e suite could not import this
- * module at all. `__dirname` has the mirror-image problem under Vitest's ESM.
- *
- * The marker is prisma/schema.prisma as well as package.json, so a stray
- * package.json inside node_modules cannot be mistaken for the checkout.
- */
-function findRepoRoot(): string {
-  let current = path.resolve(process.cwd());
+import { forgetAutoloadedDotenv, REPO_ROOT, TEST_ENV_PATH } from './dev-env';
+import { assertTestDatabase } from './test-database';
 
-  for (;;) {
-    if (
-      fs.existsSync(path.join(current, 'package.json')) &&
-      fs.existsSync(path.join(current, 'prisma', 'schema.prisma'))
-    ) {
-      return current;
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
-      throw new Error(
-        `Could not locate the OpenFrame checkout from ${process.cwd()}: no ancestor ` +
-          'directory holds both package.json and prisma/schema.prisma. Run the test ' +
-          'suites from the repository root.'
-      );
-    }
-    current = parent;
-  }
-}
-
-export const REPO_ROOT = findRepoRoot();
-
-export const TEST_ENV_PATH = path.join(REPO_ROOT, '.env.test');
+export { REPO_ROOT, TEST_ENV_PATH };
 
 let loaded = false;
 
 export function loadTestEnv(): void {
   if (loaded) return;
   loaded = true;
+
+  forgetAutoloadedDotenv();
 
   if (fs.existsSync(TEST_ENV_PATH)) {
     loadDotenv({ path: TEST_ENV_PATH, quiet: true });
@@ -74,6 +45,10 @@ export function loadTestEnv(): void {
         'bun run test:api.'
     );
   }
+
+  // Deliberately after the file load and before anything opens a pool: this is
+  // the one place every path into the test setup goes through.
+  assertTestDatabase(process.env.DATABASE_URL);
 
   // Vitest sets this already, but db-global.ts also spawns the Prisma CLI and
   // lib/rate-limit.ts throws when DISABLE_RATE_LIMIT is set in production.

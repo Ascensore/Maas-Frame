@@ -142,14 +142,27 @@ require_compose_file() {
     'and e2e suites cannot run until that lands.'
 }
 
-require_env_test() {
+# Creates .env.test rather than telling the reader to copy it.
+#
+# The file is gitignored but holds nothing secret: it is the throwaway postgres
+# and minio credentials out of docker-compose.test.yml, written for exactly the
+# containers this script starts. There is no decision for anyone to make.
+#
+# It is also a safety measure. bun loads a plain `.env` into the environment on
+# its own, so with no .env.test the suites inherit whatever DATABASE_URL a
+# developer keeps in .env, which is usually a real deployment. The api setup
+# builds its schema with `prisma db push --accept-data-loss` and truncates every
+# table between tests. tests/helpers/test-database.ts refuses to run against a
+# database that is not named as a test one, and this keeps that refusal from
+# being something anybody has to see.
+ensure_env_test() {
   [ -f "$env_test" ] && return 0
-  if [ -f "$env_test_example" ]; then
-    die "$env_test not found." \
-      'Create it once with: cp .env.test.example .env.test'
+  if [ ! -f "$env_test_example" ]; then
+    die "Neither $env_test nor $env_test_example exists." \
+      'Both ship with Phase 2 of TESTING.md (section 5).'
   fi
-  die "Neither $env_test nor $env_test_example exists." \
-    'Both ship with Phase 2 of TESTING.md (section 5).'
+  cp "$env_test_example" "$env_test"
+  say 'created .env.test from .env.test.example'
 }
 
 require_playwright_config() {
@@ -257,7 +270,7 @@ run_mutation() {
 run_api() {
   say 'api suites'
   require_compose_file
-  require_env_test
+  ensure_env_test
   start_test_db
   run_in_bun_image "$network" "$install_step && bun run test:api"
 }
@@ -266,7 +279,7 @@ run_e2e() {
   say 'end-to-end specs'
   require_compose_file
   require_playwright_config
-  require_env_test
+  ensure_env_test
   start_test_db
   start_test_storage
   # The official Playwright image carries node and the browsers but not bun.
