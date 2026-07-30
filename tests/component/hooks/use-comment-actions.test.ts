@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { act, renderHook, type RenderHookResult } from '@testing-library/react';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import type { Comment, CommentTag, VideoData } from '@/components/video-page/types';
+import { buildLiveWebm, readWebmDuration } from '../../helpers/webm-fixture';
 
 const toastError = vi.fn();
 const toastSuccess = vi.fn();
@@ -869,5 +870,149 @@ describe('useCommentActions background refresh', () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
     expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+  });
+});
+
+// Two bugs lived here. The recording clock counted setInterval ticks, which a
+// background tab throttles away, so a recording that kept going looked frozen
+// and was saved with the short length. And MediaRecorder writes WebM with no
+// duration at all, so the uploaded file played past a length no player knew.
+describe('useCommentActions voice recording', () => {
+  let recorders: FakeMediaRecorder[];
+  let recordedChunk: Uint8Array;
+
+  class FakeMediaRecorder {
+    static isTypeSupported = () => true;
+    state: 'inactive' | 'recording' = 'inactive';
+    mimeType: string;
+    ondataavailable: ((event: { data: Blob }) => void) | null = null;
+    onstop: (() => void) | null = null;
+
+    constructor(_stream: unknown, options: { mimeType: string }) {
+      this.mimeType = options.mimeType;
+      recorders.push(this);
+    }
+
+    start() {
+      this.state = 'recording';
+    }
+
+    stop() {
+      this.state = 'inactive';
+      this.ondataavailable?.({
+        data: new Blob([recordedChunk.buffer as ArrayBuffer], { type: this.mimeType }),
+      });
+      this.onstop?.();
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    recorders = [];
+    recordedChunk = buildLiveWebm();
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function durationOf(blob: Blob | null): Promise<number | null> {
+    if (!blob) return null;
+    return readWebmDuration(new Uint8Array(await blob.arrayBuffer()));
+  }
+
+  it('counts the time the tab spent in the background', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.startRecording();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(13_000);
+    });
+    expect(harness.result.current.actions.recordingTime).toBeCloseTo(13, 1);
+
+    // The tab goes to the background: the clock moves on, the interval does not fire.
+    vi.setSystemTime(Date.now() + 10_000);
+    await act(async () => {
+      harness.result.current.actions.stopRecording();
+    });
+
+    expect(harness.result.current.actions.recordingTime).toBeCloseTo(23, 1);
+  });
+
+  it('saves the comment with the length that was actually recorded', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.startRecording();
+    });
+    vi.setSystemTime(Date.now() + 23_000);
+    await act(async () => {
+      harness.result.current.actions.stopRecording();
+    });
+    await act(async () => {
+      await harness.result.current.actions.submitCommentWithMedia();
+    });
+
+    const [post] = callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST');
+    expect(bodyOf(post).voiceDuration).toBeCloseTo(23, 1);
+  });
+
+  it('stamps the recorded length into the uploaded webm', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.startRecording();
+    });
+    expect(await durationOf(new Blob([recordedChunk.buffer as ArrayBuffer]))).toBeNull();
+
+    vi.setSystemTime(Date.now() + 9_000);
+    await act(async () => {
+      harness.result.current.actions.stopRecording();
+    });
+
+    expect(await durationOf(harness.result.current.actions.audioBlob)).toBeCloseTo(9_000, 0);
+  });
+
+  it('does the same for a voice reply', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.startReplyRecording();
+    });
+    vi.setSystemTime(Date.now() + 17_000);
+    await act(async () => {
+      harness.result.current.actions.stopReplyRecording();
+    });
+
+    expect(harness.result.current.actions.replyRecordingTime).toBeCloseTo(17, 1);
+    expect(await durationOf(harness.result.current.actions.replyAudioBlob)).toBeCloseTo(17_000, 0);
+  });
+
+  it('leaves a non-webm recording untouched', async () => {
+    recordedChunk = new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]); // MP4 'ftyp'
+    const originalIsTypeSupported = FakeMediaRecorder.isTypeSupported;
+    FakeMediaRecorder.isTypeSupported = () => false;
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.startRecording();
+    });
+    vi.setSystemTime(Date.now() + 4_000);
+    await act(async () => {
+      harness.result.current.actions.stopRecording();
+    });
+
+    const blob = harness.result.current.actions.audioBlob!;
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(recordedChunk);
+    FakeMediaRecorder.isTypeSupported = originalIsTypeSupported;
   });
 });

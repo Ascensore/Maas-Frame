@@ -41,6 +41,7 @@ import {
   validateImageFile,
 } from '@/components/video-page/image-upload-utils';
 import { useCommentMedia } from '@/components/video-page/hooks/use-comment-media';
+import { withWebmDuration } from '@/lib/webm-duration';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cn } from '@/lib/utils';
 
@@ -170,6 +171,7 @@ export const AssetsPane = memo(function AssetsPane({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingStartedAtRef = useRef(0);
 
   // Drag-drop state
   const [isDragOver, setIsDragOver] = useState(false);
@@ -717,8 +719,13 @@ export const AssetsPane = memo(function AssetsPane({
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
-      recorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+      recorder.onstop = async () => {
+        const elapsedMs = Date.now() - recordingStartedAtRef.current;
+        const raw = new Blob(audioChunksRef.current, { type: mimeType });
+        // MediaRecorder leaves the WebM duration unset, so stamp it in before the
+        // blob reaches a player or the upload.
+        const blob = await withWebmDuration(raw, elapsedMs);
+        setRecordingTime(elapsedMs / 1000);
         setAudioBlob(blob);
         setAudioBlobUrl((prev) => {
           if (prev) URL.revokeObjectURL(prev);
@@ -730,7 +737,12 @@ export const AssetsPane = memo(function AssetsPane({
       recorder.start(100);
       setIsRecording(true);
       setRecordingTime(0);
-      recordingTimerRef.current = setInterval(() => setRecordingTime((t) => t + 1), 1000);
+      // Background tabs throttle timers, so read the clock instead of counting ticks.
+      recordingStartedAtRef.current = Date.now();
+      recordingTimerRef.current = setInterval(
+        () => setRecordingTime((Date.now() - recordingStartedAtRef.current) / 1000),
+        250
+      );
     } catch {
       toast.error('Could not access microphone');
     }

@@ -27,6 +27,7 @@ import {
   validateImageFile,
 } from '@/components/video-page/image-upload-utils';
 import { validateAnnotationStrokes } from '@/lib/validation';
+import { withWebmDuration } from '@/lib/webm-duration';
 
 interface UseCommentActionsParams extends CommentActionsConfig {
   setVideo: Dispatch<SetStateAction<VideoData | null>>;
@@ -97,6 +98,7 @@ export function useCommentActions({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingStartedAtRef = useRef(0);
 
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState('');
@@ -113,6 +115,7 @@ export function useCommentActions({
   const replyMediaRecorderRef = useRef<MediaRecorder | null>(null);
   const replyAudioChunksRef = useRef<Blob[]>([]);
   const replyRecordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const replyRecordingStartedAtRef = useRef(0);
 
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -443,10 +446,14 @@ export function useCommentActions({
         }
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
+        const elapsedMs = Date.now() - recordingStartedAtRef.current;
         const recordedMime = mediaRecorder.mimeType || 'audio/webm';
-        const blob = new Blob(audioChunksRef.current, { type: recordedMime });
-        setAudioBlob(blob);
+        const raw = new Blob(audioChunksRef.current, { type: recordedMime });
+        // MediaRecorder leaves the WebM duration unset, so stamp it in before the
+        // blob reaches a player or the upload.
+        setAudioBlob(await withWebmDuration(raw, elapsedMs));
+        setRecordingTime(elapsedMs / 1000);
         stream.getTracks().forEach((track) => track.stop());
         if (recordingTimerRef.current) {
           clearInterval(recordingTimerRef.current);
@@ -457,8 +464,10 @@ export function useCommentActions({
       mediaRecorder.start(100);
       setIsRecording(true);
       setRecordingTime(0);
+      // Background tabs throttle timers, so read the clock instead of counting ticks.
+      recordingStartedAtRef.current = Date.now();
       recordingTimerRef.current = setInterval(() => {
-        setRecordingTime((prev) => prev + 0.1);
+        setRecordingTime((Date.now() - recordingStartedAtRef.current) / 1000);
       }, 100);
     } catch (err) {
       console.error('Failed to start recording:', err);
@@ -849,10 +858,12 @@ export function useCommentActions({
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) replyAudioChunksRef.current.push(e.data);
       };
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
+        const elapsedMs = Date.now() - replyRecordingStartedAtRef.current;
         const recordedMime = mediaRecorder.mimeType || 'audio/webm';
-        const blob = new Blob(replyAudioChunksRef.current, { type: recordedMime });
-        setReplyAudioBlob(blob);
+        const raw = new Blob(replyAudioChunksRef.current, { type: recordedMime });
+        setReplyAudioBlob(await withWebmDuration(raw, elapsedMs));
+        setReplyRecordingTime(elapsedMs / 1000);
         stream.getTracks().forEach((track) => track.stop());
         if (replyRecordingTimerRef.current) {
           clearInterval(replyRecordingTimerRef.current);
@@ -862,8 +873,9 @@ export function useCommentActions({
       mediaRecorder.start(100);
       setIsReplyRecording(true);
       setReplyRecordingTime(0);
+      replyRecordingStartedAtRef.current = Date.now();
       replyRecordingTimerRef.current = setInterval(() => {
-        setReplyRecordingTime((prev) => prev + 0.1);
+        setReplyRecordingTime((Date.now() - replyRecordingStartedAtRef.current) / 1000);
       }, 100);
     } catch (err) {
       console.error('Failed to start reply recording:', err);
