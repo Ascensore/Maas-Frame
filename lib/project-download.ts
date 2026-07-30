@@ -4,6 +4,7 @@ import {
   extractImageFileNameFromProxyUrl,
   extractVideoFileNameFromProxyUrl,
   sanitizeAssetDisplayName,
+  withFileExtension,
 } from '@/lib/video-assets';
 
 const DEFAULT_MAX_FILES = 250;
@@ -171,21 +172,21 @@ function buildAssetFileName(videoIndex: number, videoTitle: string, asset: Asset
 
   if (asset.provider === VideoAssetProvider.R2_IMAGE) {
     const fileName = extractImageFileNameFromProxyUrl(asset.sourceUrl);
-    return `${stem}${extensionFromUrl(fileName ?? '', '.png')}`;
+    return withFileExtension(stem, extensionFromUrl(fileName ?? '', '.png'));
   }
   if (asset.provider === VideoAssetProvider.R2_AUDIO) {
     const fileName = extractAudioFileNameFromProxyUrl(asset.sourceUrl);
-    return `${stem}${extensionFromUrl(fileName ?? '', '.webm')}`;
+    return withFileExtension(stem, extensionFromUrl(fileName ?? '', '.webm'));
   }
   if (asset.provider === VideoAssetProvider.R2_VIDEO) {
     const fileName = extractVideoFileNameFromProxyUrl(asset.sourceUrl);
-    return `${stem}${extensionFromUrl(fileName ?? '', '.mp4')}`;
+    return withFileExtension(stem, extensionFromUrl(fileName ?? '', '.mp4'));
   }
   if (asset.provider === VideoAssetProvider.BUNNY) {
-    return `${stem}.mp4`;
+    return withFileExtension(stem, '.mp4');
   }
 
-  return `${stem}.bin`;
+  return withFileExtension(stem, '.bin');
 }
 
 function versionDownloadUrl(version: VersionRow): string | null {

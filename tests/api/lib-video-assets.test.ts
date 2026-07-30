@@ -19,6 +19,7 @@ import {
   extractVideoKeyFromProxyUrl,
   getVideoAssetAccessContext,
   sanitizeAssetDisplayName,
+  withFileExtension,
   SAFE_BUNNY_VIDEO_ID,
 } from '@/lib/video-assets';
 import { apiRequest } from '../helpers/request';
@@ -80,6 +81,28 @@ describe('sanitizeAssetDisplayName', () => {
 
     expect(result).toHaveLength(200);
     expect(result).toBe('x'.repeat(200));
+  });
+});
+
+// A voice comment is stored under its generated file name, so its display name
+// already ends in .webm and every download was named `<uuid>.webm.webm`.
+describe('withFileExtension', () => {
+  it('leaves a name that already ends in the extension alone', () => {
+    expect(withFileExtension('33661b60-b658-47f9-bd40-71c32a0a2fdb.webm', '.webm')).toBe(
+      '33661b60-b658-47f9-bd40-71c32a0a2fdb.webm'
+    );
+  });
+
+  it('ignores the case the extension was written in', () => {
+    expect(withFileExtension('Take 2.WEBM', '.webm')).toBe('Take 2.WEBM');
+  });
+
+  it('appends when the name carries no extension', () => {
+    expect(withFileExtension('Voice Comment', '.webm')).toBe('Voice Comment.webm');
+  });
+
+  it('appends when the name ends in a different extension', () => {
+    expect(withFileExtension('clip.mp4', '.webm')).toBe('clip.mp4.webm');
   });
 });
 

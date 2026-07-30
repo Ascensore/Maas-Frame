@@ -1221,6 +1221,30 @@ describe('buildProjectDownloadManifest assets', () => {
     expect(manifest.files[0]?.fileName).toBe('01-Intro-asset-B roll.png');
   });
 
+  // A voice comment's display name is the stored file name, extension included.
+  it('does not repeat an extension the display name already carries', () => {
+    const manifest = buildProjectDownloadManifest(
+      'Project',
+      [
+        video({
+          versions: [],
+          assets: [
+            asset({
+              provider: VideoAssetProvider.R2_AUDIO,
+              displayName: '33661b60-b658-47f9-bd40-71c32a0a2fdb.webm',
+              sourceUrl: '/api/upload/audio/33661b60-b658-47f9-bd40-71c32a0a2fdb.webm',
+            }),
+          ],
+        }),
+      ],
+      { includeAssets: true }
+    );
+
+    expect(manifest.files[0]?.fileName).toBe(
+      '01-Intro-asset-33661b60-b658-47f9-bd40-71c32a0a2fdb.webm'
+    );
+  });
+
   it('always names a bunny asset .mp4 regardless of the source url', () => {
     const manifest = buildProjectDownloadManifest(
       'Project',

@@ -66,6 +66,14 @@ export function sanitizeAssetDisplayName(
   return normalized.slice(0, 200);
 }
 
+/**
+ * A voice comment's display name is the generated file name, extension and all,
+ * so blindly appending the extension named the download `<uuid>.webm.webm`.
+ */
+export function withFileExtension(name: string, extension: string): string {
+  return name.toLowerCase().endsWith(extension.toLowerCase()) ? name : `${name}${extension}`;
+}
+
 export function extractImageKeyFromProxyUrl(url: string): string | null {
   if (!SAFE_IMAGE_PROXY_PATH.test(url)) return null;
   const filename = url.slice(IMAGE_PROXY_PREFIX.length);

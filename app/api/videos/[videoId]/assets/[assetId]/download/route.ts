@@ -10,6 +10,7 @@ import {
   extractAudioFileNameFromProxyUrl,
   extractVideoFileNameFromProxyUrl,
   getVideoAssetAccessContext,
+  withFileExtension,
 } from '@/lib/video-assets';
 import { buildVideoObjectKey } from '@/lib/video-upload-validation';
 import { logError } from '@/lib/logger';
@@ -53,6 +54,10 @@ function sanitizeFileName(value: string): string {
     .replace(/\s+/g, ' ')
     .trim();
   return sanitized.length > 0 ? sanitized : 'asset';
+}
+
+function withExtension(displayName: string, extension: string): string {
+  return withFileExtension(sanitizeFileName(displayName), extension);
 }
 
 function toAsciiFileName(value: string): string {
@@ -117,7 +122,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       if (!fileName) return apiErrors.badRequest('Invalid image asset URL');
       const key = `images/${fileName}`;
       const extension = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.png';
-      const downloadName = `${sanitizeFileName(asset.displayName)}${extension}`;
+      const downloadName = withExtension(asset.displayName, extension);
       const contentDisposition = buildContentDisposition(downloadName);
 
       return proxyR2MediaObject({
@@ -139,7 +144,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       if (!fileName) return apiErrors.badRequest('Invalid audio asset URL');
       const key = `voice/${fileName}`;
       const ext = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.webm';
-      const downloadName = `${sanitizeFileName(asset.displayName)}${ext}`;
+      const downloadName = withExtension(asset.displayName, ext);
       const contentDisposition = buildContentDisposition(downloadName);
       const extKey = ext.replace('.', '');
       const contentType = AUDIO_CONTENT_TYPE_BY_EXTENSION[extKey] || 'audio/webm';
@@ -162,7 +167,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       if (!fileName) return apiErrors.badRequest('Invalid video asset URL');
       const key = buildVideoObjectKey(fileName);
       const ext = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '.mp4';
-      const downloadName = `${sanitizeFileName(asset.displayName)}${ext}`;
+      const downloadName = withExtension(asset.displayName, ext);
       const contentDisposition = buildContentDisposition(downloadName);
       const extKey = ext.replace('.', '');
       const contentType = VIDEO_CONTENT_TYPE_BY_EXTENSION[extKey] || 'video/mp4';
