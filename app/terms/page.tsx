@@ -274,8 +274,9 @@ export default function TermsOfServicePage() {
             </p>
             <p className="mt-3">
               Except where the law requires otherwise or the content itself is unlawful, your User
-              Content will remain available for export for thirty (30) days after termination, after
-              which it may be permanently deleted.
+              Content will remain available for export for fifteen (15) days after termination,
+              after which it may be permanently deleted. Write to us within that window if you need
+              a copy and can no longer reach it yourself.
             </p>
             <p className="mt-3">
               You may cancel your account at any time through your billing settings or by contacting
