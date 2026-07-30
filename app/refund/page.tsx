@@ -30,7 +30,7 @@ export default function RefundPolicyPage() {
 
       <main className="mx-auto max-w-[900px] px-4 py-12 sm:px-6 lg:px-8">
         <h1 className="text-3xl font-semibold tracking-tight mb-2">Refund Policy</h1>
-        <p className="text-sm text-muted-foreground mb-10">Last updated: April 10, 2026</p>
+        <p className="text-sm text-muted-foreground mb-10">Last updated: July 30, 2026</p>
 
         <div className="prose prose-sm prose-invert max-w-none space-y-8 text-sm leading-relaxed text-foreground/80">
           <section>
@@ -76,6 +76,16 @@ export default function RefundPolicyPage() {
               Canceling your subscription stops future billing but does not entitle you to a refund
               for the current billing period. You will continue to have access to the Service until
               the end of your current paid period.
+            </p>
+            <p className="mt-3">
+              This no-refund rule does not apply if we terminate your account for a reason other
+              than your breach of the Terms, or if we discontinue the Service or your plan. In those
+              cases we refund the unused portion of any fees you have prepaid, as described in
+              Section 13 of our{' '}
+              <Link href="/terms" className="text-primary hover:underline">
+                Terms of Service
+              </Link>
+              .
             </p>
           </section>
 

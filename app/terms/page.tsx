@@ -30,7 +30,7 @@ export default function TermsOfServicePage() {
 
       <main className="mx-auto max-w-[900px] px-4 py-12 sm:px-6 lg:px-8">
         <h1 className="text-3xl font-semibold tracking-tight mb-2">Terms of Service</h1>
-        <p className="text-sm text-muted-foreground mb-10">Last updated: April 10, 2026</p>
+        <p className="text-sm text-muted-foreground mb-10">Last updated: July 30, 2026</p>
 
         <div className="prose prose-sm prose-invert max-w-none space-y-8 text-sm leading-relaxed text-foreground/80">
           <section>
@@ -133,8 +133,8 @@ export default function TermsOfServicePage() {
               or regulation.
             </p>
             <p className="mt-3">
-              We may remove or suspend access to User Content that violates these Terms at our sole
-              discretion.
+              We may remove or suspend access to User Content where we reasonably determine that it
+              violates these Terms.
             </p>
           </section>
 
@@ -236,11 +236,46 @@ export default function TermsOfServicePage() {
           </section>
 
           <section>
-            <h2 className="text-base font-semibold text-foreground mb-3">13. Termination</h2>
-            <p>
-              We may suspend or terminate your access to the Service at any time, with or without
-              cause and with or without notice, if we believe you have violated these Terms or for
-              any other reason at our sole discretion.
+            <h2 className="text-base font-semibold text-foreground mb-3">
+              13. Suspension and Termination
+            </h2>
+            <p>We may suspend or terminate your access to the Service if:</p>
+            <ul className="mt-3 list-disc pl-5 space-y-2">
+              <li>
+                you materially breach these Terms, including the Acceptable Use restrictions in
+                Section 7, and do not remedy the breach within ten (10) days of our written notice.
+                No cure period applies to a repeated breach of the same obligation;
+              </li>
+              <li>
+                your use of the Service is unlawful, infringes a third party&rsquo;s rights, or
+                exposes us or other users to legal liability or a security risk, in which case we
+                may act immediately and without prior notice;
+              </li>
+              <li>
+                your subscription fees remain unpaid fourteen (14) days after their due date and we
+                have notified you; or
+              </li>
+              <li>we are required to do so by law or by a competent authority.</li>
+            </ul>
+            <p className="mt-3">
+              Where we reasonably suspect the conduct described in the second bullet above, we may
+              suspend your account while we investigate. We will tell you why, and we will restore
+              access if the suspicion is not borne out.
+            </p>
+            <p className="mt-3">
+              If we terminate your account for any reason other than the ones listed above, or if we
+              discontinue the Service or your plan, we will give you at least thirty (30)
+              days&rsquo; written notice, refund the unused portion of any fees you have prepaid
+              (notwithstanding Section 5 and our{' '}
+              <Link href="/refund" className="text-primary hover:underline">
+                Refund Policy
+              </Link>
+              ), and keep your account accessible for export during that period.
+            </p>
+            <p className="mt-3">
+              Except where the law requires otherwise or the content itself is unlawful, your User
+              Content will remain available for export for thirty (30) days after termination, after
+              which it may be permanently deleted.
             </p>
             <p className="mt-3">
               You may cancel your account at any time through your billing settings or by contacting
