@@ -113,11 +113,30 @@ export function buildBillingAccessWhereInput(now: Date = new Date()): Prisma.Use
 export function buildExpiredBillingWhereInput(now: Date = new Date()): Prisma.UserWhereInput {
   const cleanupCutoff = new Date(now.getTime() - STORAGE_CLEANUP_GRACE_DAYS * 24 * 60 * 60 * 1000);
 
+  // Without billing nothing can expire, so nobody is eligible. This used to fall through to
+  // `NOT: {}`, which Prisma drops entirely, leaving a filter that matched on the grace period
+  // alone: a self-hosted deployment running the cleanup script would delete the workspaces of
+  // users it never charged.
+  if (!isStripeFeatureEnabled()) {
+    return { id: { in: [] } };
+  }
+
+  // Spelled out as positive AND branches instead of `NOT: buildBillingAccessWhereInput(now)`.
+  // Prisma renders that NOT as `NOT (status IN (...) OR "trialEndsAt" > $1 OR
+  // "stripeCurrentPeriodEnd" > $2)`, and SQL comparisons against NULL are unknown rather than
+  // false, so for a row with both dates empty the OR evaluates to NULL and NOT NULL is still
+  // NULL: the row is never returned. Both columns empty is exactly what a canceled subscriber
+  // looks like (markSubscriptionCanceledByCustomerId clears trialEndsAt, and Stripe no longer
+  // reports current_period_end on the subscription), so the cleanup silently matched nobody.
   return {
     AND: [
       {
-        NOT: buildBillingAccessWhereInput(now),
+        subscriptionStatus: {
+          notIn: [BillingSubscriptionStatus.ACTIVE, BillingSubscriptionStatus.TRIALING],
+        },
       },
+      { OR: [{ trialEndsAt: null }, { trialEndsAt: { lte: now } }] },
+      { OR: [{ stripeCurrentPeriodEnd: null }, { stripeCurrentPeriodEnd: { lte: now } }] },
       {
         OR: [
           { billingAccessEndedAt: { lte: cleanupCutoff } },
