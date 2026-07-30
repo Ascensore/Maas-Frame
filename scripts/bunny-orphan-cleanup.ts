@@ -319,6 +319,7 @@ async function main() {
   console.log(`[bunny-orphan-cleanup] Grace period: ${graceHours}h`);
 
   const expiredBillingCleanup = await cleanupExpiredBillingWorkspaces({ dryRun });
+  console.log(`[bunny-orphan-cleanup] Expired owners past grace: ${expiredBillingCleanup.owners}`);
   console.log(
     `[bunny-orphan-cleanup] Expired owner workspaces scanned: ${expiredBillingCleanup.scanned}`
   );

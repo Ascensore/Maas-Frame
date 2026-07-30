@@ -209,6 +209,7 @@ async function main() {
   console.log(`[r2-orphan-cleanup] Starting (${dryRun ? 'dry-run' : 'delete mode'})`);
 
   const expiredBillingCleanup = await cleanupExpiredBillingWorkspaces({ dryRun });
+  console.log(`[r2-orphan-cleanup] Expired owners past grace: ${expiredBillingCleanup.owners}`);
   console.log(
     `[r2-orphan-cleanup] Expired owner workspaces scanned: ${expiredBillingCleanup.scanned}`
   );

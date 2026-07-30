@@ -332,20 +332,14 @@ describe('buildBillingAccessWhereInput', () => {
 });
 
 describe('buildExpiredBillingWhereInput', () => {
-  it('negates the access filter and requires the fifteen day grace to have elapsed', () => {
+  it('states the lack of access positively and requires the fifteen day grace to have elapsed', () => {
     const cutoff = new Date('2025-12-31T00:00:00.000Z');
 
     expect(buildExpiredBillingWhereInput(NOW)).toEqual({
       AND: [
-        {
-          NOT: {
-            OR: [
-              { subscriptionStatus: { in: ['ACTIVE', 'TRIALING'] } },
-              { trialEndsAt: { gt: NOW } },
-              { stripeCurrentPeriodEnd: { gt: NOW } },
-            ],
-          },
-        },
+        { subscriptionStatus: { notIn: ['ACTIVE', 'TRIALING'] } },
+        { OR: [{ trialEndsAt: null }, { trialEndsAt: { lte: NOW } }] },
+        { OR: [{ stripeCurrentPeriodEnd: null }, { stripeCurrentPeriodEnd: { lte: NOW } }] },
         {
           OR: [
             { billingAccessEndedAt: { lte: cutoff } },
@@ -356,10 +350,21 @@ describe('buildExpiredBillingWhereInput', () => {
     });
   });
 
-  it('keeps the grace clause when Stripe is disabled even though NOT {} matches nobody', () => {
+  // The NOT form this replaced could not express "no access" for a row whose date columns are
+  // empty, because SQL turns a comparison against NULL into unknown rather than false. Every
+  // branch has to name NULL explicitly instead. tests/api/expired-billing-cleanup.test.ts
+  // proves it against a real database; this only guards the shape.
+  it('admits a null trial and a null period end as expired rather than skipping the row', () => {
+    const where = buildExpiredBillingWhereInput(NOW) as {
+      AND: Array<{ OR?: Array<Record<string, unknown>> }>;
+    };
+    expect(where.AND[1].OR).toContainEqual({ trialEndsAt: null });
+    expect(where.AND[2].OR).toContainEqual({ stripeCurrentPeriodEnd: null });
+  });
+
+  it('matches nobody when Stripe is disabled, because nothing can expire without billing', () => {
     vi.stubEnv('OPENFRAME_ENABLE_STRIPE', 'false');
-    const where = buildExpiredBillingWhereInput(NOW) as { AND: Array<{ NOT?: object }> };
-    expect(where.AND[0].NOT).toEqual({});
+    expect(buildExpiredBillingWhereInput(NOW)).toEqual({ id: { in: [] } });
   });
 });
 
