@@ -27,12 +27,16 @@ beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string | URL, init?: { method?: string }) => {
-      const href = typeof url === 'string' ? url : url.toString();
-      if (init?.method === 'DELETE' && href.includes('video.bunnycdn.com')) {
-        bunnyDeletes.push(href.split('/videos/')[1] ?? '');
+      // Matched on the parsed host rather than a substring of the href, so a request to some
+      // other service that merely mentions the Bunny host cannot be recorded as a Bunny
+      // delete. The recorder decides what the assertions see, so a loose match here would
+      // make a test pass for the wrong reason.
+      const target = new URL(typeof url === 'string' ? url : url.toString());
+      if (init?.method === 'DELETE' && target.host === 'video.bunnycdn.com') {
+        bunnyDeletes.push(target.pathname.split('/videos/')[1] ?? '');
         return new Response(null, { status: 200 });
       }
-      throw new Error(`Unexpected fetch in test: ${init?.method ?? 'GET'} ${href}`);
+      throw new Error(`Unexpected fetch in test: ${init?.method ?? 'GET'} ${target.href}`);
     })
   );
 });
