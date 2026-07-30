@@ -121,6 +121,21 @@ describe('cleanupExpiredBillingWorkspaces', () => {
     expect(bunnyDeletes).toEqual([]);
   });
 
+  // The guard is `{ id: { in: [] } }`, and an empty IN list is only safe if Prisma renders it
+  // as a contradiction rather than dropping the filter. It renders `WHERE 1=0`, but a
+  // regression there would delete every workspace on a self-hosted deployment, so it is worth
+  // a test rather than trust.
+  it('deletes nothing when Stripe is disabled, since nothing can expire without billing', async () => {
+    vi.stubEnv('OPENFRAME_ENABLE_STRIPE', 'false');
+    const { workspace } = await seedCanceledOwner(30);
+
+    const result = await cleanupExpiredBillingWorkspaces();
+
+    expect(result).toEqual({ owners: 0, scanned: 0, deleted: 0 });
+    expect(await db.workspace.findUnique({ where: { id: workspace.id } })).not.toBeNull();
+    expect(bunnyDeletes).toEqual([]);
+  });
+
   it('counts an expired owner who owns no workspace, so an empty scan is not mistaken for an empty user table', async () => {
     await createUser({
       subscriptionStatus: BillingSubscriptionStatus.CANCELED,
