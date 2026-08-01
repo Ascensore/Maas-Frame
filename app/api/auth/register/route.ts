@@ -17,6 +17,8 @@ import {
   sendVerificationEmail,
 } from '@/lib/email-verification';
 import { isValidEmailAddress, normalizeEmail } from '@/lib/email-validation';
+import { recordSignupCompleted } from '@/lib/analytics/signup';
+import { readVisitorContext } from '@/lib/analytics/visitor';
 
 export async function POST(request: NextRequest) {
   try {
@@ -131,6 +133,14 @@ export async function POST(request: NextRequest) {
         );
       }
     }
+
+    // Ties the account to the first touch stored in this browser's cookie and
+    // claims the visitor events that led here. Recorded after the invitation has
+    // been accepted, so an account that gets rolled back never leaves a signup.
+    await recordSignupCompleted({
+      userId: user.id,
+      visitor: readVisitorContext(request.cookies),
+    });
 
     // Send verification email if SMTP is configured
     if (emailVerificationRequired) {

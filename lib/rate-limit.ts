@@ -105,6 +105,9 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   // Mutations (update/delete) — moderate
   mutate: { windowMs: 60 * 1000, maxRequests: 30 }, // 30 per minute
 
+  // Analytics beacon — anonymous and public, so bound it per IP
+  'analytics-beacon': { windowMs: 60 * 60 * 1000, maxRequests: 30 }, // 30 per hour
+
   // General reads — generous
   api: { windowMs: 60 * 1000, maxRequests: 100 }, // 100 per minute
 };

@@ -5,6 +5,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { buildBillingAccessWhereInput, getWorkspaceCreationEligibility } from '@/lib/billing';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 // GET /api/workspaces - List all workspaces for the authenticated user
 export async function GET(request: NextRequest) {
@@ -134,6 +135,12 @@ export async function POST(request: NextRequest) {
         owner: { select: { id: true, name: true, image: true } },
         _count: { select: { projects: true, members: true } },
       },
+    });
+
+    await recordEvent({
+      name: 'WORKSPACE_CREATED',
+      dedupeKey: eventKey('WORKSPACE_CREATED', workspace.id),
+      userId: workspace.ownerId,
     });
 
     const response = successResponse(workspace, 201);

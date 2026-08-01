@@ -4,6 +4,7 @@ import { BillingSubscriptionStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { getStripe, getStripePriceId } from '@/lib/stripe';
 import { isStripeFeatureEnabled } from '@/lib/feature-flags';
+import { recordSubscriptionTransition } from '@/lib/analytics/billing-events';
 
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set<BillingSubscriptionStatus>([
   BillingSubscriptionStatus.ACTIVE,
@@ -394,6 +395,10 @@ export async function syncStripeSubscriptionToUser(subscription: Stripe.Subscrip
     select: {
       id: true,
       billingTrialConsumedAt: true,
+      // Read for the funnel: the transition is what gets recorded, so the state
+      // being overwritten has to be captured before the update below.
+      subscriptionStatus: true,
+      stripeCancelAtPeriodEnd: true,
     },
   });
 
@@ -430,7 +435,7 @@ export async function syncStripeSubscriptionToUser(subscription: Stripe.Subscrip
     (hasActiveSubscription(mappedStatus) ||
       Boolean(currentPeriodEnd && currentPeriodEnd * 1000 > Date.now()));
 
-  return db.user.update({
+  const updated = await db.user.update({
     where: { id: user.id },
     data: {
       stripeSubscriptionId: subscription.id,
@@ -449,6 +454,24 @@ export async function syncStripeSubscriptionToUser(subscription: Stripe.Subscrip
         : getInactiveBillingAccessEndedAt(subscription, hasEntitledPrice ? currentPeriodEnd : null),
     },
   });
+
+  await recordSubscriptionTransition({
+    userId: user.id,
+    subscriptionId: subscription.id,
+    before: {
+      status: user.subscriptionStatus,
+      cancelAtPeriodEnd: user.stripeCancelAtPeriodEnd,
+      hadTrial: user.billingTrialConsumedAt !== null,
+    },
+    after: {
+      status: mappedStatus,
+      cancelAtPeriodEnd,
+      trialEndsAt: effectiveTrialEnd,
+      currentPeriodEnd: effectiveCurrentPeriodEnd,
+    },
+  });
+
+  return updated;
 }
 
 // A single Stripe customer can own several subscriptions at once (e.g. after
@@ -524,14 +547,21 @@ export async function markSubscriptionCanceledByCustomerId(
 ) {
   const user = await db.user.findUnique({
     where: { stripeCustomerId: customerId },
-    select: { id: true },
+    select: {
+      id: true,
+      subscriptionStatus: true,
+      stripeSubscriptionId: true,
+      stripeCancelAtPeriodEnd: true,
+      stripeCurrentPeriodEnd: true,
+      billingTrialConsumedAt: true,
+    },
   });
 
   if (!user) {
     return null;
   }
 
-  return db.user.update({
+  const updated = await db.user.update({
     where: { id: user.id },
     data: {
       subscriptionStatus: BillingSubscriptionStatus.CANCELED,
@@ -544,4 +574,26 @@ export async function markSubscriptionCanceledByCustomerId(
       billingAccessEndedAt: options?.endedAt ?? options?.currentPeriodEnd ?? new Date(),
     },
   });
+
+  // Reached when the customer has no subscriptions left at all. The cycle marker
+  // uses the period end being cleared here, which is the same one the earlier
+  // "cancel at period end" write carried, so a customer who cancelled through the
+  // portal and then reached the end of their term produces one cancellation, not two.
+  await recordSubscriptionTransition({
+    userId: user.id,
+    subscriptionId: user.stripeSubscriptionId ?? user.id,
+    before: {
+      status: user.subscriptionStatus,
+      cancelAtPeriodEnd: user.stripeCancelAtPeriodEnd,
+      hadTrial: user.billingTrialConsumedAt !== null,
+    },
+    after: {
+      status: BillingSubscriptionStatus.CANCELED,
+      cancelAtPeriodEnd: false,
+      trialEndsAt: null,
+      currentPeriodEnd: options?.currentPeriodEnd ?? user.stripeCurrentPeriodEnd ?? null,
+    },
+  });
+
+  return updated;
 }

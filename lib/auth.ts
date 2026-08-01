@@ -150,6 +150,21 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return token;
     },
   },
+  events: {
+    // The OAuth half of signup. Accounts created by Google or GitHub are written
+    // by the Prisma adapter and never reach app/api/auth/register, so recording
+    // the event only there would have made every social signup invisible in the
+    // funnel while looking like it worked.
+    async createUser({ user }) {
+      if (!user.id) return;
+      const { recordSignupCompleted, readVisitorContextFromHeaders } =
+        await import('@/lib/analytics/signup');
+      await recordSignupCompleted({
+        userId: user.id,
+        visitor: await readVisitorContextFromHeaders(),
+      });
+    },
+  },
 });
 
 // ---------------------------------------------------------------------------

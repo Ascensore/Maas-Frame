@@ -1,0 +1,88 @@
+// Turning Stripe state into funnel events.
+//
+// These four events are derived from a before/after comparison inside the sync
+// that already re-reads every subscription a customer has, rather than from the
+// webhook event types. That is deliberate: webhooks arrive out of order and get
+// replayed, and `customer.subscription.updated` fires for changes that mean
+// nothing here. Comparing the row we are about to overwrite with the row we are
+// writing is order-independent, and the dedupe keys make a replay a no-op.
+
+import type { BillingSubscriptionStatus } from '@prisma/client';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
+import { isProductAnalyticsEnabled } from '@/lib/feature-flags';
+
+export interface SubscriptionStateBefore {
+  status: BillingSubscriptionStatus;
+  cancelAtPeriodEnd: boolean;
+  /** Whether this account had already consumed a trial before this sync. */
+  hadTrial: boolean;
+}
+
+export interface SubscriptionStateAfter {
+  status: BillingSubscriptionStatus;
+  cancelAtPeriodEnd: boolean;
+  trialEndsAt: Date | null;
+  currentPeriodEnd: Date | null;
+}
+
+/**
+ * A cancellation and the reactivation that may follow it both belong to a
+ * billing cycle. Keying them on the period end lets a customer cancel, come
+ * back, and cancel again in a later cycle without the second one being
+ * swallowed as a duplicate, while the two Stripe writes that describe a single
+ * cancellation (the `cancel_at_period_end` flag now, the `canceled` status
+ * later) collapse into one event.
+ */
+function cycleMarker(currentPeriodEnd: Date | null): string {
+  return String(currentPeriodEnd ? currentPeriodEnd.getTime() : 0);
+}
+
+export async function recordSubscriptionTransition(params: {
+  userId: string;
+  subscriptionId: string;
+  before: SubscriptionStateBefore;
+  after: SubscriptionStateAfter;
+}): Promise<void> {
+  if (!isProductAnalyticsEnabled()) return;
+
+  const { userId, subscriptionId, before, after } = params;
+  const cycle = cycleMarker(after.currentPeriodEnd);
+
+  // Once per account for its lifetime. A second trial is not a second start of
+  // the funnel, and Stripe will not grant one anyway.
+  if (after.trialEndsAt && !before.hadTrial) {
+    await recordEvent({
+      name: 'TRIAL_STARTED',
+      dedupeKey: eventKey('TRIAL_STARTED', userId),
+      userId,
+    });
+  }
+
+  // The paying moment. With a trial the status goes trialing -> active, so this
+  // fires on conversion rather than on signup for the trial.
+  if (after.status === 'ACTIVE' && before.status !== 'ACTIVE') {
+    await recordEvent({
+      name: 'SUBSCRIPTION_STARTED',
+      dedupeKey: eventKey('SUBSCRIPTION_STARTED', subscriptionId),
+      userId,
+    });
+  }
+
+  const startedCanceling = after.cancelAtPeriodEnd && !before.cancelAtPeriodEnd;
+  const becameCanceled = after.status === 'CANCELED' && before.status !== 'CANCELED';
+  if (startedCanceling || becameCanceled) {
+    await recordEvent({
+      name: 'SUBSCRIPTION_CANCELED',
+      dedupeKey: `SUBSCRIPTION_CANCELED:${subscriptionId}:${cycle}`,
+      userId,
+    });
+  }
+
+  if (!after.cancelAtPeriodEnd && before.cancelAtPeriodEnd && after.status !== 'CANCELED') {
+    await recordEvent({
+      name: 'SUBSCRIPTION_REACTIVATED',
+      dedupeKey: `SUBSCRIPTION_REACTIVATED:${subscriptionId}:${cycle}`,
+      userId,
+    });
+  }
+}

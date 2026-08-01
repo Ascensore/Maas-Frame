@@ -8,6 +8,7 @@ import { db } from '@/lib/db';
 import { rateLimit } from '@/lib/rate-limit';
 import { MAX_SHARE_PASSWORD_LENGTH } from '@/lib/share-links';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
 
@@ -141,7 +142,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const { projectId, videoId } = await params;
-    const { error } = await requireShareManagementAccess(projectId, videoId, session.user.id);
+    const { error, video } = await requireShareManagementAccess(
+      projectId,
+      videoId,
+      session.user.id
+    );
     if (error) return error;
 
     const body = await request.json().catch(() => ({}));
@@ -243,6 +248,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!link) {
       return apiErrors.internalError('Failed to create video share link');
     }
+
+    // Keyed on the link id, so re-issuing the token for a link that already
+    // exists updates the row and records nothing: the share was created once.
+    await recordEvent({
+      name: 'SHARE_LINK_CREATED',
+      dedupeKey: eventKey('SHARE_LINK_CREATED', link.id),
+      userId: video?.project.ownerId ?? null,
+    });
 
     const response = successResponse(serializeShareLink(request, videoId, link));
 

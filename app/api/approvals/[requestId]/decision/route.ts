@@ -6,6 +6,7 @@ import { notifyUsers } from '@/lib/notifications';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 type RouteParams = { params: Promise<{ requestId: string }> };
 
@@ -202,6 +203,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (updated.status === 'APPROVED') {
+      await recordEvent({
+        name: 'APPROVAL_COMPLETED',
+        dedupeKey: eventKey('APPROVAL_COMPLETED', requestId),
+        userId: approvalRequest.version.video.project.ownerId,
+      });
+
       notifyUsers([updated.requestedById], {
         type: 'approval_completed',
         projectName: updated.version.video.project.name,

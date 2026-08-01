@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
+import { CtaLink } from '@/components/marketing/cta-link';
 import { MarketingCompareLinks } from '@/components/marketing/marketing-compare-links';
 import { useEffect, useRef } from 'react';
 import { gsap } from 'gsap';
@@ -258,13 +259,13 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
               data-hero-copy
               className="mx-auto flex max-w-md flex-col items-center justify-center gap-3"
             >
-              <Link
+              <CtaLink
                 href={hostedCtaHref}
                 className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02]"
               >
                 Start free trial
                 <MoveRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
-              </Link>
+              </CtaLink>
 
               <p className="text-xs text-muted-foreground">
                 7-day free trial · Flat $10/mo — no per-seat fees · No client accounts
@@ -717,12 +718,12 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                   Need more storage? Add 100 GB for $5/mo.
                 </p>
 
-                <Link
+                <CtaLink
                   href={hostedCtaHref}
                   className="mt-auto group relative isolate inline-flex h-12 w-full items-center justify-center overflow-hidden bg-[#06b6d4] font-medium text-black transition-colors hover:bg-[#06b6d4]/90 text-sm"
                 >
                   Start free trial
-                </Link>
+                </CtaLink>
               </div>
 
               {/* Card 2: Fair Source (Self-hosted) */}
@@ -901,12 +902,12 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 Your first review link takes minutes.
               </p>
             </div>
-            <Link
+            <CtaLink
               href={hostedCtaHref}
               className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02] md:min-w-[240px]"
             >
               Start free trial
-            </Link>
+            </CtaLink>
           </div>
         </section>
       </main>

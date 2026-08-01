@@ -1,3 +1,6 @@
+import { cookies } from 'next/headers';
+import { after } from 'next/server';
+import { readVisitorContext, recordVisitorEvent } from '@/lib/analytics/visitor';
 import { isInviteCodeRequired } from '@/lib/feature-flags';
 import { getInvitationPreviewByToken } from '@/lib/invitations';
 import { isInvitationPreviewAllowed } from '@/lib/invitation-preview-limit';
@@ -8,6 +11,12 @@ interface RegisterPageProps {
 }
 
 export default async function RegisterPage({ searchParams }: RegisterPageProps) {
+  // Reaching this page is the funnel step. Recording it here rather than from the
+  // browser also keeps it honest: a prefetch of this route is filtered in the
+  // proxy, so signup starts can never outnumber the landing views above them.
+  const visitor = readVisitorContext(await cookies());
+  after(() => recordVisitorEvent('SIGNUP_STARTED', visitor));
+
   const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
   const githubEnabled = Boolean(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
 

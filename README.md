@@ -180,6 +180,7 @@ Behavior when disabled:
 - `OPENFRAME_ENABLE_BUNNY_UPLOADS=false` hides Bunny direct-upload entry points. URL-based providers such as YouTube remain available.
 - `OPENFRAME_ENABLE_S3_VIDEO_UPLOADS=true` (with `R2_*` configured) enables presigned uploads to your own S3-compatible storage. Set `OPENFRAME_ENABLE_BUNNY_UPLOADS=false` — only one direct-upload backend can be active. The bucket must allow CORS `PUT` from your app origin (for example `http://localhost:3000` in dev and your production URL). For Docker + MinIO, keep `R2_ENDPOINT=http://minio:9000` (app-internal) and set `R2_PRESIGN_ENDPOINT` to the browser-reachable MinIO origin (for example `http://localhost:9000` locally, or `https://minio.example.com` when MinIO is behind a reverse proxy). Use the origin only — no path suffix. The app's Content-Security-Policy is generated from runtime env at request time, so published Docker images pick up custom `R2_PRESIGN_ENDPOINT` values without rebuilding or editing `next.config.ts`.
 - `OPENFRAME_REQUIRE_INVITE_CODE=false` allows open registration while keeping invitation-link registration intact.
+- `OPENFRAME_ENABLE_ANALYTICS=true` records first-touch attribution and funnel events into your own database, readable on `/admin/growth`. Off by default, and nothing leaves the instance either way.
 
 For self-hosted MinIO behind a reverse proxy, choose one of these browser-facing layouts:
 

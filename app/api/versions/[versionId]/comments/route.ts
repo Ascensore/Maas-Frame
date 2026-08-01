@@ -13,6 +13,7 @@ import {
   getGuestIdentityFromRequest,
   setGuestIdentityCookie,
 } from '@/lib/guest-identity';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 import {
   extractImageFileNameFromProxyUrl,
   extractAudioFileNameFromProxyUrl,
@@ -545,6 +546,18 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           url: `${baseUrl}/watch/${version.video.id}`,
         }).catch((err) => logError('Notification failed:', err));
       }
+    }
+
+    // Feedback arriving from outside the team is the moment this product
+    // becomes worth paying for, so it is the activation step of the funnel.
+    // Keyed on the account, not the comment: what matters is the first time an
+    // account ever received one.
+    if (isGuest) {
+      await recordEvent({
+        name: 'FIRST_GUEST_COMMENT',
+        dedupeKey: eventKey('FIRST_GUEST_COMMENT', project.workspace.ownerId),
+        userId: project.workspace.ownerId,
+      });
     }
 
     const viewerUserId = session?.user?.id ?? null;

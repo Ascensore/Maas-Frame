@@ -107,7 +107,45 @@ function ToggleButton({
 
 // ─── Step 1: Welcome ───────────────────────────────────────────────────────────
 
-function StepWelcome({ userName, onNext }: { userName: string; onNext: () => void }) {
+// Asked here rather than on the registration form. The whole point of measuring
+// this funnel is the signup conversion rate, and a question added to the form
+// would move the number being measured.
+const SOURCE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'GITHUB', label: 'GitHub' },
+  { value: 'YOUTUBE', label: 'YouTube' },
+  { value: 'GOOGLE', label: 'A search engine' },
+  { value: 'REVIEW_LINK', label: 'A review or comparison site' },
+  { value: 'REFERRAL', label: 'Someone recommended it' },
+  { value: 'COMMUNITY', label: 'Reddit, X, Discord or a forum' },
+  { value: 'OUTBOUND', label: 'An email from us' },
+  { value: 'OTHER', label: 'Somewhere else' },
+];
+
+function StepWelcome({
+  userName,
+  askSource,
+  onNext,
+}: {
+  userName: string;
+  askSource: boolean;
+  onNext: () => void;
+}) {
+  const [source, setSource] = useState<string>('');
+  const [note, setNote] = useState('');
+
+  const handleNext = () => {
+    // Never blocks the wizard. An unanswered or failed question costs one row in
+    // a cross-check column; a broken Get Started button costs the account.
+    if (askSource && source) {
+      void fetch('/api/onboarding/source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, note: source === 'OTHER' ? note : undefined }),
+      }).catch(() => undefined);
+    }
+    onNext();
+  };
+
   return (
     <div className="text-center space-y-8">
       <div className="mx-auto w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center">
@@ -122,7 +160,36 @@ function StepWelcome({ userName, onNext }: { userName: string; onNext: () => voi
           manage versions, and streamline approvals — all in one place.
         </p>
       </div>
-      <Button onClick={onNext} size="lg" className="w-full sm:w-auto px-10 h-12 text-base">
+
+      {askSource && (
+        <div className="mx-auto max-w-sm space-y-3 text-left">
+          <Label htmlFor="acquisition-source" className="text-sm text-muted-foreground">
+            How did you hear about us? (optional)
+          </Label>
+          <Select value={source} onValueChange={setSource}>
+            <SelectTrigger id="acquisition-source" className="w-full">
+              <SelectValue placeholder="Pick one" />
+            </SelectTrigger>
+            <SelectContent>
+              {SOURCE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {source === 'OTHER' && (
+            <Input
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              maxLength={200}
+              placeholder="Where, roughly?"
+            />
+          )}
+        </div>
+      )}
+
+      <Button onClick={handleNext} size="lg" className="w-full sm:w-auto px-10 h-12 text-base">
         Get Started
         <ChevronRight className="h-5 w-5 ml-1" />
       </Button>
@@ -691,10 +758,12 @@ export function OnboardingWizard({
   userName,
   canCreateWorkspace,
   availableWorkspaces,
+  askAcquisitionSource,
 }: {
   userName: string;
   canCreateWorkspace: boolean;
   availableWorkspaces: Array<{ id: string; name: string; isOwner: boolean }>;
+  askAcquisitionSource: boolean;
 }) {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState(1);
@@ -761,7 +830,9 @@ export function OnboardingWizard({
       {/* Step content */}
       <Card className="border-border/50 shadow-lg">
         <CardContent className="pt-10 pb-10 px-10">
-          {currentStep === 1 && <StepWelcome userName={userName} onNext={goNext} />}
+          {currentStep === 1 && (
+            <StepWelcome userName={userName} askSource={askAcquisitionSource} onNext={goNext} />
+          )}
           {currentStep === 2 && (
             <StepWorkspace
               canCreateWorkspace={canCreateWorkspace}

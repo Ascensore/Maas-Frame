@@ -1,6 +1,7 @@
 import { auth } from '@/lib/auth';
 import { buildBillingAccessWhereInput, getBillingOverview } from '@/lib/billing';
 import { db } from '@/lib/db';
+import { isProductAnalyticsEnabled } from '@/lib/feature-flags';
 import { redirect } from 'next/navigation';
 import { OnboardingWizard } from './onboarding-wizard';
 
@@ -43,6 +44,7 @@ export default async function OnboardingPage() {
     <OnboardingWizard
       userName={userName}
       canCreateWorkspace={billing.workspaceCreation.canCreateWorkspace}
+      askAcquisitionSource={isProductAnalyticsEnabled()}
       availableWorkspaces={creatableWorkspaces.map((workspace) => ({
         id: workspace.id,
         name: workspace.name,

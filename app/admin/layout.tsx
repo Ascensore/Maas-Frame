@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { auth } from '@/lib/auth';
 import { Header } from '@/components/layout';
 import Link from 'next/link';
-import { LayoutDashboard, MessageSquareQuote, Users } from 'lucide-react';
+import { LayoutDashboard, MessageSquareQuote, TrendingUp, Users } from 'lucide-react';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
@@ -39,6 +39,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <MessageSquareQuote className="h-4 w-4" />
               Feedback
             </Link>
+            <Link
+              href="/admin/growth"
+              className="flex items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium hover:bg-muted/50"
+            >
+              <TrendingUp className="h-4 w-4" />
+              Growth
+            </Link>
           </nav>
         </div>
         {/* Desktop Nav */}
@@ -65,6 +72,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               >
                 <MessageSquareQuote className="h-4 w-4" />
                 Feedback
+              </Link>
+              <Link
+                href="/admin/growth"
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-muted/50 transition-colors"
+              >
+                <TrendingUp className="h-4 w-4" />
+                Growth
               </Link>
             </nav>
           </div>
