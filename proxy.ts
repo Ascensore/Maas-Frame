@@ -10,17 +10,22 @@ import {
   ANONYMOUS_ID_COOKIE,
   ANONYMOUS_ID_MAX_AGE_SECONDS,
   FIRST_TOUCH_COOKIE,
-  encodeFirstTouch,
   generateAnonymousId,
-  isValidAnonymousId,
+  readAnonymousIdCookie,
+  signAnonymousId,
+  signFirstTouch,
 } from '@/lib/analytics/cookies';
 import { isCountableDocumentRequest, isLikelyBot } from '@/lib/analytics/bots';
 import { isProductAnalyticsEnabled } from '@/lib/feature-flags';
+import { getPublicOrigin } from '@/lib/request-origin';
 
 // Runs on the edge, so nothing here touches the database. It only decides who a
-// visitor is and what brought them, then hands both downstream as cookies. The
-// rows are written by the pages, which run in Node.
-function applyAcquisitionCookies(request: NextRequest, response: NextResponse): void {
+// visitor is and what brought them, then hands both downstream as signed
+// cookies. The rows are written by the pages, which run in Node.
+async function applyAcquisitionCookies(
+  request: NextRequest,
+  response: NextResponse
+): Promise<void> {
   if (!isProductAnalyticsEnabled()) return;
   if (!isCountableDocumentRequest(request.headers)) return;
   if (isLikelyBot(request.headers.get('user-agent'))) return;
@@ -28,19 +33,24 @@ function applyAcquisitionCookies(request: NextRequest, response: NextResponse): 
   const cookieOptions = {
     httpOnly: true,
     sameSite: 'lax' as const,
-    secure: request.nextUrl.protocol === 'https:',
+    // Not `request.nextUrl.protocol`. Behind a TLS-terminating reverse proxy,
+    // which is the deployment shape the README documents, that is the
+    // container-internal `http://localhost:3000` and the flag would silently
+    // come off in exactly the setup that needs it.
+    secure: getPublicOrigin(request).startsWith('https:'),
     path: '/',
     maxAge: ANONYMOUS_ID_MAX_AGE_SECONDS,
   };
 
-  const existingId = request.cookies.get(ANONYMOUS_ID_COOKIE)?.value;
-  if (!isValidAnonymousId(existingId)) {
-    const anonymousId = generateAnonymousId();
+  const existingId = await readAnonymousIdCookie(request.cookies.get(ANONYMOUS_ID_COOKIE)?.value);
+  if (!existingId) {
+    const signedId = await signAnonymousId(generateAnonymousId());
+    if (!signedId) return;
     // Set on the request as well as the response: without this the page rendering
     // *this* request cannot see the id, and the first landing view of every new
     // visitor, the one carrying the campaign tags, goes unrecorded.
-    request.cookies.set(ANONYMOUS_ID_COOKIE, anonymousId);
-    response.cookies.set(ANONYMOUS_ID_COOKIE, anonymousId, cookieOptions);
+    request.cookies.set(ANONYMOUS_ID_COOKIE, signedId);
+    response.cookies.set(ANONYMOUS_ID_COOKIE, signedId, cookieOptions);
   }
 
   if (request.cookies.get(FIRST_TOUCH_COOKIE)) return;
@@ -53,7 +63,7 @@ function applyAcquisitionCookies(request: NextRequest, response: NextResponse): 
   const utmSource = sanitizeTag(params.get('utm_source'));
   const utmMedium = sanitizeTag(params.get('utm_medium'));
 
-  const firstTouch = encodeFirstTouch({
+  const firstTouch = await signFirstTouch({
     channel: classifyChannel({ utmSource, utmMedium, referrerHost }),
     utmSource,
     utmMedium,
@@ -61,15 +71,16 @@ function applyAcquisitionCookies(request: NextRequest, response: NextResponse): 
     referrerHost,
     landingPath: sanitizeLandingPath(request.nextUrl.pathname),
   });
+  if (!firstTouch) return;
 
   request.cookies.set(FIRST_TOUCH_COOKIE, firstTouch);
   response.cookies.set(FIRST_TOUCH_COOKIE, firstTouch, cookieOptions);
 }
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request });
   response.headers.set('Content-Security-Policy', buildContentSecurityPolicy());
-  applyAcquisitionCookies(request, response);
+  await applyAcquisitionCookies(request, response);
   return response;
 }
 

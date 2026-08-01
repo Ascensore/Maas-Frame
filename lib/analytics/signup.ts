@@ -4,10 +4,8 @@
 // a channel that only shows up for one of them is worse than no channel at all.
 
 import { eventKey, recordEvent, attachAcquisitionToUser } from '@/lib/analytics/record';
-import { readVisitorContext, type VisitorContext } from '@/lib/analytics/visitor';
+import { NO_VISITOR, readVisitorContext, type VisitorContext } from '@/lib/analytics/visitor';
 import { isProductAnalyticsEnabled } from '@/lib/feature-flags';
-
-const NO_VISITOR: VisitorContext = { anonymousId: null, firstTouch: null };
 
 /**
  * The visitor context of the request being handled.
@@ -20,8 +18,8 @@ const NO_VISITOR: VisitorContext = { anonymousId: null, firstTouch: null };
 export async function readVisitorContextFromHeaders(): Promise<VisitorContext> {
   if (!isProductAnalyticsEnabled()) return NO_VISITOR;
   try {
-    const { cookies } = await import('next/headers');
-    return readVisitorContext(await cookies());
+    const { cookies, headers } = await import('next/headers');
+    return await readVisitorContext(await cookies(), await headers());
   } catch {
     return NO_VISITOR;
   }

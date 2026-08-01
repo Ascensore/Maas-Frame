@@ -75,11 +75,24 @@ export function extractReferrerHost(
   return host;
 }
 
-/** Path only, no query string and no fragment, capped. */
+// What a URL path is allowed to be made of, per RFC 3986: unreserved characters,
+// percent escapes, sub-delims and the separators. Everything a real route can
+// carry, and nothing that survives being pasted into a page or a log line.
+const LANDING_PATH_PATTERN = /^\/[A-Za-z0-9\-._~%!$&'()*+,;=:@/]*$/;
+
+/**
+ * Path only, no query string and no fragment, capped and character-checked.
+ *
+ * The proxy feeds this `request.nextUrl.pathname`, which is already a path. The
+ * cookie reader feeds it whatever the cookie said, which is why the allowlist is
+ * here rather than left to the caller: an unchecked value would put newlines and
+ * markup into a column that some later admin table renders.
+ */
 export function sanitizeLandingPath(pathname: string | null | undefined): string {
   if (typeof pathname !== 'string' || !pathname.startsWith('/')) return '/';
-  const path = pathname.split('?')[0]?.split('#')[0] ?? '/';
-  return path.slice(0, MAX_PATH_LENGTH) || '/';
+  const path = (pathname.split('?')[0]?.split('#')[0] ?? '/').slice(0, MAX_PATH_LENGTH);
+  if (!path || !LANDING_PATH_PATTERN.test(path)) return '/';
+  return path;
 }
 
 function suffixMatch(host: string, domain: string): boolean {

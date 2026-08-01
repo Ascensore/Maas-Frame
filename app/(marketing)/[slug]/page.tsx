@@ -1,9 +1,8 @@
 import type { Metadata } from 'next';
-import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { after } from 'next/server';
 import { ComparisonPage } from '@/components/marketing/comparison-page';
-import { readVisitorContext, recordVisitorEvent } from '@/lib/analytics/visitor';
+import { readPageVisitor, recordVisitorEvent } from '@/lib/analytics/visitor';
 import { auth } from '@/lib/auth';
 import { comparisonPages, getComparisonPage } from '@/lib/marketing/comparison-pages';
 import { buildComparisonJsonLd, buildComparisonMetadata } from '@/lib/marketing/metadata';
@@ -46,7 +45,7 @@ export default async function MarketingSlugPage({ params }: MarketingSlugPagePro
   // A comparison page is a landing page: for most of these visitors it is the
   // first thing they see, so it belongs in the same visitor count as `/`.
   if (!isLoggedIn) {
-    const visitor = readVisitorContext(await cookies());
+    const visitor = await readPageVisitor();
     after(() => recordVisitorEvent('LANDING_VIEW', visitor));
   }
 

@@ -29,6 +29,16 @@ export const AT_RISK_SILENT_DAYS = 14;
 const DEFAULT_WEEKS = 12;
 const CHANNEL_WINDOW_DAYS = 28;
 
+/**
+ * How many paid accounts the per-account table carries.
+ *
+ * The list is ordered quietest first, so the cap drops the accounts that are
+ * using the product most, which are the ones nobody needs to read a row about.
+ * It is reported rather than applied silently: a truncated table that looks
+ * complete is worse than a smaller one that says so.
+ */
+const PAID_ACCOUNT_LIMIT = 500;
+
 export interface WeeklyRow {
   weekStart: Date;
   visitors: number;
@@ -72,6 +82,9 @@ export interface Scoreboard {
   channels: ChannelRow[];
   channelWindowDays: number;
   paidAccounts: PaidAccountRow[];
+  /** True when there are more paid accounts than the table shows. */
+  paidAccountsTruncated: boolean;
+  paidAccountLimit: number;
   atRisk: PaidAccountRow[];
   currentActivePaid: number | null;
   currentMrrCents: number | null;
@@ -240,6 +253,7 @@ export async function getScoreboard(options?: { weeks?: number }): Promise<Score
       WHERE u."subscriptionStatus"::text IN ('ACTIVE', 'TRIALING')
       GROUP BY u.id, u.name, u.email, u."subscriptionStatus", ua.channel, ua.self_reported
       ORDER BY MAX(e.occurred_at) ASC NULLS FIRST
+      LIMIT ${PAID_ACCOUNT_LIMIT + 1}
     `,
     getCachedStripeStats(),
   ]);
@@ -293,7 +307,9 @@ export async function getScoreboard(options?: { weeks?: number }): Promise<Score
     channelBuckets.set(channel, bucket);
   }
 
-  const accounts: PaidAccountRow[] = paidAccounts.map((row) => ({
+  // One row over the limit was fetched purely to tell "exactly full" from "cut off".
+  const paidAccountsTruncated = paidAccounts.length > PAID_ACCOUNT_LIMIT;
+  const accounts: PaidAccountRow[] = paidAccounts.slice(0, PAID_ACCOUNT_LIMIT).map((row) => ({
     userId: row.user_id,
     name: row.name,
     email: row.email,
@@ -313,6 +329,8 @@ export async function getScoreboard(options?: { weeks?: number }): Promise<Score
     channels: [...channelBuckets.values()].sort((a, b) => b.visitors - a.visitors),
     channelWindowDays: CHANNEL_WINDOW_DAYS,
     paidAccounts: accounts,
+    paidAccountsTruncated,
+    paidAccountLimit: PAID_ACCOUNT_LIMIT,
     atRisk: accounts.filter(
       (account) => !account.lastValueEventAt || account.lastValueEventAt < silentBefore
     ),

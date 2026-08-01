@@ -10,7 +10,10 @@ import { logError } from '@/lib/logger';
 export async function GET(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user?.isAdmin) {
+    if (!session?.user?.id) {
+      return apiErrors.unauthorized();
+    }
+    if (!session.user.isAdmin) {
       return apiErrors.forbidden('Admin access required');
     }
 

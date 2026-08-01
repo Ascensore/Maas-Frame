@@ -13,7 +13,7 @@ import { POST as beacon } from '@/app/api/events/route';
 import { POST as register } from '@/app/api/auth/register/route';
 import { recordSubscriptionTransition } from '@/lib/analytics/billing-events';
 import { recordSignupCompleted } from '@/lib/analytics/signup';
-import { encodeFirstTouch, type FirstTouch } from '@/lib/analytics/cookies';
+import { signAnonymousId, signFirstTouch, type FirstTouch } from '@/lib/analytics/cookies';
 import { apiRequest, callRoute } from '../helpers/request';
 import { signedOut } from '../helpers/session';
 import { createUser } from '../factories';
@@ -21,6 +21,9 @@ import { createUser } from '../factories';
 const ANON_ID = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const INVITE_CODE = 'test-invite';
 const ORIGIN = 'http://localhost:3000';
+const SECRET = 'analytics-test-secret';
+const BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36';
 
 const GITHUB_TOUCH: FirstTouch = {
   channel: 'GITHUB',
@@ -31,23 +34,30 @@ const GITHUB_TOUCH: FirstTouch = {
   landingPath: '/',
 };
 
-function visitorCookies(anonymousId = ANON_ID, touch: FirstTouch = GITHUB_TOUCH) {
-  return { of_aid: anonymousId, of_ft: encodeFirstTouch(touch) };
+/** What the proxy would have set. Signed, because nothing downstream trusts anything else. */
+async function visitorCookies(anonymousId = ANON_ID, touch: FirstTouch = GITHUB_TOUCH) {
+  return {
+    of_aid: (await signAnonymousId(anonymousId)) ?? '',
+    of_ft: (await signFirstTouch(touch)) ?? '',
+  };
 }
 
-function beaconRequest(options?: {
+async function beaconRequest(options?: {
   name?: string;
   origin?: string | null;
+  userAgent?: string | null;
   cookies?: Record<string, string>;
 }) {
   const headers: Record<string, string> = {};
   const origin = options?.origin === undefined ? ORIGIN : options.origin;
   if (origin) headers.origin = origin;
+  const userAgent = options?.userAgent === undefined ? BROWSER_UA : options.userAgent;
+  if (userAgent) headers['user-agent'] = userAgent;
 
   return apiRequest('/api/events', {
     body: { name: options?.name ?? 'cta_clicked' },
     headers,
-    cookies: options?.cookies ?? visitorCookies(),
+    cookies: options?.cookies ?? (await visitorCookies()),
   });
 }
 
@@ -59,6 +69,7 @@ async function eventNames(): Promise<string[]> {
 beforeEach(() => {
   signedOut();
   vi.stubEnv('OPENFRAME_ENABLE_ANALYTICS', 'true');
+  vi.stubEnv('NEXTAUTH_SECRET', SECRET);
 });
 
 afterEach(() => {
@@ -67,7 +78,7 @@ afterEach(() => {
 
 describe('POST /api/events', () => {
   it('records a CTA click and the first touch behind it', async () => {
-    const response = await callRoute(beacon, beaconRequest());
+    const response = await callRoute(beacon, await beaconRequest());
 
     expect(response.status).toBe(204);
 
@@ -91,29 +102,33 @@ describe('POST /api/events', () => {
   });
 
   it('records one event however many times the same visitor clicks', async () => {
-    await callRoute(beacon, beaconRequest());
-    await callRoute(beacon, beaconRequest());
-    await callRoute(beacon, beaconRequest());
+    await callRoute(beacon, await beaconRequest());
+    await callRoute(beacon, await beaconRequest());
+    await callRoute(beacon, await beaconRequest());
 
     expect(await db.analyticsEvent.count()).toBe(1);
   });
 
   it('counts two different visitors separately', async () => {
-    await callRoute(beacon, beaconRequest());
+    await callRoute(beacon, await beaconRequest());
     await callRoute(
       beacon,
-      beaconRequest({ cookies: visitorCookies('f0e1d2c3b4a596877869504132231415') })
+      await beaconRequest({ cookies: await visitorCookies('f0e1d2c3b4a596877869504132231415') })
     );
 
     expect(await db.analyticsEvent.count()).toBe(2);
   });
 
   it('never keeps the first touch of a visitor who came back through another link', async () => {
-    await callRoute(beacon, beaconRequest());
+    await callRoute(beacon, await beaconRequest());
     await callRoute(
       beacon,
-      beaconRequest({
-        cookies: visitorCookies(ANON_ID, { ...GITHUB_TOUCH, channel: 'GOOGLE', utmSource: null }),
+      await beaconRequest({
+        cookies: await visitorCookies(ANON_ID, {
+          ...GITHUB_TOUCH,
+          channel: 'GOOGLE',
+          utmSource: null,
+        }),
       })
     );
 
@@ -126,7 +141,7 @@ describe('POST /api/events', () => {
     // Without this the endpoint would let any anonymous caller write a payment
     // into the funnel.
     for (const name of ['subscription_started', 'signup_completed', 'SUBSCRIPTION_STARTED', '']) {
-      const response = await callRoute(beacon, beaconRequest({ name }));
+      const response = await callRoute(beacon, await beaconRequest({ name }));
       expect(response.status, name).toBe(204);
     }
 
@@ -134,23 +149,59 @@ describe('POST /api/events', () => {
   });
 
   it('ignores a cross-origin caller', async () => {
-    const response = await callRoute(beacon, beaconRequest({ origin: 'https://evil.example' }));
+    const response = await callRoute(
+      beacon,
+      await beaconRequest({ origin: 'https://evil.example' })
+    );
 
     expect(response.status).toBe(204);
     expect(await db.analyticsEvent.count()).toBe(0);
   });
 
   it('ignores a caller with no anonymous id cookie', async () => {
-    await callRoute(beacon, beaconRequest({ cookies: {} }));
+    await callRoute(beacon, await beaconRequest({ cookies: {} }));
 
     expect(await db.analyticsEvent.count()).toBe(0);
     expect(await db.acquisitionTouch.count()).toBe(0);
   });
 
+  it('ignores a hand-written cookie, whatever channel it claims', async () => {
+    // httpOnly stops JavaScript, not curl. Without the signature this is a
+    // visitor of the caller's choosing, filed under a channel of their choosing,
+    // and every row on the scoreboard is theirs to write.
+    await callRoute(
+      beacon,
+      await beaconRequest({
+        cookies: {
+          of_aid: 'deadbeefdeadbeefdeadbeefdeadbeef',
+          of_ft: encodeURIComponent(JSON.stringify({ c: 'GITHUB', p: '/' })),
+        },
+      })
+    );
+
+    expect(await db.analyticsEvent.count()).toBe(0);
+    expect(await db.acquisitionTouch.count()).toBe(0);
+  });
+
+  it('ignores a cookie signed by another deployment', async () => {
+    const cookies = await visitorCookies();
+    vi.stubEnv('NEXTAUTH_SECRET', 'some-other-secret');
+
+    await callRoute(beacon, await beaconRequest({ cookies }));
+
+    expect(await db.analyticsEvent.count()).toBe(0);
+  });
+
+  it('ignores a script that sends no user agent', async () => {
+    await callRoute(beacon, await beaconRequest({ userAgent: null }));
+
+    expect(await db.analyticsEvent.count()).toBe(0);
+  });
+
   it('writes nothing at all when the flag is off', async () => {
     vi.stubEnv('OPENFRAME_ENABLE_ANALYTICS', 'false');
 
-    const response = await callRoute(beacon, beaconRequest());
+    const response = await callRoute(beacon, await beaconRequest());
 
     expect(response.status).toBe(204);
     expect(await db.analyticsEvent.count()).toBe(0);
@@ -169,7 +220,8 @@ describe('signup attribution', () => {
           password: 'correct horse battery',
           inviteCode: INVITE_CODE,
         },
-        cookies: visitorCookies(),
+        headers: { 'user-agent': BROWSER_UA },
+        cookies: await visitorCookies(),
       })
     );
   }
@@ -197,7 +249,7 @@ describe('signup attribution', () => {
   });
 
   it('claims the events the visitor produced before they had an account', async () => {
-    await callRoute(beacon, beaconRequest());
+    await callRoute(beacon, await beaconRequest());
     await registerWithCookies('backfilled@example.com');
 
     const user = await db.user.findUniqueOrThrow({ where: { email: 'backfilled@example.com' } });
@@ -213,11 +265,11 @@ describe('signup attribution', () => {
 
     await recordSignupCompleted({
       userId: user.id,
-      visitor: { anonymousId: ANON_ID, firstTouch: GITHUB_TOUCH },
+      visitor: { anonymousId: ANON_ID, firstTouch: GITHUB_TOUCH, clientIp: null },
     });
     await recordSignupCompleted({
       userId: user.id,
-      visitor: { anonymousId: ANON_ID, firstTouch: GITHUB_TOUCH },
+      visitor: { anonymousId: ANON_ID, firstTouch: GITHUB_TOUCH, clientIp: null },
     });
 
     expect(await db.analyticsEvent.count({ where: { name: 'SIGNUP_COMPLETED' } })).toBe(1);

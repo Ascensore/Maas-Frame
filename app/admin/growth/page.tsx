@@ -295,6 +295,13 @@ export default async function AdminGrowthPage() {
           <p className="text-sm text-muted-foreground">
             Value events are videos, share links, outside feedback, approvals and projects. Rows
             marked at risk have produced none for {AT_RISK_SILENT_DAYS} days.
+            {scoreboard.paidAccountsTruncated && (
+              <>
+                {' '}
+                Quietest {scoreboard.paidAccountLimit} only; there are more paid accounts than this
+                table shows.
+              </>
+            )}
           </p>
         </CardHeader>
         <CardContent className="overflow-x-auto">

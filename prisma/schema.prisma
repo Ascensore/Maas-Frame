@@ -750,9 +750,10 @@ model VideoUploadSession {
 // OPENFRAME_ENABLE_ANALYTICS is set, so a self-hosted instance carries the
 // tables empty and pays nothing for them.
 //
-// No free text from user content is stored. Referrers are reduced to a host and
-// landing pages to a path, both without query strings, so a shared link with a
-// name or token in it cannot leak in here.
+// Referrers are reduced to a host and landing pages to a path, both without
+// query strings, so a shared link with a name or token in it cannot leak in
+// here. The one free-text column is user_acquisitions.self_reported_note, which
+// holds up to 200 characters the account typed into the onboarding question.
 
 enum AcquisitionChannel {
   DIRECT

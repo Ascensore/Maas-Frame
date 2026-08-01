@@ -76,6 +76,20 @@ describe('sanitizeLandingPath', () => {
     expect(sanitizeLandingPath('https://open-frame.net/x')).toBe('/');
     expect(sanitizeLandingPath(null)).toBe('/');
   });
+
+  it('keeps what a real route can carry', () => {
+    expect(sanitizeLandingPath('/vs/frame.io')).toBe('/vs/frame.io');
+    expect(sanitizeLandingPath('/watch/cm4x-01_a')).toBe('/watch/cm4x-01_a');
+    expect(sanitizeLandingPath('/blog/%C3%BCr%C3%BCn')).toBe('/blog/%C3%BCr%C3%BCn');
+  });
+
+  it('drops a path that could only have come from a hand-written cookie', () => {
+    // The proxy feeds this a real pathname. The cookie reader feeds it whatever
+    // the cookie said, and that value ends up in a database column.
+    expect(sanitizeLandingPath('/<script>alert(1)</script>')).toBe('/');
+    expect(sanitizeLandingPath('/ok\nX-Injected: 1')).toBe('/');
+    expect(sanitizeLandingPath('/a b')).toBe('/');
+  });
 });
 
 describe('classifyChannel', () => {
