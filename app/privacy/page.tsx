@@ -289,7 +289,8 @@ export default function PrivacyPolicyPage() {
             </p>
             <div className="mt-3 border border-border bg-card/40 p-4 text-sm space-y-1">
               <p className="font-medium text-foreground">IPEK TECH LLC</p>
-              <p>Wyoming, United States</p>
+              <p>30 North Gould Street, Suite N</p>
+              <p>Sheridan, WY 82801, United States</p>
               <p>
                 Email:{' '}
                 <a href="mailto:info@open-frame.net" className="text-primary hover:underline">

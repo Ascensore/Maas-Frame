@@ -9,9 +9,14 @@ export function MarketingFooter() {
       <div className="mx-auto grid max-w-[1200px] gap-8 sm:grid-cols-2 lg:grid-cols-3">
         <div className="flex items-start gap-2">
           <Video className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-          <span className="font-mono text-xs text-muted-foreground">
-            © 2026 IPEK TECH LLC. All rights reserved.
-          </span>
+          <div className="flex flex-col gap-1">
+            <span className="font-mono text-xs text-muted-foreground">
+              © 2026 IPEK TECH LLC. All rights reserved.
+            </span>
+            <span className="font-mono text-xs text-muted-foreground">
+              30 North Gould Street, Suite N, Sheridan, WY 82801, United States
+            </span>
+          </div>
         </div>
         <MarketingCompareLinks />
         <div className="flex flex-col gap-2">
