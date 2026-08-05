@@ -8,6 +8,7 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { verifyBunnyUploadToken } from '@/lib/bunny-upload-token';
 import { finalizeR2VideoUpload } from '@/lib/r2-video-finalize';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -267,6 +268,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         url: `${baseUrl}/watch/${video.id}`,
       }).catch((err) => logError('Notification failed:', err));
     }
+
+    await recordEvent({
+      name: 'VIDEO_ADDED',
+      dedupeKey: eventKey('VIDEO_ADDED', video.id),
+      userId: project.ownerId,
+    });
 
     const response = successResponse(video, 201);
     return withCacheControl(response, 'private, no-store');

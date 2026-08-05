@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+import { after } from 'next/server';
 import { ComparisonPage } from '@/components/marketing/comparison-page';
+import { readPageVisitor, recordVisitorEvent } from '@/lib/analytics/visitor';
 import { auth } from '@/lib/auth';
 import { comparisonPages, getComparisonPage } from '@/lib/marketing/comparison-pages';
 import { buildComparisonJsonLd, buildComparisonMetadata } from '@/lib/marketing/metadata';
@@ -38,6 +40,15 @@ export default async function MarketingSlugPage({ params }: MarketingSlugPagePro
   }
 
   const session = await auth();
+  const isLoggedIn = Boolean(session?.user);
+
+  // A comparison page is a landing page: for most of these visitors it is the
+  // first thing they see, so it belongs in the same visitor count as `/`.
+  if (!isLoggedIn) {
+    const visitor = await readPageVisitor();
+    after(() => recordVisitorEvent('LANDING_VIEW', visitor));
+  }
+
   const structuredData = buildComparisonJsonLd({
     title: page.title,
     description: page.metaDescription,
@@ -57,7 +68,7 @@ export default async function MarketingSlugPage({ params }: MarketingSlugPagePro
           }}
         />
       ))}
-      <ComparisonPage page={page} isLoggedIn={Boolean(session?.user)} />
+      <ComparisonPage page={page} isLoggedIn={isLoggedIn} />
     </>
   );
 }

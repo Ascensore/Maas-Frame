@@ -90,8 +90,11 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   'verify-email': { windowMs: 15 * 60 * 1000, maxRequests: 20 }, // 20 per 15 min (clicked link)
   'resend-verification': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per hour
 
-  // Onboarding — one-time action, very strict
+  // Onboarding — one-time action, very strict. Both are keyed by user id, not IP:
+  // an office behind one address must not be able to lock its colleagues out of
+  // finishing onboarding.
   'onboarding-complete': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per hour
+  'onboarding-source': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per hour
 
   // Member management
   'invite-member': { windowMs: 60 * 60 * 1000, maxRequests: 30 }, // 30 per hour
@@ -104,6 +107,16 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
 
   // Mutations (update/delete) — moderate
   mutate: { windowMs: 60 * 1000, maxRequests: 30 }, // 30 per minute
+
+  // Analytics beacon — anonymous and public, so bound it per IP
+  'analytics-beacon': { windowMs: 60 * 60 * 1000, maxRequests: 30 }, // 30 per hour
+
+  // Anonymous visitor events recorded server-side from the landing pages. Bounds
+  // a flood that would otherwise write two rows per request forever, and is
+  // deliberately generous: these are the denominator of every rate on the
+  // scoreboard, so a limit that bites real traffic costs more than the flood it
+  // stops. Only applied when the client IP is real — see isClientIpTrustworthy.
+  'analytics-visitor': { windowMs: 60 * 60 * 1000, maxRequests: 240 }, // 240 per hour
 
   // General reads — generous
   api: { windowMs: 60 * 1000, maxRequests: 100 }, // 100 per minute
@@ -259,6 +272,20 @@ export function getClientIpFromHeaders(headers: Headers): string {
   // No trusted proxy configured — fall back to a constant value.
   // Rate limiting will apply per-process; use userId-keyed limits for authenticated endpoints.
   return '127.0.0.1';
+}
+
+/**
+ * Whether {@link getClientIp} resolves to the caller rather than to 127.0.0.1.
+ *
+ * Without TRUSTED_PROXY_MODE every request shares one bucket. That is a usable
+ * global brake on an endpoint nobody hits in a loop, and useless on a landing
+ * page: the bucket would empty on real traffic long before it emptied on an
+ * attacker, and the counting this whole subsystem exists for would stop. Callers
+ * that only make sense per-client check this first.
+ */
+export function isClientIpTrustworthy(): boolean {
+  const mode = process.env.TRUSTED_PROXY_MODE?.trim().toLowerCase();
+  return mode === 'cloudflare' || mode === 'nginx';
 }
 
 /**

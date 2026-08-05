@@ -7,6 +7,7 @@ import { buildBillingAccessWhereInput } from '@/lib/billing';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { DEFAULT_COMMENT_TAGS } from '@/lib/comment-tags';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 // GET /api/projects - List all projects for the authenticated user
 export async function GET(request: NextRequest) {
@@ -185,6 +186,15 @@ export async function POST(request: NextRequest) {
       });
 
       return createdProject;
+    });
+
+    // Attributed to the workspace owner rather than the caller: the funnel asks
+    // which account is progressing, and a team member creating a project moves
+    // the owner's account, not their own.
+    await recordEvent({
+      name: 'PROJECT_CREATED',
+      dedupeKey: eventKey('PROJECT_CREATED', project.id),
+      userId: workspace.ownerId,
     });
 
     const response = successResponse(project, 201);

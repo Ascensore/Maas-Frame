@@ -9,6 +9,8 @@ import {
   EMAIL_COLORS,
 } from '@/lib/email-brand';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
+import { isProductAnalyticsEnabled } from '@/lib/feature-flags';
 
 // Reduce window to 2 hours — shorter exposure in access logs and backups.
 const TOKEN_EXPIRY_HOURS = 2;
@@ -76,6 +78,23 @@ export async function consumeVerificationToken(token: string): Promise<string | 
   // count === 0 means the user was already verified or has been deleted.
   // Return null so a replayed/stale token never produces a misleading success redirect.
   if (user.count === 0) return null;
+
+  // Behind the flag so the extra lookup does not happen at all on a deployment
+  // that is not measuring. count > 0 above already means this is the one call
+  // that flipped the account, so a replayed link cannot reach here.
+  if (isProductAnalyticsEnabled()) {
+    const verified = await db.user.findUnique({
+      where: { email: record.identifier },
+      select: { id: true },
+    });
+    if (verified) {
+      await recordEvent({
+        name: 'EMAIL_VERIFIED',
+        dedupeKey: eventKey('EMAIL_VERIFIED', verified.id),
+        userId: verified.id,
+      });
+    }
+  }
 
   return record.identifier;
 }

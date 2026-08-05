@@ -44,6 +44,7 @@ import {
 } from '../factories';
 
 import * as adminFeedbackRoute from '@/app/api/admin/feedback/[feedbackId]/route';
+import * as adminGrowthRoute from '@/app/api/admin/growth/route';
 import * as adminRefreshR2Route from '@/app/api/admin/stats/refresh-r2/route';
 import * as approvalCancelRoute from '@/app/api/approvals/[requestId]/cancel/route';
 import * as approvalDecisionRoute from '@/app/api/approvals/[requestId]/decision/route';
@@ -54,6 +55,7 @@ import * as commentRoute from '@/app/api/comments/[commentId]/route';
 import * as feedbackRoute from '@/app/api/feedback/route';
 import * as feedbackUploadRoute from '@/app/api/feedback/upload/route';
 import * as onboardingCompleteRoute from '@/app/api/onboarding/complete/route';
+import * as onboardingSourceRoute from '@/app/api/onboarding/source/route';
 import * as approvalCandidatesRoute from '@/app/api/projects/[projectId]/approval-candidates/route';
 import * as projectDownloadRoute from '@/app/api/projects/[projectId]/download/route';
 import * as projectInvitationRoute from '@/app/api/projects/[projectId]/members/invitations/[invitationId]/route';
@@ -143,7 +145,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 60;
+const EXPECTED_ROUTE_MODULE_COUNT = 63;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -175,6 +177,15 @@ const PUBLIC_ROUTES: ReadonlyMap<string, string> = new Map([
     // present. Rate limited by IP, and answers identically for unknown emails
     // so it cannot be used to enumerate accounts.
     'resend of the verification email, for users who cannot sign in yet',
+  ],
+  [
+    'events/route.ts',
+    // The CTA-click beacon. Its whole job is to hear from visitors who have no
+    // account yet, so a session cannot be the guard. It is bounded three ways
+    // instead: same-origin only, IP rate limited, and it accepts exactly one
+    // event name, so nothing a caller sends can forge a signup or a payment.
+    // Covered in tests/api/analytics-events.test.ts.
+    'anonymous CTA beacon, restricted to one event name and to same-origin callers',
   ],
   [
     'stripe/webhook/route.ts',
@@ -351,6 +362,11 @@ const ROUTE_CASES: readonly RouteCase[] = [
     params: (f) => ({ feedbackId: f.feedbackId }),
   },
   {
+    file: 'admin/growth/route.ts',
+    module: adminGrowthRoute,
+    url: () => '/api/admin/growth',
+  },
+  {
     file: 'admin/stats/refresh-r2/route.ts',
     module: adminRefreshR2Route,
     url: () => '/api/admin/stats/refresh-r2',
@@ -404,6 +420,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     file: 'onboarding/complete/route.ts',
     module: onboardingCompleteRoute,
     url: () => '/api/onboarding/complete',
+  },
+  {
+    file: 'onboarding/source/route.ts',
+    module: onboardingSourceRoute,
+    url: () => '/api/onboarding/source',
+    body: { source: 'GITHUB' },
   },
   {
     file: 'projects/[projectId]/approval-candidates/route.ts',

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ArrowRight, Github, MoveRight } from 'lucide-react';
+import { CtaLink } from '@/components/marketing/cta-link';
 import { FeatureComparisonTable } from '@/components/marketing/feature-comparison-table';
 import { MarketingFooter } from '@/components/marketing/marketing-footer';
 import { MarketingHeader } from '@/components/marketing/marketing-header';
@@ -41,13 +42,13 @@ export function ComparisonPage({ page, isLoggedIn }: ComparisonPageProps) {
                 $10/month hosted plan covers your whole team and every client reviewer link.
               </p>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-                <Link
+                <CtaLink
                   href={hostedCtaHref}
                   className="group relative isolate inline-flex h-12 items-center justify-center overflow-hidden border border-primary bg-primary px-8 text-sm font-medium text-primary-foreground transition-transform duration-300 hover:scale-[1.02]"
                 >
                   Start free trial
                   <MoveRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
-                </Link>
+                </CtaLink>
                 <a
                   href={seoConfig.githubUrl}
                   target="_blank"
@@ -199,12 +200,12 @@ export function ComparisonPage({ page, isLoggedIn }: ComparisonPageProps) {
               </p>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row">
-              <Link
+              <CtaLink
                 href={hostedCtaHref}
                 className="inline-flex h-12 items-center justify-center border border-primary bg-primary px-8 text-sm font-medium text-primary-foreground"
               >
                 Start free trial
-              </Link>
+              </CtaLink>
               <a
                 href={seoConfig.githubUrl}
                 target="_blank"

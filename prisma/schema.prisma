@@ -50,7 +50,9 @@ model User {
   canceledApprovalRequests  ApprovalRequest[] @relation("ApprovalRequestsCanceledBy")
   approvalDecisions         ApprovalDecision[]
   sentInvitations           Invitation[] @relation("InvitationsSentBy")
-  
+  acquisition               UserAcquisition?
+  analyticsEvents           AnalyticsEvent[]
+
   @@map("users")
 }
 
@@ -736,6 +738,119 @@ model VideoUploadSession {
   @@index([billedUserId])
   @@index([expiresAt])
   @@map("video_upload_sessions")
+}
+
+// ============================================
+// ACQUISITION + PRODUCT ANALYTICS
+// ============================================
+//
+// Everything here is first party. Rows are written to this deployment's own
+// database and read back by this deployment's own admin panel; no part of the
+// codebase ships them anywhere else. The whole subsystem is off unless
+// OPENFRAME_ENABLE_ANALYTICS is set, so a self-hosted instance carries the
+// tables empty and pays nothing for them.
+//
+// Referrers are reduced to a host and landing pages to a path, both without
+// query strings, so a shared link with a name or token in it cannot leak in
+// here. The one free-text column is user_acquisitions.self_reported_note, which
+// holds up to 200 characters the account typed into the onboarding question.
+
+enum AcquisitionChannel {
+  DIRECT
+  GITHUB
+  YOUTUBE
+  GOOGLE
+  REVIEW_LINK
+  REFERRAL
+  OUTBOUND
+  COMMUNITY
+  OTHER
+}
+
+enum AnalyticsEventName {
+  LANDING_VIEW
+  CTA_CLICKED
+  SIGNUP_STARTED
+  SIGNUP_COMPLETED
+  EMAIL_VERIFIED
+  TRIAL_STARTED
+  WORKSPACE_CREATED
+  PROJECT_CREATED
+  VIDEO_ADDED
+  SHARE_LINK_CREATED
+  FIRST_GUEST_COMMENT
+  APPROVAL_COMPLETED
+  CHECKOUT_STARTED
+  SUBSCRIPTION_STARTED
+  SUBSCRIPTION_CANCELED
+  SUBSCRIPTION_REACTIVATED
+}
+
+// First touch for a visitor who does not have an account yet. Written once per
+// anonymous id and never updated: the whole point is what brought them here the
+// first time, so a later visit carrying different UTM tags must not overwrite it.
+model AcquisitionTouch {
+  id           String             @id @default(cuid())
+  anonymousId  String             @unique @map("anonymous_id")
+  channel      AcquisitionChannel
+  utmSource    String?            @map("utm_source")
+  utmMedium    String?            @map("utm_medium")
+  utmCampaign  String?            @map("utm_campaign")
+  referrerHost String?            @map("referrer_host")
+  landingPath  String             @map("landing_path")
+  createdAt    DateTime           @default(now()) @map("created_at")
+
+  @@index([channel, createdAt])
+  @@index([createdAt])
+  @@map("acquisition_touches")
+}
+
+// The first touch copied onto the account at signup, plus the answer to the
+// onboarding question. Kept beside User rather than on it so the acquisition
+// columns stay out of every session and billing query.
+model UserAcquisition {
+  userId           String              @id @map("user_id")
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  anonymousId      String?             @map("anonymous_id")
+  channel          AcquisitionChannel  @default(DIRECT)
+  utmSource        String?             @map("utm_source")
+  utmMedium        String?             @map("utm_medium")
+  utmCampaign      String?             @map("utm_campaign")
+  referrerHost     String?             @map("referrer_host")
+  landingPath      String?             @map("landing_path")
+  selfReported     AcquisitionChannel? @map("self_reported")
+  selfReportedNote String?             @map("self_reported_note")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+
+  @@index([channel, createdAt])
+  @@index([anonymousId])
+  @@map("user_acquisitions")
+}
+
+// One row per funnel step. `dedupeKey` is what makes "recorded exactly once"
+// a property of the schema instead of a property of every call site: a replayed
+// webhook, a double-submitted form or a refreshed page all collide on the unique
+// index and the second write is dropped.
+//
+// The user relation is SetNull rather than Cascade on purpose. A deleted account
+// still happened, and dropping its rows would silently rewrite past weeks of the
+// funnel.
+model AnalyticsEvent {
+  id          String              @id @default(cuid())
+  name        AnalyticsEventName
+  userId      String?             @map("user_id")
+  user        User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  anonymousId String?             @map("anonymous_id")
+  channel     AcquisitionChannel?
+  dedupeKey   String              @unique @map("dedupe_key")
+  occurredAt  DateTime            @default(now()) @map("occurred_at")
+
+  @@index([name, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([channel, name, occurredAt])
+  @@index([anonymousId])
+  @@map("analytics_events")
 }
 
 // Rate limiting table (created as UNLOGGED via raw SQL migration)

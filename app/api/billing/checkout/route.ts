@@ -11,6 +11,7 @@ import { isStripeFeatureEnabled } from '@/lib/feature-flags';
 import { getStripe, getStripePriceId, isStripeConfigured } from '@/lib/stripe';
 import { isTrustedSameOriginRequest } from '@/lib/request-origin';
 import { logError } from '@/lib/logger';
+import { eventKey, recordEvent } from '@/lib/analytics/record';
 
 function getAppOrigin(request: NextRequest) {
   if (isTrustedSameOriginRequest(request)) {
@@ -83,6 +84,15 @@ export async function POST(request: NextRequest) {
     if (!checkoutSession.url) {
       throw new Error('Stripe did not return a checkout URL');
     }
+
+    // Keyed on the Stripe session, so an abandoned checkout followed by a second
+    // attempt counts twice. That is the intent: the gap between checkouts started
+    // and subscriptions started is the number worth watching.
+    await recordEvent({
+      name: 'CHECKOUT_STARTED',
+      dedupeKey: eventKey('CHECKOUT_STARTED', checkoutSession.id),
+      userId: session.user.id,
+    });
 
     const response = successResponse({ url: checkoutSession.url });
     return withCacheControl(response, 'private, no-store');
