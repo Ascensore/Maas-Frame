@@ -17,6 +17,28 @@ function daysAgo(days: number): Date {
   return date;
 }
 
+/**
+ * The Monday this week started, in UTC.
+ *
+ * Anything asserted per week has to be seeded from here rather than from
+ * `daysAgo`: weeks start on Monday, so "three days ago" is last week on a
+ * Wednesday and this week on a Saturday, and a suite written the second way
+ * fails on the days the calendar disagrees.
+ */
+function startOfThisWeek(): Date {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  return start;
+}
+
+/** `days` into the week beginning at `weekStart`. Negative walks back a week. */
+function intoWeek(weekStart: Date, days: number): Date {
+  const date = new Date(weekStart);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date;
+}
+
 let sequence = 0;
 
 async function seedEvent(params: {
@@ -61,17 +83,19 @@ describe('getScoreboard', () => {
   it('counts a returning visitor once per week, not once per visit', async () => {
     // Landing views are deduped per visitor per day, so the same person on three
     // days is three rows. Weekly visitors is a distinct count over the id.
-    for (const days of [1, 2, 3]) {
+    // Seeded into last week, which is whole however the suite is scheduled.
+    const lastWeek = intoWeek(startOfThisWeek(), -7);
+    for (const day of [0, 1, 2]) {
       await seedEvent({
         name: 'LANDING_VIEW',
-        occurredAt: daysAgo(days),
+        occurredAt: intoWeek(lastWeek, day),
         anonymousId: 'visitor-one',
         channel: 'GITHUB',
       });
     }
     await seedEvent({
       name: 'LANDING_VIEW',
-      occurredAt: daysAgo(1),
+      occurredAt: intoWeek(lastWeek, 1),
       anonymousId: 'visitor-two',
       channel: 'GOOGLE',
     });
@@ -112,9 +136,11 @@ describe('getScoreboard', () => {
   });
 
   it('carries subscriptions started before the window into the running total', async () => {
+    // The pair has to land in the week the assertions read, which is this one.
+    const thisWeek = startOfThisWeek();
     await seedEvent({ name: 'SUBSCRIPTION_STARTED', occurredAt: daysAgo(120) });
-    await seedEvent({ name: 'SUBSCRIPTION_STARTED', occurredAt: daysAgo(3) });
-    await seedEvent({ name: 'SUBSCRIPTION_CANCELED', occurredAt: daysAgo(3) });
+    await seedEvent({ name: 'SUBSCRIPTION_STARTED', occurredAt: thisWeek });
+    await seedEvent({ name: 'SUBSCRIPTION_CANCELED', occurredAt: thisWeek });
 
     const scoreboard = await getScoreboard({ weeks: 2 });
     const last = scoreboard.weeks[scoreboard.weeks.length - 1];
