@@ -259,6 +259,73 @@ export function getBillingStatusLabel(status: BillingSubscriptionStatus) {
 }
 
 /**
+ * A `where` matching the accounts whose only entitlement is a running cardless
+ * trial: no Stripe subscription behind them, so `subscriptionStatus` is FREE.
+ */
+export function buildCardlessTrialWhereInput(now: Date = new Date()): Prisma.UserWhereInput {
+  return {
+    subscriptionStatus: BillingSubscriptionStatus.FREE,
+    trialEndsAt: { gt: now },
+  };
+}
+
+/**
+ * The status to show for an account, which is not always the one Stripe stored.
+ *
+ * The cardless trial writes `trialEndsAt` and nothing else, because there is no
+ * Stripe subscription behind it to report `trialing`. `subscriptionStatus` stays
+ * FREE, so anything reading that column alone showed a running trial as a free
+ * account: the admin dashboard counted every trial under "Free Users" and left
+ * "On Trial" at zero. Access is already resolved from the date in
+ * `hasBillingAccess`, so what is displayed follows the same date.
+ *
+ * Only FREE is overridden. Every other status means Stripe has an opinion about
+ * this account (an abandoned checkout leaves INCOMPLETE while the trial runs on),
+ * and that opinion is the more useful of the two to show.
+ */
+export function getEffectiveBillingStatus(
+  subject: Pick<BillingAccessSubject, 'subscriptionStatus' | 'trialEndsAt'>,
+  now: Date = new Date()
+): BillingSubscriptionStatus {
+  if (
+    subject.subscriptionStatus === BillingSubscriptionStatus.FREE &&
+    hasActiveTrial(subject.trialEndsAt, now)
+  ) {
+    return BillingSubscriptionStatus.TRIALING;
+  }
+
+  return subject.subscriptionStatus;
+}
+
+/**
+ * A `where` that filters on the displayed status rather than the stored one, so
+ * an admin asking for "Trialing" is handed the cardless trials and one asking
+ * for "Free" is not.
+ */
+export function buildEffectiveBillingStatusWhereInput(
+  status: BillingSubscriptionStatus,
+  now: Date = new Date()
+): Prisma.UserWhereInput {
+  if (status === BillingSubscriptionStatus.TRIALING) {
+    return {
+      OR: [
+        { subscriptionStatus: BillingSubscriptionStatus.TRIALING },
+        buildCardlessTrialWhereInput(now),
+      ],
+    };
+  }
+
+  if (status === BillingSubscriptionStatus.FREE) {
+    return {
+      subscriptionStatus: BillingSubscriptionStatus.FREE,
+      OR: [{ trialEndsAt: null }, { trialEndsAt: { lte: now } }],
+    };
+  }
+
+  return { subscriptionStatus: status };
+}
+
+/**
  * Grants the cardless trial, once per account, and reports whether this call is
  * the one that granted it.
  *

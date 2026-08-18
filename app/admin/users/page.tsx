@@ -5,7 +5,9 @@ import { auth } from '@/lib/auth';
 import { isBunnyUploadsFeatureEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
 import {
   buildBillingAccessWhereInput,
+  buildEffectiveBillingStatusWhereInput,
   getBillingStatusLabel,
+  getEffectiveBillingStatus,
   hasBillingAccess,
 } from '@/lib/billing';
 import { redirect } from 'next/navigation';
@@ -71,7 +73,9 @@ function getOwnBillingAccess(
     user.stripeCancelAtPeriodEnd || user.subscriptionStatus === BillingSubscriptionStatus.CANCELED;
 
   let endsAt: Date | null = null;
-  if (user.subscriptionStatus === BillingSubscriptionStatus.TRIALING) {
+  // The effective status, so a cardless trial (stored as FREE) still shows the
+  // date its access runs out instead of an open-ended "Active access".
+  if (getEffectiveBillingStatus(user, now) === BillingSubscriptionStatus.TRIALING) {
     endsAt = user.trialEndsAt;
   } else if (isEnding) {
     endsAt = user.stripeCurrentPeriodEnd ?? user.stripeCancelAt;
@@ -112,6 +116,20 @@ const STATUS_FILTERS: BillingSubscriptionStatus[] = [
   BillingSubscriptionStatus.INCOMPLETE,
   BillingSubscriptionStatus.INCOMPLETE_EXPIRED,
   BillingSubscriptionStatus.FREE,
+];
+
+// Sorting by subscription happens in memory (see canSortInDb), so the order the
+// database would have used for the enum has to be spelled out. Same order as the
+// enum is declared in the schema.
+const STATUS_SORT_ORDER: BillingSubscriptionStatus[] = [
+  BillingSubscriptionStatus.FREE,
+  BillingSubscriptionStatus.TRIALING,
+  BillingSubscriptionStatus.ACTIVE,
+  BillingSubscriptionStatus.PAST_DUE,
+  BillingSubscriptionStatus.CANCELED,
+  BillingSubscriptionStatus.UNPAID,
+  BillingSubscriptionStatus.INCOMPLETE,
+  BillingSubscriptionStatus.INCOMPLETE_EXPIRED,
 ];
 
 const ACCESS_FILTERS: Array<{ value: AccessFilter; label: string }> = [
@@ -219,7 +237,9 @@ function getSortIndicator(
 function canSortInDb(sortBy: SortBy): boolean {
   return (
     sortBy === 'user' ||
-    sortBy === 'subscription' ||
+    // 'subscription' is deliberately absent: it sorts on the effective status,
+    // which lives on trialEndsAt as much as on the stored column, so a cardless
+    // trial would otherwise sort among the free accounts it is not shown with.
     sortBy === 'joinedDate' ||
     sortBy === 'workspacesOwned' ||
     sortBy === 'projectsOwned' ||
@@ -235,10 +255,6 @@ function getUsersOrderBy(
 
   if (sortBy === 'user') {
     return [{ name: sortDirection }, { email: sortDirection }, createdAtTieBreaker];
-  }
-
-  if (sortBy === 'subscription') {
-    return [{ subscriptionStatus: sortDirection }, createdAtTieBreaker];
   }
 
   if (sortBy === 'joinedDate') {
@@ -319,7 +335,7 @@ export default async function AdminUsersPage({
   }
 
   if (statusFilter !== 'ALL') {
-    filters.push({ subscriptionStatus: statusFilter });
+    filters.push(buildEffectiveBillingStatusWhereInput(statusFilter, now));
   }
 
   if (accessFilter !== 'ALL') {
@@ -388,6 +404,7 @@ export default async function AdminUsersPage({
     email: string | null;
     createdAt: Date;
     subscriptionStatus: BillingSubscriptionStatus;
+    effectiveStatus: BillingSubscriptionStatus;
     trialEndsAt: Date | null;
     stripeCurrentPeriodEnd: Date | null;
     stripeCancelAtPeriodEnd: boolean;
@@ -412,6 +429,7 @@ export default async function AdminUsersPage({
 
     paginatedUsers = users.map((user) => ({
       ...user,
+      effectiveStatus: getEffectiveBillingStatus(user, now),
       invitedMembersCount: user.ownedWorkspaces.reduce(
         (total, workspace) => total + workspace._count.members,
         0
@@ -425,6 +443,7 @@ export default async function AdminUsersPage({
 
     const usersWithMetrics = users.map((user) => ({
       ...user,
+      effectiveStatus: getEffectiveBillingStatus(user, now),
       invitedMembersCount: user.ownedWorkspaces.reduce(
         (total, workspace) => total + workspace._count.members,
         0
@@ -437,7 +456,11 @@ export default async function AdminUsersPage({
     const sortedUsers = usersWithMetrics.sort((a, b) => {
       let comparison = 0;
 
-      if (sortBy === 'invitedMembers') {
+      if (sortBy === 'subscription') {
+        comparison =
+          STATUS_SORT_ORDER.indexOf(a.effectiveStatus) -
+          STATUS_SORT_ORDER.indexOf(b.effectiveStatus);
+      } else if (sortBy === 'invitedMembers') {
         comparison = a.invitedMembersCount - b.invitedMembersCount;
       } else if (sortBy === 'bunnyUpload') {
         comparison = a.bunnyUploadBytes - b.bunnyUploadBytes;
@@ -758,8 +781,8 @@ export default async function AdminUsersPage({
                           return (
                             <TableCell>
                               <div className="flex flex-col items-start gap-1">
-                                <Badge variant={getBillingStatusVariant(user.subscriptionStatus)}>
-                                  {getBillingStatusLabel(user.subscriptionStatus)}
+                                <Badge variant={getBillingStatusVariant(user.effectiveStatus)}>
+                                  {getBillingStatusLabel(user.effectiveStatus)}
                                 </Badge>
                                 {access.hasAppAccess ? (
                                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">

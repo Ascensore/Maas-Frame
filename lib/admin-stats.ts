@@ -4,6 +4,7 @@ import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
 import { ListObjectsV2Command, type ListObjectsV2CommandInput } from '@aws-sdk/client-s3';
 import { isBunnyUploadsEnabled, isStripeBillingEnabled } from '@/lib/feature-flags';
 import { getStripe, getStripePriceId } from '@/lib/stripe';
+import { buildCardlessTrialWhereInput } from '@/lib/billing';
 import { logError } from '@/lib/logger';
 
 const BUNNY_API_BASE = 'https://video.bunnycdn.com';
@@ -551,10 +552,17 @@ export const getCachedStripeStats = unstable_cache(
     if (!isStripeBillingEnabled()) return null;
 
     try {
-      const statusCounts = await db.user.groupBy({
-        by: ['subscriptionStatus'],
-        _count: { id: true },
-      });
+      const now = new Date();
+      // The cardless trial leaves `subscriptionStatus` at FREE, so the group-by
+      // alone counted every trial as a free user and reported "On Trial" as zero.
+      // Counted separately and moved across the two buckets below.
+      const [statusCounts, cardlessTrialUsers] = await Promise.all([
+        db.user.groupBy({
+          by: ['subscriptionStatus'],
+          _count: { id: true },
+        }),
+        db.user.count({ where: buildCardlessTrialWhereInput(now) }),
+      ]);
 
       const counts: Record<string, number> = {};
       for (const row of statusCounts) {
@@ -562,10 +570,13 @@ export const getCachedStripeStats = unstable_cache(
       }
 
       const activeSubscribers = counts['ACTIVE'] ?? 0;
-      const trialingUsers = counts['TRIALING'] ?? 0;
+      const trialingUsers = (counts['TRIALING'] ?? 0) + cardlessTrialUsers;
       const pastDueUsers = counts['PAST_DUE'] ?? 0;
       const canceledUsers = counts['CANCELED'] ?? 0;
-      const freeUsers = counts['FREE'] ?? 0;
+      // Clamped because the two queries above see two different snapshots: a signup
+      // landing between them can be counted as a trial without having been counted
+      // as free, which would otherwise report a negative number of free users.
+      const freeUsers = Math.max(0, (counts['FREE'] ?? 0) - cardlessTrialUsers);
       // UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED belonged to none of the five buckets
       // above, so those users were counted nowhere and the totals silently did not add
       // up to the user table.

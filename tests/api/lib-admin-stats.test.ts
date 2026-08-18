@@ -869,9 +869,11 @@ describe('getCachedStripeStats', () => {
     await createUser({ subscriptionStatus: 'TRIALING' });
     await createUser({ subscriptionStatus: 'PAST_DUE' });
     await createUser({ subscriptionStatus: 'CANCELED' });
-    await createUser({ subscriptionStatus: 'FREE' });
-    await createUser({ subscriptionStatus: 'FREE' });
-    await createUser({ subscriptionStatus: 'FREE' });
+    // Free means free: no trial left to run, or these would be counted as the
+    // cardless trials they would then be.
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: null });
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: null });
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: null });
     const stripe = stubStripePrice({ unit_amount: 1900, currency: 'eur' });
 
     expect(await getCachedStripeStats()).toEqual({
@@ -885,6 +887,45 @@ describe('getCachedStripeStats', () => {
       currency: 'eur',
     });
     expect(stripe.retrievedPriceIds).toEqual(['price_admin_stats_test']);
+  });
+
+  // The cardless trial writes only trialEndsAt, so the account sits at FREE with no
+  // Stripe subscription behind it. Counting the status column alone reported every
+  // one of them as a free user and left "On Trial" at zero on the dashboard.
+  it('counts a cardless trial as trialing rather than as free', async () => {
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: new Date(Date.now() + 60_000) });
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: null });
+    stubStripePrice({ unit_amount: 1900, currency: 'usd' });
+
+    const stats = await getCachedStripeStats();
+
+    expect(stats?.trialingUsers).toBe(1);
+    expect(stats?.freeUsers).toBe(1);
+  });
+
+  it('counts an expired trial back as a free user', async () => {
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: new Date(Date.now() - 60_000) });
+    stubStripePrice({ unit_amount: 1900, currency: 'usd' });
+
+    const stats = await getCachedStripeStats();
+
+    expect(stats?.trialingUsers).toBe(0);
+    expect(stats?.freeUsers).toBe(1);
+  });
+
+  // A Stripe trial is already TRIALING and is not sitting in the FREE bucket, so it
+  // must not be added on top of the cardless count.
+  it('does not double count a Stripe trial that also carries a trial end date', async () => {
+    await createUser({
+      subscriptionStatus: 'TRIALING',
+      trialEndsAt: new Date(Date.now() + 60_000),
+    });
+    stubStripePrice({ unit_amount: 1900, currency: 'usd' });
+
+    const stats = await getCachedStripeStats();
+
+    expect(stats?.trialingUsers).toBe(1);
+    expect(stats?.freeUsers).toBe(0);
   });
 
   // UNPAID, INCOMPLETE and INCOMPLETE_EXPIRED are real values of the enum that used to
