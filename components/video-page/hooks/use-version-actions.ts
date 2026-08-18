@@ -12,6 +12,7 @@ import {
 import type { VersionActionsConfig, VideoData } from '@/components/video-page/types';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cleanupPendingR2VideoUpload, uploadVideoToR2 } from '@/lib/client/r2-video-upload';
+import { apiRequestError, toastApiError } from '@/lib/client/api-error';
 
 /** What a failed version upload has to undo, depending on which provider it started on. */
 type PendingVersionCleanup =
@@ -113,7 +114,13 @@ export function useVersionActions({
       body: JSON.stringify({ title, sizeBytes: file.size.toString() }),
     });
 
-    if (!initRes.ok) throw new Error('Failed to initialize upload');
+    if (!initRes.ok) {
+      const initPayload = (await initRes.json().catch(() => null)) as {
+        error?: string;
+        code?: string;
+      } | null;
+      throw apiRequestError(initPayload, 'Failed to initialize upload');
+    }
     const {
       data: { videoId: bunnyVideoId, libraryId, signature, expirationTime, uploadToken },
     } = await initRes.json();
@@ -236,7 +243,7 @@ export function useVersionActions({
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error || 'Failed to create version');
+        throw apiRequestError(data, 'Failed to create version');
       }
 
       const versionData = await res.json();
@@ -277,7 +284,7 @@ export function useVersionActions({
         }
       }
       console.error('Failed to create version:', errorObj);
-      toast.error(errorObj.message || 'Failed to create version');
+      toastApiError(errorObj, 'Failed to create version');
     } finally {
       setIsCreatingVersion(false);
       setNewVersionUploadProgress(0);

@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as tus from 'tus-js-client';
 import { toast } from 'sonner';
+import { toastApiError } from '@/lib/client/api-error';
 import {
   Download,
   FileVideo,
@@ -56,6 +57,7 @@ function formatTime(seconds: number): string {
 type UploadAudioResponse = {
   data?: { url?: string; reservationId?: string | null };
   error?: string;
+  code?: string;
 };
 
 function getAudioUploadValidationError(file: Blob): string | null {
@@ -369,10 +371,11 @@ export const AssetsPane = memo(function AssetsPane({
         const uploadPayload = (await uploadRes.json().catch(() => null)) as {
           data?: { url?: string; reservationId?: string | null };
           error?: string;
+          code?: string;
         } | null;
         const uploadedImageUrl = uploadPayload?.data?.url;
         if (!uploadRes.ok || !uploadedImageUrl) {
-          toast.error(`${file.name}: ${uploadPayload?.error || 'Failed to upload image'}`);
+          toastApiError(uploadPayload, 'Failed to upload image', { prefix: file.name });
           return false;
         }
 
@@ -385,7 +388,7 @@ export const AssetsPane = memo(function AssetsPane({
         return !!created;
       } catch (error) {
         console.error('Failed to upload image asset:', error);
-        toast.error(`${file.name}: Failed to upload image`);
+        toastApiError(error, 'Failed to upload image', { prefix: file.name });
         return false;
       }
     },
@@ -523,10 +526,11 @@ export const AssetsPane = memo(function AssetsPane({
             uploadToken: string;
           };
           error?: string;
+          code?: string;
         } | null;
 
         if (!initRes.ok || !initPayload?.data) {
-          toast.error(`${file.name}: ${initPayload?.error || 'Failed to initialize Bunny upload'}`);
+          toastApiError(initPayload, 'Failed to initialize Bunny upload', { prefix: file.name });
           return false;
         }
 
@@ -578,7 +582,7 @@ export const AssetsPane = memo(function AssetsPane({
         return true;
       } catch (error) {
         console.error('Failed to upload Bunny asset:', error);
-        toast.error(`${file.name}: Failed to upload Bunny video`);
+        toastApiError(error, 'Failed to upload Bunny video', { prefix: file.name });
         if (uploadedVideoId && uploadToken) {
           await fetch(`/api/videos/${videoId}/assets/bunny-init`, {
             method: 'DELETE',
@@ -631,7 +635,7 @@ export const AssetsPane = memo(function AssetsPane({
         return true;
       } catch (error) {
         console.error('Failed to upload R2 asset video:', error);
-        toast.error(`${file.name}: Failed to upload video`);
+        toastApiError(error, 'Failed to upload video', { prefix: file.name });
         return false;
       } finally {
         setIsUploadingBunny(false);
@@ -801,12 +805,12 @@ export const AssetsPane = memo(function AssetsPane({
         const uploadPayload = await readUploadAudioResponse(uploadRes);
         const uploadedUrl = uploadPayload?.data?.url;
         if (!uploadRes.ok || !uploadedUrl) {
-          toast.error(
-            `${fileName}: ${
-              uploadPayload?.error ||
-              (uploadRes.status === 413 ? MAX_AUDIO_UPLOAD_SIZE_MESSAGE : null) ||
-              'Failed to upload voice recording'
-            }`
+          toastApiError(
+            uploadPayload,
+            uploadRes.status === 413
+              ? MAX_AUDIO_UPLOAD_SIZE_MESSAGE
+              : 'Failed to upload voice recording',
+            { prefix: fileName }
           );
           return false;
         }
@@ -821,7 +825,7 @@ export const AssetsPane = memo(function AssetsPane({
         return !!created;
       } catch (error) {
         console.error('Failed to upload voice asset:', error);
-        toast.error(`${fileName}: Failed to upload voice recording`);
+        toastApiError(error, 'Failed to upload voice recording', { prefix: fileName });
         return false;
       }
     },

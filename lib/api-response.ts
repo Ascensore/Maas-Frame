@@ -67,6 +67,12 @@ export const ErrorCode = {
 
   // Storage errors
   STORAGE_LIMIT_EXCEEDED: 'STORAGE_LIMIT_EXCEEDED',
+  /**
+   * Out of room because the account has not paid, rather than because the plan
+   * is full. Its own code so the client can offer the upgrade, which is the
+   * actual remedy here and is no help at all on the paid ceiling.
+   */
+  TRIAL_STORAGE_LIMIT_EXCEEDED: 'TRIAL_STORAGE_LIMIT_EXCEEDED',
 } as const;
 
 /**
@@ -175,4 +181,13 @@ export const apiErrors = {
   storageExceeded: (
     message = 'Storage limit exceeded. Please delete some files to free up space.'
   ) => errorResponse(message, HttpStatus.INSUFFICIENT_STORAGE, ErrorCode.STORAGE_LIMIT_EXCEEDED),
+
+  /**
+   * The same 507, for an account that is out of room because it is on the free
+   * trial. Telling this caller to delete files is advice that does not apply:
+   * they have three gigabytes because they have not subscribed, not because they
+   * have filled two hundred.
+   */
+  trialStorageExceeded: (message: string) =>
+    errorResponse(message, HttpStatus.INSUFFICIENT_STORAGE, ErrorCode.TRIAL_STORAGE_LIMIT_EXCEEDED),
 };

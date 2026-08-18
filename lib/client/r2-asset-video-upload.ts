@@ -1,4 +1,5 @@
 import { captureVideoThumbnail } from '@/lib/client/video-thumbnail';
+import { apiRequestError } from '@/lib/client/api-error';
 import { uploadBytesWithProgress, type UploadProgressHandler } from '@/lib/client/r2-video-upload';
 
 export type R2AssetVideoInitResponse = {
@@ -39,7 +40,7 @@ export async function initR2AssetVideoUpload(
     error?: string;
   } | null;
   if (!initRes.ok || !initPayload?.data) {
-    throw new Error(initPayload?.error || 'Failed to initialize video upload');
+    throw apiRequestError(initPayload, 'Failed to initialize video upload');
   }
 
   return initPayload.data;

@@ -1,4 +1,5 @@
 import { captureVideoThumbnail } from '@/lib/client/video-thumbnail';
+import { apiRequestError } from '@/lib/client/api-error';
 import {
   getMultipartProgressPercent,
   getPartByteRange,
@@ -151,7 +152,7 @@ async function completeMultipartUpload(
 
   if (!res.ok) {
     const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(payload?.error || 'Failed to complete multipart upload');
+    throw apiRequestError(payload, 'Failed to complete multipart upload');
   }
 }
 
@@ -243,7 +244,7 @@ export async function initR2VideoUpload(
     error?: string;
   } | null;
   if (!initRes.ok || !initPayload?.data) {
-    throw new Error(initPayload?.error || 'Failed to initialize video upload');
+    throw apiRequestError(initPayload, 'Failed to initialize video upload');
   }
 
   return initPayload.data;
