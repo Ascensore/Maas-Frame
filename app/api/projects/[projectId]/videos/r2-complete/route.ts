@@ -7,7 +7,7 @@ import { parseR2UploadToken, verifyR2UploadToken } from '@/lib/r2-upload-token';
 import { abortMultipartVideoUpload, completeMultipartVideoUpload } from '@/lib/r2';
 import { isS3VideoUploadsEnabled } from '@/lib/feature-flags';
 import { objectKeyToVideoProxyPath } from '@/lib/video-upload-validation';
-import { releaseStorageReservation } from '@/lib/storage-quota';
+import { releaseStorageReservation, UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
@@ -155,7 +155,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         where: { id: uploadSession.id, status: 'INITIATED' },
         data: { status: 'CANCELLED', consumedAt: new Date() },
       });
-      await releaseStorageReservation(uploadSession.reservationId, uploadSession.billedUserId);
+      await releaseStorageReservation(
+        uploadSession.reservationId,
+        uploadSession.billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+      );
       return apiErrors.internalError('Failed to complete multipart upload');
     }
 

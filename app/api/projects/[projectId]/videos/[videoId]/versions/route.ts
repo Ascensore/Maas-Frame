@@ -7,6 +7,7 @@ import { notifyProjectOwner } from '@/lib/notifications';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { readBunnyUploadGrant } from '@/lib/bunny-upload-token';
 import { finalizeR2VideoUpload } from '@/lib/r2-video-finalize';
+import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
@@ -234,6 +235,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
               where: {
                 id: finalizedR2Session.reservationId,
                 billedUserId: finalizedR2Session.billedUserId,
+                purpose: UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
               },
             });
           }
@@ -243,7 +245,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         // are never counted twice and never counted zero times.
         if (bunnyReservation) {
           await tx.uploadReservation.deleteMany({
-            where: { id: bunnyReservation, billedUserId: video.project.workspace.ownerId },
+            where: {
+              id: bunnyReservation,
+              billedUserId: video.project.workspace.ownerId,
+              purpose: UPLOAD_RESERVATION_PURPOSES.BUNNY,
+            },
           });
         }
 

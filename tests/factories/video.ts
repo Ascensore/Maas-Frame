@@ -7,6 +7,7 @@ import {
   type VideoVersion,
 } from '@prisma/client';
 import { db } from '@/lib/db';
+import { UPLOAD_RESERVATION_PURPOSES, type UploadReservationPurpose } from '@/lib/storage-quota';
 import { nextSeq } from './seq';
 
 export interface CreateVideoInput {
@@ -105,6 +106,8 @@ export interface CreateUploadReservationInput {
   sizeBytes: bigint;
   /** Milliseconds from now. Negative values produce an already-expired row. */
   expiresInMs?: number;
+  /** Which flow the hold belongs to. Only that flow can consume it. */
+  purpose?: UploadReservationPurpose;
 }
 
 export async function createUploadReservation(
@@ -115,6 +118,7 @@ export async function createUploadReservation(
       billedUserId: input.billedUserId,
       sizeBytes: input.sizeBytes,
       expiresAt: new Date(Date.now() + (input.expiresInMs ?? 30 * 60 * 1000)),
+      purpose: input.purpose ?? UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
     },
   });
 }

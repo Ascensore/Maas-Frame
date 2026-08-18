@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
+import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { cancelR2UploadSession, createR2UploadSession } from '@/lib/r2-upload-session';
 import { seedProject } from '../factories';
 
@@ -101,6 +102,7 @@ describe('createR2UploadSession', () => {
       data: {
         billedUserId: scenario.owner.id,
         sizeBytes: BigInt(4096),
+        purpose: UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
         expiresAt: new Date(Date.now() + HOUR_MS),
       },
     });

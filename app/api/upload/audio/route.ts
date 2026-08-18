@@ -13,7 +13,11 @@ import {
   enforceGuestUploadQuota,
   verifyGuestUploadToken,
 } from '@/lib/guest-upload-token';
-import { reserveStorageQuota, releaseStorageReservation } from '@/lib/storage-quota';
+import {
+  reserveStorageQuota,
+  releaseStorageReservation,
+  UPLOAD_RESERVATION_PURPOSES,
+} from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -205,7 +209,11 @@ export async function POST(request: NextRequest) {
     // All paths use the advisory-locked reservation so concurrent uploads always
     // see each other's in-flight sizes, eliminating the TOCTOU race.
     const workspaceOwnerId = video.project.workspace.ownerId;
-    const reserveResult = await reserveStorageQuota(workspaceOwnerId, BigInt(file.size));
+    const reserveResult = await reserveStorageQuota(
+      workspaceOwnerId,
+      BigInt(file.size),
+      UPLOAD_RESERVATION_PURPOSES.AUDIO
+    );
     if ('error' in reserveResult) return reserveResult.error;
     const reservationId = reserveResult.reservationId;
 
@@ -214,7 +222,11 @@ export async function POST(request: NextRequest) {
     const strippedType = rawContentType.split(';')[0].trim().toLowerCase();
     const contentType = MIME_ALIASES[strippedType] ?? strippedType;
     if (!ALLOWED_TYPES.has(contentType)) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.AUDIO
+      );
       return apiErrors.badRequest(`Unsupported audio format: ${rawContentType}`);
     }
 
@@ -231,12 +243,20 @@ export async function POST(request: NextRequest) {
 
     // Validate file content against magic bytes — rejects HTML/scripts masquerading as audio
     if (isHtmlContent(buffer)) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.AUDIO
+      );
       return apiErrors.badRequest('File content does not match an audio format');
     }
     const hasValidMagicBytes = hasValidAudioMagicBytes(buffer.slice(0, 16), contentType);
     if (!hasValidMagicBytes) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.AUDIO
+      );
       return apiErrors.badRequest('File content does not match the declared audio format');
     }
 
@@ -251,7 +271,11 @@ export async function POST(request: NextRequest) {
         })
       );
     } catch (uploadError) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.AUDIO
+      );
       throw uploadError;
     }
 

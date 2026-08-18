@@ -5,17 +5,14 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { rateLimit } from '@/lib/rate-limit';
 import crypto from 'crypto';
 import { cleanupBunnyStreamVideos } from '@/lib/bunny-stream-cleanup';
-import {
-  createBunnyUploadToken,
-  readBunnyUploadGrant,
-  verifyBunnyUploadToken,
-} from '@/lib/bunny-upload-token';
+import { createBunnyUploadToken, readBunnyUploadGrant } from '@/lib/bunny-upload-token';
 import { getMaxVideoUploadBytes, isBunnyUploadsEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
 import {
   enforceStorageQuota,
   releaseStorageReservation,
   reserveStorageQuota,
+  UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
 import { parseDeclaredUploadSize } from '@/lib/upload-size';
 
@@ -99,6 +96,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const reserveResult = await reserveStorageQuota(
       billedUserId,
       declaredSize.sizeBytes,
+      UPLOAD_RESERVATION_PURPOSES.BUNNY,
       BUNNY_RESERVATION_TTL_MS
     );
     if ('error' in reserveResult) return reserveResult.error;
@@ -109,7 +107,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       process.env.BUNNY_STREAM_LIBRARY_ID || process.env.NEXT_PUBLIC_BUNNY_STREAM_LIBRARY_ID;
 
     if (!apiKey || !libraryId) {
-      await releaseStorageReservation(reservationId, billedUserId);
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       return apiErrors.internalError('Bunny Stream is not configured correctly');
     }
 
@@ -125,7 +127,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!bunnyRes.ok) {
-      await releaseStorageReservation(reservationId, billedUserId);
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       logError('Failed to create Bunny Stream video', await bunnyRes.text());
       return apiErrors.internalError('Failed to initialize video upload with provider');
     }
@@ -133,7 +139,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const bunnyVideo = await bunnyRes.json();
     const videoId = bunnyVideo.guid;
     if (typeof videoId !== 'string' || videoId.length === 0) {
-      await releaseStorageReservation(reservationId, billedUserId);
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       return apiErrors.internalError('Upload provider did not return a valid video identifier');
     }
 
@@ -197,12 +207,12 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('videoId and uploadToken are required');
     }
 
-    const isValidUploadToken = verifyBunnyUploadToken(uploadToken, {
+    const grant = readBunnyUploadGrant(uploadToken, {
       userId: session.user.id,
       projectId,
       videoId,
     });
-    if (!isValidUploadToken) {
+    if (!grant) {
       return apiErrors.forbidden('Invalid Bunny upload token');
     }
 
@@ -213,9 +223,9 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     // inside the signed token next to this video id, so releasing it costs the
     // caller the video it belongs to.
     await releaseStorageReservation(
-      readBunnyUploadGrant(uploadToken, { userId: session.user.id, projectId, videoId })
-        ?.reservationId ?? null,
-      project.workspace.ownerId
+      grant.reservationId,
+      project.workspace.ownerId,
+      UPLOAD_RESERVATION_PURPOSES.BUNNY
     );
 
     await cleanupBunnyStreamVideos([{ providerId: 'bunny', videoId }]);

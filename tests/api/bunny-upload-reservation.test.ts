@@ -14,9 +14,11 @@ import {
   DELETE as cancelProjectBunnyUpload,
   POST as initProjectBunnyUpload,
 } from '@/app/api/projects/[projectId]/videos/bunny-init/route';
+import { POST as createAsset } from '@/app/api/videos/[videoId]/assets/route';
+import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
 import { signedInAs } from '../helpers/session';
-import { seedProject } from '../factories';
+import { createVideo, seedProject } from '../factories';
 
 const GIB = BigInt(1024) * BigInt(1024) * BigInt(1024);
 
@@ -175,5 +177,87 @@ describe('DELETE /api/projects/[projectId]/videos/bunny-init', () => {
 
     expect(response.status).toBe(403);
     expect(await db.uploadReservation.count()).toBe(2);
+  });
+});
+
+// The reservation id is not a secret and was never going to be one. The upload
+// token is `base64url(payload).signature`, so the client can read every claim in
+// it, and the two R2 upload routes hand their reservation ids to the client
+// outright. What keeps a hold from being dropped by whoever can name it is that
+// a reservation records what it was opened for, and every finalize route matches
+// on that as well as on the id.
+describe('a Bunny hold cannot be consumed by another flow', () => {
+  /** The claims the client can read out of an upload token without our help. */
+  function claimsOf(uploadToken: string): Record<string, unknown> {
+    return JSON.parse(Buffer.from(uploadToken.split('.')[0], 'base64url').toString('utf8'));
+  }
+
+  it('puts the reservation id somewhere the client can read it', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const init = await initUpload(scenario.project.id, BigInt(1) * GIB);
+    const { uploadToken } = await readData(init);
+
+    const reservation = (await db.uploadReservation.findMany())[0];
+    expect(claimsOf(uploadToken).rid).toBe(reservation.id);
+    expect(reservation.purpose).toBe(UPLOAD_RESERVATION_PURPOSES.BUNNY);
+  });
+
+  // The attack the purpose column closes. Creating a YouTube asset costs nothing
+  // and consumes no storage, so quoting a Bunny reservation on one was a way to
+  // hand back the quota of an upload that was still running and then start
+  // another. Repeat and a trial worth three gigabytes uploads as much as it
+  // likes for as long as Bunny takes to report.
+  it('ignores a Bunny reservation id quoted on a YouTube asset create', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    signedInAs(scenario.owner);
+
+    const init = await initUpload(scenario.project.id, BigInt(2) * GIB);
+    const { uploadToken } = await readData(init);
+    const reservationId = claimsOf(uploadToken).rid as string;
+
+    const response = await callRoute(
+      createAsset,
+      apiRequest(`/api/videos/${video.id}/assets`, {
+        body: {
+          provider: 'YOUTUBE',
+          sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          reservationId,
+        },
+      }),
+      { videoId: video.id }
+    );
+
+    expect(response.status).toBe(201);
+    const reservations = await db.uploadReservation.findMany();
+    expect(reservations).toHaveLength(1);
+    expect(reservations[0].id).toBe(reservationId);
+  });
+
+  // And with the hold still standing, the next init has to see it.
+  it('still refuses the next upload after the quoted release attempt', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    signedInAs(scenario.owner);
+
+    const init = await initUpload(scenario.project.id, BigInt(2) * GIB);
+    const { uploadToken } = await readData(init);
+
+    await callRoute(
+      createAsset,
+      apiRequest(`/api/videos/${video.id}/assets`, {
+        body: {
+          provider: 'YOUTUBE',
+          sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+          reservationId: claimsOf(uploadToken).rid,
+        },
+      }),
+      { videoId: video.id }
+    );
+
+    const second = await initUpload(scenario.project.id, BigInt(2) * GIB);
+    expect(second.status).toBe(507);
   });
 });

@@ -7,7 +7,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { db } from '@/lib/db';
 import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
 import { readBunnyUploadGrant } from '@/lib/bunny-upload-token';
-import { deriveGuestUploadContext, verifyGuestUploadToken } from '@/lib/guest-upload-token';
+import { deriveGuestUploadContext, readGuestUploadGrant } from '@/lib/guest-upload-token';
 import { ensureGuestIdentityFromRequest, setGuestIdentityCookie } from '@/lib/guest-identity';
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { validateUrl, validateOptionalUrl } from '@/lib/validation';
@@ -33,6 +33,8 @@ import {
   reserveStorageQuota,
   releaseStorageReservation,
   getStorageLimitForUser,
+  UPLOAD_RESERVATION_PURPOSES,
+  type UploadReservationPurpose,
 } from '@/lib/storage-quota';
 import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
 import { isStripeFeatureEnabled } from '@/lib/feature-flags';
@@ -298,6 +300,13 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 // POST /api/videos/[videoId]/assets
 export async function POST(request: NextRequest, { params }: RouteParams) {
   let reservationId: string | null = null;
+  // What the reservation above was opened for, and who it is billed to. A hold is
+  // only ever consumed by the flow that opened it: the id below can arrive in the
+  // request body, and every hold an account owns is billed to the same user, so
+  // the id alone would let an image being attached release a video upload that
+  // was still in flight.
+  let reservationPurpose: UploadReservationPurpose | null = null;
+  let reservationBilledUserId: string | null = null;
   let finalizedR2AssetSession: {
     sessionId: string;
     reservationId: string | null;
@@ -342,6 +351,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     let assetSizeBytes = BigInt(0);
 
     const billedUserId = context.video.project.workspace.ownerId;
+    reservationBilledUserId = billedUserId;
 
     if (provider === VideoAssetProvider.R2_IMAGE) {
       sourceUrl = typeof body?.sourceUrl === 'string' ? body.sourceUrl.trim() : '';
@@ -359,8 +369,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       // the client already supplied a reservationId (new upload flow) the
       // existing reservation is consumed in the transaction below.  For the
       // backward-compat path (no reservationId) we create one here.
+      reservationPurpose = UPLOAD_RESERVATION_PURPOSES.IMAGE;
       if (!reservationId) {
-        const reserveResult = await reserveStorageQuota(billedUserId, assetSizeBytes);
+        const reserveResult = await reserveStorageQuota(
+          billedUserId,
+          assetSizeBytes,
+          UPLOAD_RESERVATION_PURPOSES.IMAGE
+        );
         if ('error' in reserveResult) return reserveResult.error;
         reservationId = reserveResult.reservationId;
       }
@@ -383,8 +398,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       assetSizeBytes = audioCheck.sizeBytes;
 
       // Same reservation logic as R2_IMAGE above
+      reservationPurpose = UPLOAD_RESERVATION_PURPOSES.AUDIO;
       if (!reservationId) {
-        const reserveResult = await reserveStorageQuota(billedUserId, assetSizeBytes);
+        const reserveResult = await reserveStorageQuota(
+          billedUserId,
+          assetSizeBytes,
+          UPLOAD_RESERVATION_PURPOSES.AUDIO
+        );
         if ('error' in reserveResult) return reserveResult.error;
         reservationId = reserveResult.reservationId;
       }
@@ -450,6 +470,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
       assetSizeBytes = finalizeResult.sizeBytes;
       reservationId = finalizeResult.reservationId;
+      reservationPurpose = UPLOAD_RESERVATION_PURPOSES.R2_VIDEO;
       if (!thumbnailUrl) {
         thumbnailUrl = finalizeResult.thumbnailProxyUrl;
       }
@@ -509,6 +530,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         // does not include it.
         assetSizeBytes = grant.declaredSizeBytes ?? BigInt(0);
         reservationId = grant.reservationId;
+        reservationPurpose = UPLOAD_RESERVATION_PURPOSES.BUNNY;
       } else {
         const shareSession = getShareSessionFromRequest(request, context.video.id);
         const expectedContext = deriveGuestUploadContext(request, shareSession?.token ?? null);
@@ -516,15 +538,28 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           return apiErrors.forbidden('Missing trusted client IP header');
         }
 
-        const isValidGuestUploadToken = verifyGuestUploadToken(uploadToken, {
-          projectId: context.video.projectId,
-          videoId: context.video.id,
-          intent: 'bunny',
-          context: expectedContext,
-        });
-        if (!isValidGuestUploadToken) {
+        // Read rather than merely verified, for the same reason as above: a guest
+        // upload that reads as zero bytes until Bunny finishes encoding is an hour
+        // of the owner's quota spent on nothing. The grant is bound to this Bunny
+        // video, so the size and the hold it names belong to this upload and no
+        // other.
+        const guestGrant = readGuestUploadGrant(
+          uploadToken,
+          {
+            projectId: context.video.projectId,
+            videoId: context.video.id,
+            intent: 'bunny',
+            context: expectedContext,
+          },
+          providerVideoId
+        );
+        if (!guestGrant) {
           return apiErrors.forbidden('Invalid Bunny upload token');
         }
+
+        assetSizeBytes = guestGrant.declaredSizeBytes ?? BigInt(0);
+        reservationId = guestGrant.reservationId;
+        reservationPurpose = UPLOAD_RESERVATION_PURPOSES.BUNNY;
       }
 
       displayName = sanitizeAssetDisplayName(requestedDisplayName, `Bunny ${providerVideoId}`);
@@ -543,14 +578,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Pre-fetch Bunny storage BEFORE entering the transaction to avoid making an
     // HTTP call while holding a DB connection open (connection-pool exhaustion
     // risk under adversarial load). Mirrors the discipline in reserveStorageQuota.
-    // Only needed for R2 providers where the invalid-reservation fallback quota
-    // check requires Bunny usage data.
+    // Needed by every provider that can reach the invalid-reservation fallback
+    // quota check below, Bunny included. Leaving Bunny out read its own storage as
+    // zero, and on an account whose storage is all Bunny that made the fallback a
+    // check that could not fail.
     const preFetchedBunnyData =
-      provider === VideoAssetProvider.R2_IMAGE ||
-      provider === VideoAssetProvider.R2_AUDIO ||
-      provider === VideoAssetProvider.R2_VIDEO
-        ? await getCachedUserBunnyStorage()
-        : null;
+      provider === VideoAssetProvider.YOUTUBE ? null : await getCachedUserBunnyStorage();
 
     // The ceiling this account is actually held to, read for the fallback below.
     // It used to compare against the plan limit, which is 200 GiB whoever is
@@ -561,7 +594,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Create the VideoAsset and atomically consume the upload reservation (if any)
     // so the spot is never double-counted.
     const created = await db.$transaction(async (tx) => {
-      if (reservationId) {
+      if (reservationId && reservationPurpose) {
         // Acquire the per-user advisory lock unconditionally so both the happy path
         // (valid reservation) and the fallback path (fake/expired reservation ID) are
         // serialised — eliminating the TOCTOU race in the deleted.count === 0 branch.
@@ -575,7 +608,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         // we fall back to a standard (non-locked) quota check so the bypass attempt
         // is caught rather than silently allowed.
         const deleted = await tx.uploadReservation.deleteMany({
-          where: { id: reservationId, billedUserId, expiresAt: { gt: new Date() } },
+          where: {
+            id: reservationId,
+            billedUserId,
+            purpose: reservationPurpose,
+            expiresAt: { gt: new Date() },
+          },
         });
         if (deleted.count === 0) {
           // Reservation didn't exist — enforce quota the normal way inside the tx.
@@ -676,7 +714,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (error instanceof QuotaExceededInTxError) {
       return apiErrors.storageExceeded() as NextResponse;
     }
-    await releaseStorageReservation(reservationId);
+    await releaseStorageReservation(
+      reservationId,
+      reservationBilledUserId,
+      reservationPurpose ?? undefined
+    );
     logError('Error creating video asset:', error);
     return apiErrors.internalError('Failed to create asset');
   }
