@@ -28,6 +28,7 @@ import {
 } from '@/components/video-page/image-upload-utils';
 import { validateAnnotationStrokes } from '@/lib/validation';
 import { withWebmDuration } from '@/lib/webm-duration';
+import { ApiRequestError, apiRequestError, toastApiError } from '@/lib/client/api-error';
 
 interface UseCommentActionsParams extends CommentActionsConfig {
   setVideo: Dispatch<SetStateAction<VideoData | null>>;
@@ -60,17 +61,6 @@ function getAudioUploadFilename(blob: Blob): string {
   if (mime === 'audio/wav') return 'recording.wav';
   return 'recording.webm';
 }
-
-/**
- * A step of the submit that failed with something worth reading out.
- *
- * The attachment goes up before the comment does, so a full account fails on the
- * image and never reaches the comment at all. Reporting that as "failed to add
- * comment" tells the uploader to try again, which is the one thing that cannot
- * work. Carried as its own error type so a network fault, which has no message
- * anybody wants to see, still falls back to the generic line.
- */
-class CommentSubmitError extends Error {}
 
 export function useCommentActions({
   videoId,
@@ -192,7 +182,7 @@ export function useCommentActions({
       } | null;
       const token = payload?.data?.token;
       if (!response.ok || !token) {
-        throw new Error(payload?.error || 'Failed to prepare upload');
+        throw apiRequestError(payload, 'Failed to prepare upload');
       }
       return token;
     },
@@ -274,10 +264,14 @@ export function useCommentActions({
           });
 
           if (!imageRes.ok) {
+            // The attachment goes up before the comment does, so a full account
+            // fails here and never reaches the comment at all. Thrown with the
+            // code attached so the catch below can offer the way out.
             const imagePayload = (await imageRes.json().catch(() => null)) as {
               error?: string;
+              code?: string;
             } | null;
-            throw new CommentSubmitError(imagePayload?.error || 'Failed to upload image');
+            throw apiRequestError(imagePayload, 'Failed to upload image');
           }
           const imageDataResponse = await imageRes.json();
           imageData = { url: imageDataResponse.data.url };
@@ -336,8 +330,11 @@ export function useCommentActions({
               ),
             };
           });
-          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-          toast.error(payload?.error || 'Failed to add comment');
+          const payload = (await res.json().catch(() => null)) as {
+            error?: string;
+            code?: string;
+          } | null;
+          toastApiError(payload, 'Failed to add comment');
         }
       } catch (error) {
         setVideo((prev) => {
@@ -351,7 +348,9 @@ export function useCommentActions({
             ),
           };
         });
-        toast.error(error instanceof CommentSubmitError ? error.message : 'Failed to add comment');
+        // A network fault has no message anybody wants to see, so only an
+        // ApiRequestError speaks for itself; toastApiError falls back for the rest.
+        toastApiError(error instanceof ApiRequestError ? error : null, 'Failed to add comment');
       } finally {
         setIsSubmittingComment(false);
         setIsUploadingImage(false);

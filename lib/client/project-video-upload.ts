@@ -3,6 +3,7 @@
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cleanupPendingR2VideoUpload, uploadVideoToR2 } from '@/lib/client/r2-video-upload';
 import type { DirectUploadProvider } from '@/components/video-page/types';
+import { apiRequestError } from '@/lib/client/api-error';
 
 export const VIDEO_FILE_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv'];
 
@@ -143,7 +144,7 @@ export async function uploadProjectVideo(
       } | null;
 
       if (!createResponse.ok) {
-        throw new Error(createPayload?.error || 'Failed to create video');
+        throw apiRequestError(createPayload, 'Failed to create video');
       }
 
       pendingCleanup = null;
@@ -171,7 +172,7 @@ export async function uploadProjectVideo(
     } | null;
 
     if (!initResponse.ok || !initPayload?.data) {
-      throw new Error(initPayload?.error || 'Failed to initialize upload');
+      throw apiRequestError(initPayload, 'Failed to initialize upload');
     }
 
     const { videoId, libraryId, signature, expirationTime, uploadToken } = initPayload.data;
@@ -243,7 +244,7 @@ export async function uploadProjectVideo(
     } | null;
 
     if (!createResponse.ok) {
-      throw new Error(createPayload?.error || 'Failed to create video');
+      throw apiRequestError(createPayload, 'Failed to create video');
     }
 
     pendingCleanup = null;

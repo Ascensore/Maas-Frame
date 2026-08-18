@@ -146,14 +146,15 @@ vi.mock('@/lib/stripe', async (importOriginal) => {
 // ---------------------------------------------------------------------------
 // Bunny storage stats
 // ---------------------------------------------------------------------------
-// getCachedUserBunnyStorage() is an HTTP call to the Bunny API, and it sits in
-// the middle of reserveStorageQuota(). Default to "no Bunny bytes"; the quota
-// suite overrides it to prove Bunny usage counts against the limit.
+// Both of these reach the Bunny API, and getUserBunnyStorageBytes() sits in the
+// middle of reserveStorageQuota(). Default to "no Bunny bytes"; the quota suite
+// overrides them to prove Bunny usage counts against the limit.
 vi.mock('@/lib/admin-stats', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/admin-stats')>();
   return {
     ...actual,
     getCachedUserBunnyStorage: vi.fn(async () => ({}) as Record<string, number>),
+    getUserBunnyStorageBytes: vi.fn(async () => 0),
   };
 });
 

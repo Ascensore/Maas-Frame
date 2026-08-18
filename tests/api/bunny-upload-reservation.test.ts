@@ -16,9 +16,15 @@ import {
 } from '@/app/api/projects/[projectId]/videos/bunny-init/route';
 import { POST as createAsset } from '@/app/api/videos/[videoId]/assets/route';
 import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
+import { PLAN_STORAGE_LIMIT_BYTES } from '@/lib/storage-quota';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
 import { signedInAs } from '../helpers/session';
-import { createVideo, seedProject } from '../factories';
+import {
+  createSubscribedUser,
+  createUploadReservation,
+  createVideo,
+  seedProject,
+} from '../factories';
 
 const GIB = BigInt(1024) * BigInt(1024) * BigInt(1024);
 
@@ -259,5 +265,67 @@ describe('a Bunny hold cannot be consumed by another flow', () => {
 
     const second = await initUpload(scenario.project.id, BigInt(2) * GIB);
     expect(second.status).toBe(507);
+  });
+});
+
+// What a refusal says, and to whom.
+//
+// A trial account is out of room because it has not subscribed, so "delete some
+// files" is advice that does not apply and the upgrade is the only way through.
+// The two cases carry different codes because the client offers a link on one of
+// them and must not on the other.
+describe('what the storage refusal says', () => {
+  it('names the trial ceiling and its own code for an unpaid account', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const response = await initUpload(scenario.project.id, BigInt(4) * GIB);
+
+    expect(response.status).toBe(507);
+    const body = (await response.json()) as { error: string; code: string };
+    expect(body.code).toBe('TRIAL_STORAGE_LIMIT_EXCEEDED');
+    expect(body.error).toContain('3 GB');
+    expect(body.error).toContain('Upgrade');
+  });
+
+  it('tells a paying account to free up space instead', async () => {
+    const scenario = await seedProject({ ownerUser: await createSubscribedUser() });
+    signedInAs(scenario.owner);
+
+    // Full at the paid ceiling rather than the trial one.
+    await createUploadReservation({
+      billedUserId: scenario.owner.id,
+      sizeBytes: PLAN_STORAGE_LIMIT_BYTES - BigInt(1024),
+    });
+
+    const response = await initUpload(scenario.project.id, BigInt(1) * GIB);
+
+    expect(response.status).toBe(507);
+    const body = (await response.json()) as { error: string; code: string };
+    expect(body.code).toBe('STORAGE_LIMIT_EXCEEDED');
+    expect(body.error).toContain('delete some files');
+  });
+});
+
+// Asked directly: five one-gigabyte uploads started at once against a three
+// gigabyte trial. Whether they go up in one piece or in parts makes no
+// difference, because r2-init takes the reservation before it decides on
+// multipart, and bunny-init holds one for the size the client declared.
+describe('several uploads started at once', () => {
+  it('grants only the ones that fit and refuses the rest', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => initUpload(scenario.project.id, BigInt(1) * GIB))
+    );
+
+    const granted = results.filter((response) => response.status === 200);
+    const refused = results.filter((response) => response.status === 507);
+
+    // Two fit: the check is >=, so the third would land exactly on 3 GiB.
+    expect(granted).toHaveLength(2);
+    expect(refused).toHaveLength(3);
+    expect(await db.uploadReservation.count()).toBe(2);
   });
 });

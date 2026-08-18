@@ -1,6 +1,6 @@
 import { auth } from '@/lib/auth';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
-import { getUserStorageInfo } from '@/lib/storage-quota';
+import { getStorageContextForUser, getUserStorageInfo } from '@/lib/storage-quota';
 import { hasBillingAccess } from '@/lib/billing';
 import { db } from '@/lib/db';
 
@@ -27,12 +27,19 @@ export async function GET() {
     return apiErrors.forbidden();
   }
 
-  const info = await getUserStorageInfo(session.user.id);
+  const [info, storage] = await Promise.all([
+    getUserStorageInfo(session.user.id),
+    getStorageContextForUser(session.user.id),
+  ]);
 
   const response = successResponse({
     usedBytes: info.usedBytes.toString(),
     limitBytes: info.limitBytes.toString(),
     percentage: info.percentage,
+    // Which ceiling this is, so the card can name it and say what to do about it.
+    // A trial has 3 GB because it has not subscribed; deleting files is the wrong
+    // advice there, and "200 GB limit" was the wrong caption.
+    isPaid: storage.isPaid,
   });
 
   // Cache for 60s — stale data is acceptable for a usage meter

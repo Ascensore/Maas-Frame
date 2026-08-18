@@ -12,7 +12,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
-import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
+import { getUserBunnyStorageBytes } from '@/lib/admin-stats';
 import {
   PLAN_STORAGE_LIMIT_BYTES,
   UPLOAD_RESERVATION_PURPOSES,
@@ -41,7 +41,7 @@ import {
 const GIB = BigInt(1024) * BigInt(1024) * BigInt(1024);
 
 function bunnyStorage(map: Record<string, number>): void {
-  vi.mocked(getCachedUserBunnyStorage).mockResolvedValue(map);
+  vi.mocked(getUserBunnyStorageBytes).mockImplementation(async (userId) => map[userId] ?? 0);
 }
 
 // The mock implementation is module state, so it survives afterEach. Reset it so

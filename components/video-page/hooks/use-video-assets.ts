@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { VideoAsset } from '@/components/video-page/types';
+import { apiRequestError, toastApiError } from '@/lib/client/api-error';
 
 type BunnyDownloadPreference = 'original' | 'compressed';
 
@@ -43,6 +44,7 @@ interface AssetsListResponse {
 interface AssetCreateResponse {
   data?: VideoAsset;
   error?: string;
+  code?: string;
 }
 
 const ASSET_PAGE_SIZE = 40;
@@ -185,7 +187,7 @@ export function useVideoAssets({
         });
         const body = (await res.json().catch(() => null)) as AssetCreateResponse | null;
         if (!res.ok || !body?.data) {
-          toast.error(body?.error || 'Failed to create asset');
+          toastApiError(body, 'Failed to create asset');
           return null;
         }
 
@@ -288,7 +290,7 @@ export function useVideoAssets({
       } | null;
       const token = payload?.data?.token;
       if (!response.ok || !token) {
-        throw new Error(payload?.error || 'Failed to prepare upload');
+        throw apiRequestError(payload, 'Failed to prepare upload');
       }
       return token;
     },

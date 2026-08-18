@@ -36,6 +36,7 @@ import {
   getCachedUserBunnyStorage,
   getCachedUserDownloadEgress,
   getCachedUserMediaStorage,
+  getUserBunnyStorageBytes,
   refreshR2StorageSnapshot,
 } from '@/lib/admin-stats';
 import {
@@ -603,21 +604,23 @@ describe('getCachedUserBunnyStorage', () => {
   });
 
   // The -1 sentinel means "Bunny did not answer", and the module must not turn
-  // that into "this user stores nothing", because lib/storage-quota.ts would
-  // then hand out headroom the user does not have. An empty map at least leaves
-  // the R2 figures intact.
-  it('answers an empty map when the Bunny library could not be read', async () => {
+  // that into "this user stores nothing", because lib/storage-quota.ts would then
+  // hand out headroom the user does not have. Bunny's figure is gone; the size
+  // declared when the upload was admitted is still in our own rows, so that is
+  // what the account is charged until Bunny can be reached again.
+  it('falls back to the declared sizes when the Bunny library could not be read', async () => {
     const scenario = await seedProject();
     const video = await createVideo({ projectId: scenario.project.id });
     await createVersion({
       videoParentId: video.id,
       providerId: 'bunny',
       providerVideoId: 'bunny-first',
+      sizeBytes: BigInt(2048),
     });
     bunnyCredentials();
     stubBunnyPages([{ status: 503, body: {} }]);
 
-    expect(await getCachedUserBunnyStorage()).toEqual({});
+    expect(await getCachedUserBunnyStorage()).toEqual({ [scenario.owner.id]: 2048 });
   });
 
   it('is empty on a database with no videos at all', async () => {
@@ -985,5 +988,128 @@ describe('getCachedStripeStats', () => {
     vi.stubEnv('STRIPE_SECRET_KEY', undefined);
 
     expect(await getCachedStripeStats()).toBeNull();
+  });
+});
+
+// The per-user figure the quota checks read, which deliberately does not come
+// from the cached map above.
+//
+// The bug this exists for: the declared size lands on the row at the moment an
+// upload finalizes and the reservation is deleted in the same transaction. A map
+// computed up to two minutes earlier does not have that row in it, so for those
+// two minutes the upload that just succeeded counted as nothing. The uploader
+// watched their usage fall back to zero and the next upload was measured against
+// a total that ignored the one before it.
+describe('getUserBunnyStorageBytes', () => {
+  it('counts a finished upload straight away, without waiting for Bunny', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    // Bunny has the video but reports nothing for it yet, which is what an
+    // encode in progress looks like.
+    stubBunnyLibrary({ 'bunny-encoding': 0 });
+    await createVersion({
+      videoParentId: video.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-encoding',
+      sizeBytes: BigInt(2_500_000_000),
+    });
+
+    expect(await getUserBunnyStorageBytes(scenario.owner.id)).toBe(2_500_000_000);
+  });
+
+  // What Bunny reports mid-encode is partial: it counts what has been written so
+  // far and climbs as each rendition lands. A 2.5 GB source read as 475 MB
+  // halfway through and settled above 3 GB once it finished. Letting the partial
+  // figure displace the declared size would hand most of the quota back in the
+  // middle of an encode, which is exactly what the declared size is there to stop.
+  it('keeps the declared size while Bunny figure is still climbing', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    await createVersion({
+      videoParentId: video.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-encoding',
+      sizeBytes: BigInt(2_500_000_000),
+    });
+    stubBunnyLibrary({ 'bunny-encoding': 474_900_000 });
+
+    expect(await getUserBunnyStorageBytes(scenario.owner.id)).toBe(2_500_000_000);
+  });
+
+  // And gets out of the way once the renditions are all there, because they are
+  // the actual bill and they add up to more than the source.
+  it('takes Bunny own figure once it passes the declared size', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    await createVersion({
+      videoParentId: video.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-encoded',
+      sizeBytes: BigInt(2_500_000_000),
+    });
+    stubBunnyLibrary({ 'bunny-encoded': 3_600_000_000 });
+
+    expect(await getUserBunnyStorageBytes(scenario.owner.id)).toBe(3_600_000_000);
+  });
+
+  it('counts only the videos billed to the user asked about', async () => {
+    const mine = await seedProject();
+    const theirs = await seedProject();
+    const myVideo = await createVideo({ projectId: mine.project.id });
+    const theirVideo = await createVideo({ projectId: theirs.project.id });
+    await createVersion({
+      videoParentId: myVideo.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-mine',
+      sizeBytes: BigInt(700),
+    });
+    await createVersion({
+      videoParentId: theirVideo.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-theirs',
+      sizeBytes: BigInt(900),
+    });
+    stubBunnyLibrary({ 'bunny-mine': 0, 'bunny-theirs': 0 });
+
+    expect(await getUserBunnyStorageBytes(mine.owner.id)).toBe(700);
+    expect(await getUserBunnyStorageBytes(theirs.owner.id)).toBe(900);
+  });
+
+  it('adds Bunny assets to the user they are billed to, deduped against versions', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    await createVersion({
+      videoParentId: video.id,
+      providerId: 'bunny',
+      providerVideoId: 'bunny-shared',
+      sizeBytes: BigInt(500),
+    });
+    await createVideoAsset({
+      videoId: video.id,
+      billedUserId: scenario.owner.id,
+      kind: VideoAssetKind.VIDEO,
+      provider: VideoAssetProvider.BUNNY,
+      providerVideoId: 'bunny-shared',
+      sizeBytes: BigInt(500),
+    });
+    await createVideoAsset({
+      videoId: video.id,
+      billedUserId: scenario.owner.id,
+      kind: VideoAssetKind.VIDEO,
+      provider: VideoAssetProvider.BUNNY,
+      providerVideoId: 'bunny-asset-only',
+      sizeBytes: BigInt(300),
+    });
+    stubBunnyLibrary({ 'bunny-shared': 0, 'bunny-asset-only': 0 });
+
+    // The shared id is one video however many rows point at it.
+    expect(await getUserBunnyStorageBytes(scenario.owner.id)).toBe(800);
+  });
+
+  it('is zero for a user with no Bunny videos', async () => {
+    const scenario = await seedProject();
+    stubBunnyLibrary({ 'bunny-someone-else': 999 });
+
+    expect(await getUserBunnyStorageBytes(scenario.owner.id)).toBe(0);
   });
 });

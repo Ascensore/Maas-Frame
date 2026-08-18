@@ -77,6 +77,8 @@ interface StorageInfo {
   usedBytes: string;
   limitBytes: string;
   percentage: number;
+  /** False on the free trial, where the way out is subscribing rather than deleting. */
+  isPaid: boolean;
 }
 
 function formatBytes(bytesStr: string): string {
@@ -501,7 +503,8 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
               Storage
             </CardTitle>
             <CardDescription>
-              Combined usage across video files and media attachments (200 GB limit)
+              Combined usage across video files and media attachments
+              {storageInfo ? ` (${formatBytes(storageInfo.limitBytes)} limit)` : ''}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -541,11 +544,17 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
                         : ''
                   }
                 />
-                {storageInfo.percentage >= 90 && (
-                  <p className="text-xs text-destructive">
-                    Storage is almost full. Delete unused files or contact support.
-                  </p>
-                )}
+                {storageInfo.percentage >= 90 &&
+                  (storageInfo.isPaid ? (
+                    <p className="text-xs text-destructive">
+                      Storage is almost full. Delete unused files or contact support.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-destructive">
+                      Your free trial storage is almost full. Subscribe above for more room, or
+                      delete unused files.
+                    </p>
+                  ))}
               </>
             )}
           </CardContent>

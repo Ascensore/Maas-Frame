@@ -2,7 +2,7 @@ import type { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { apiErrors } from '@/lib/api-response';
 import { isStripeFeatureEnabled } from '@/lib/feature-flags';
-import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
+import { getUserBunnyStorageBytes } from '@/lib/admin-stats';
 import { isPaidTier } from '@/lib/billing';
 import { getStorageLimitBytes } from '@/lib/trial-limits';
 
@@ -18,12 +18,59 @@ export const PLAN_STORAGE_LIMIT_BYTES = BigInt(200) * BigInt(1024) * BigInt(1024
  * forget to pass it.
  */
 export async function getStorageLimitForUser(userId: string): Promise<bigint> {
+  return (await getStorageContextForUser(userId)).limitBytes;
+}
+
+export interface StorageContext {
+  /** The ceiling this account is held to. */
+  limitBytes: bigint;
+  /** Whether that ceiling is the plan's or the trial's. */
+  isPaid: boolean;
+}
+
+/**
+ * The ceiling and the reason for it, read together.
+ *
+ * The two travel as a pair because a refusal has to say which one it is: an
+ * unpaid account is out of room because it has not subscribed, and telling it to
+ * delete files is advice that does not apply.
+ */
+export async function getStorageContextForUser(userId: string): Promise<StorageContext> {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { subscriptionStatus: true, stripeCurrentPeriodEnd: true },
   });
 
-  return getStorageLimitBytes(user ? isPaidTier(user) : false, PLAN_STORAGE_LIMIT_BYTES);
+  const isPaid = user ? isPaidTier(user) : false;
+  return { limitBytes: getStorageLimitBytes(isPaid, PLAN_STORAGE_LIMIT_BYTES), isPaid };
+}
+
+/**
+ * Whole gigabytes where the number is whole, which every ceiling we ship is.
+ * A host that sets an odd one gets a decimal rather than a rounded lie.
+ */
+function formatStorageLimit(bytes: bigint): string {
+  const gigabytes = Number(bytes) / 1024 ** 3;
+  return `${Number.isInteger(gigabytes) ? gigabytes : gigabytes.toFixed(1)} GB`;
+}
+
+/**
+ * The refusal, in the words that fit the account it is being given to.
+ *
+ * A paying account that has filled 200 GB has to delete something. An unpaid one
+ * has three gigabytes because it has not subscribed, so the way out is the
+ * subscription, and the response says so under its own error code rather than
+ * leaving the client to guess from the number.
+ */
+export function storageExceededResponse(context: StorageContext): NextResponse {
+  if (context.isPaid) {
+    return apiErrors.storageExceeded() as NextResponse;
+  }
+
+  return apiErrors.trialStorageExceeded(
+    `Your free trial includes ${formatStorageLimit(context.limitBytes)} of storage. ` +
+      `Upgrade to get ${formatStorageLimit(PLAN_STORAGE_LIMIT_BYTES)}.`
+  ) as NextResponse;
 }
 
 // TTL for upload reservations: 30 minutes is enough for R2 image/audio uploads
@@ -66,7 +113,7 @@ class QuotaExceededError extends Error {}
  * every upload.
  */
 export async function getUserTotalStorageBytes(userId: string): Promise<bigint> {
-  const [r2AssetRows, r2VideoRows, bunnyByUser, reservationRows] = await Promise.all([
+  const [r2AssetRows, r2VideoRows, bunnyUserBytes, reservationRows] = await Promise.all([
     db.$queryRaw<[{ total: bigint }]>`
       SELECT COALESCE(SUM(size_bytes), 0)::bigint AS total
       FROM video_assets
@@ -82,7 +129,7 @@ export async function getUserTotalStorageBytes(userId: string): Promise<bigint> 
       WHERE w."ownerId" = ${userId}
         AND vv."providerId" = 'r2'
     `,
-    getCachedUserBunnyStorage(),
+    getUserBunnyStorageBytes(userId),
     db.$queryRaw<[{ total: bigint }]>`
       SELECT COALESCE(SUM("sizeBytes"), 0)::bigint AS total
       FROM upload_reservations
@@ -93,7 +140,7 @@ export async function getUserTotalStorageBytes(userId: string): Promise<bigint> 
 
   const r2AssetBytes = r2AssetRows[0]?.total ?? BigInt(0);
   const r2VideoBytes = r2VideoRows[0]?.total ?? BigInt(0);
-  const bunnyBytes = BigInt(bunnyByUser[userId] ?? 0);
+  const bunnyBytes = BigInt(bunnyUserBytes);
   const reservedBytes = reservationRows[0]?.total ?? BigInt(0);
 
   return r2AssetBytes + r2VideoBytes + bunnyBytes + reservedBytes;
@@ -136,13 +183,13 @@ export async function enforceStorageQuota(
     return null;
   }
 
-  const [usedBytes, limitBytes] = await Promise.all([
+  const [usedBytes, storage] = await Promise.all([
     getUserTotalStorageBytes(userId),
-    getStorageLimitForUser(userId),
+    getStorageContextForUser(userId),
   ]);
 
-  if (usedBytes + incomingSizeBytes >= limitBytes) {
-    return apiErrors.storageExceeded() as NextResponse;
+  if (usedBytes + incomingSizeBytes >= storage.limitBytes) {
+    return storageExceededResponse(storage);
   }
 
   return null;
@@ -176,11 +223,11 @@ export async function reserveStorageQuota(
   // Fetch Bunny storage and the account's ceiling BEFORE entering the transaction,
   // to avoid holding the advisory lock during a potentially slow/failing HTTP call
   // on cache miss or an extra round trip to Postgres.
-  const [bunnyData, limitBytes] = await Promise.all([
-    getCachedUserBunnyStorage(),
-    getStorageLimitForUser(userId),
+  const [bunnyUserBytes, storage] = await Promise.all([
+    getUserBunnyStorageBytes(userId),
+    getStorageContextForUser(userId),
   ]);
-  const bunnyBytes = BigInt(bunnyData[userId] ?? 0);
+  const bunnyBytes = BigInt(bunnyUserBytes);
 
   try {
     const reservationId = await db.$transaction(async (tx) => {
@@ -222,7 +269,7 @@ export async function reserveStorageQuota(
       const reservedBytes = resRow?.total ?? BigInt(0);
 
       const totalUsed = r2Bytes + reservedBytes + bunnyBytes;
-      if (totalUsed + incomingSizeBytes >= limitBytes) {
+      if (totalUsed + incomingSizeBytes >= storage.limitBytes) {
         throw new QuotaExceededError();
       }
 
@@ -237,7 +284,7 @@ export async function reserveStorageQuota(
     return { reservationId };
   } catch (e) {
     if (e instanceof QuotaExceededError) {
-      return { error: apiErrors.storageExceeded() as NextResponse };
+      return { error: storageExceededResponse(storage) };
     }
     throw e;
   }
