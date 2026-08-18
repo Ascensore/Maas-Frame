@@ -221,12 +221,97 @@ export const getCachedBunnyStorageStats = unstable_cache(
   { revalidate: STORAGE_CACHE_SECONDS }
 );
 
+/**
+ * What this video costs us, as the larger of the two numbers we have.
+ *
+ * Bunny reports nothing for a video until it starts encoding, and what it reports
+ * while encoding is partial: `storageSize` counts what has been written so far and
+ * climbs as each rendition lands. A six minute cut uploaded at 2.5 GB read as
+ * 475 MB midway through and settled above 3 GB once it finished, because Bunny
+ * keeps the original alongside every rendition it makes.
+ *
+ * Both halves of the rule follow from that. Taking Bunny's figure whenever it is
+ * non-zero would hand back most of the quota in the middle of an encode, which is
+ * the hole the declared size exists to close. Taking the declared size forever
+ * would ignore the renditions, which are the actual bill and end up larger than
+ * the source. The larger of the two is right at every point: the declared size
+ * covers the encode, and Bunny's own number takes over the moment it passes it.
+ */
+function chargeableSize(reported: number, declared: bigint | null): number {
+  const declaredBytes = declared === null ? 0 : Number(declared);
+  return reported > declaredBytes ? reported : declaredBytes;
+}
+
+/**
+ * Bunny's reported sizes, or an empty map when the call to Bunny failed.
+ *
+ * A failed stats call is not a reason to bill an account for nothing. Bunny's own
+ * figure is unavailable; the sizes declared at upload are sitting in our database
+ * either way, and reading the whole account as empty is how a full account gets
+ * waved through. Used to be an early return that skipped the rows entirely.
+ */
+function reportedSizes(stats: BunnyStorageStats): Record<string, number> {
+  return stats.totalBytes < 0 ? {} : stats.byVideoId;
+}
+
+/**
+ * What one account's Bunny videos cost, read fresh.
+ *
+ * This deliberately does not come from the cached per-user map. The declared size
+ * lands on the row at the moment an upload finalizes, and a map computed up to two
+ * minutes earlier does not have that row in it. For those two minutes the
+ * reservation is already gone and the row is not yet visible, so an upload that
+ * just succeeded reads as zero: the uploader watches their usage fall back to
+ * nothing, and the next upload is measured against a total that ignores the one
+ * before it.
+ *
+ * The call to Bunny stays cached. It is the slow half and its answer is the same
+ * for everybody. Only the join against our own rows has to be current.
+ */
+export async function getUserBunnyStorageBytes(userId: string): Promise<number> {
+  try {
+    const [bunnyStats, bunnyVersions, bunnyAssets] = await Promise.all([
+      getCachedBunnyStorageStats(),
+      db.videoVersion.findMany({
+        where: {
+          providerId: 'bunny',
+          // The workspace owner, not the project owner: this feeds
+          // getUserTotalStorageBytes, which bills every other provider the same way.
+          video: { project: { workspace: { ownerId: userId } } },
+        },
+        select: { videoId: true, sizeBytes: true },
+      }),
+      db.videoAsset.findMany({
+        where: { provider: 'BUNNY', providerVideoId: { not: null }, billedUserId: userId },
+        select: { providerVideoId: true, sizeBytes: true },
+      }),
+    ]);
+
+    const reported = reportedSizes(bunnyStats);
+    const seenVideoIds = new Set<string>();
+    let total = 0;
+
+    for (const row of [
+      ...bunnyVersions.map((v) => ({ videoId: v.videoId, sizeBytes: v.sizeBytes })),
+      ...bunnyAssets.map((a) => ({ videoId: a.providerVideoId!, sizeBytes: a.sizeBytes })),
+    ]) {
+      if (!row.videoId || seenVideoIds.has(row.videoId)) continue;
+      seenVideoIds.add(row.videoId);
+      total += chargeableSize(reported[row.videoId] || 0, row.sizeBytes);
+    }
+
+    return total;
+  } catch (err) {
+    logError('Failed to calculate Bunny storage for user:', err);
+    return 0;
+  }
+}
+
 export const getCachedUserBunnyStorage = unstable_cache(
   async () => {
     const perUserStorage: Record<string, number> = {};
     try {
       const bunnyStats = await getCachedBunnyStorageStats();
-      if (bunnyStats.totalBytes < 0) return perUserStorage;
 
       const [bunnyVersions, bunnyAssets] = await Promise.all([
         db.videoVersion.findMany({
@@ -262,23 +347,7 @@ export const getCachedUserBunnyStorage = unstable_cache(
         }),
       ]);
 
-      /**
-       * What this video costs us, as the larger of the two numbers we have.
-       *
-       * Bunny reports nothing for a video until it has finished encoding it,
-       * which on a half-hour source is most of an hour, and reading that zero
-       * literally meant an upload was free for as long as it was being
-       * processed: it did not show on the uploader's storage page and it did not
-       * count against the next upload's quota check. The size declared when the
-       * upload was admitted stands in until Bunny has a figure of its own, and
-       * Bunny's wins once it arrives, because the renditions it makes are the
-       * real bill and they are larger than the source.
-       */
-      const chargeableSize = (reported: number, declared: bigint | null): number => {
-        const declaredBytes = declared === null ? 0 : Number(declared);
-        return reported > declaredBytes ? reported : declaredBytes;
-      };
-
+      const reported = reportedSizes(bunnyStats);
       const seenVideoIds = new Set<string>();
       for (const version of bunnyVersions) {
         const ownerId = version.video.project.workspace.ownerId;
@@ -286,7 +355,7 @@ export const getCachedUserBunnyStorage = unstable_cache(
         if (seenVideoIds.has(dedupeKey)) continue;
         seenVideoIds.add(dedupeKey);
 
-        const size = chargeableSize(bunnyStats.byVideoId[version.videoId] || 0, version.sizeBytes);
+        const size = chargeableSize(reported[version.videoId] || 0, version.sizeBytes);
         perUserStorage[ownerId] = (perUserStorage[ownerId] || 0) + size;
       }
 
@@ -297,10 +366,7 @@ export const getCachedUserBunnyStorage = unstable_cache(
         if (seenVideoIds.has(dedupeKey)) continue;
         seenVideoIds.add(dedupeKey);
 
-        const size = chargeableSize(
-          bunnyStats.byVideoId[asset.providerVideoId] || 0,
-          asset.sizeBytes
-        );
+        const size = chargeableSize(reported[asset.providerVideoId] || 0, asset.sizeBytes);
         perUserStorage[billedUserId] = (perUserStorage[billedUserId] || 0) + size;
       }
     } catch (err) {

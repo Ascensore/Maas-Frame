@@ -32,11 +32,13 @@ import {
   enforceStorageQuota,
   reserveStorageQuota,
   releaseStorageReservation,
-  getStorageLimitForUser,
+  getStorageContextForUser,
+  storageExceededResponse,
   UPLOAD_RESERVATION_PURPOSES,
+  type StorageContext,
   type UploadReservationPurpose,
 } from '@/lib/storage-quota';
-import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
+import { getUserBunnyStorageBytes } from '@/lib/admin-stats';
 import { isStripeFeatureEnabled } from '@/lib/feature-flags';
 
 // Sentinel thrown inside a Prisma transaction when a fake reservationId is
@@ -307,6 +309,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   // was still in flight.
   let reservationPurpose: UploadReservationPurpose | null = null;
   let reservationBilledUserId: string | null = null;
+  // Carried out of the try so the quota refusal in the catch can be worded for
+  // the account it is refusing, rather than telling a trial to delete files.
+  let storageForRefusal: StorageContext | null = null;
   let finalizedR2AssetSession: {
     sessionId: string;
     reservationId: string | null;
@@ -582,14 +587,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // quota check below, Bunny included. Leaving Bunny out read its own storage as
     // zero, and on an account whose storage is all Bunny that made the fallback a
     // check that could not fail.
-    const preFetchedBunnyData =
-      provider === VideoAssetProvider.YOUTUBE ? null : await getCachedUserBunnyStorage();
+    const preFetchedBunnyBytes =
+      provider === VideoAssetProvider.YOUTUBE ? null : await getUserBunnyStorageBytes(billedUserId);
 
     // The ceiling this account is actually held to, read for the fallback below.
     // It used to compare against the plan limit, which is 200 GiB whoever is
     // asking: a caller who quoted a reservation id that no longer existed was
     // measured against the paid ceiling even on a trial worth 3 GiB.
-    const storageLimitBytes = await getStorageLimitForUser(billedUserId);
+    const storage = await getStorageContextForUser(billedUserId);
+    storageForRefusal = storage;
 
     // Create the VideoAsset and atomically consume the upload reservation (if any)
     // so the spot is never double-counted.
@@ -631,12 +637,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             WHERE "billedUserId" = ${billedUserId}
               AND "expiresAt" > NOW()
           `;
-          const bunnyData = preFetchedBunnyData ?? {};
           const totalUsed =
             (r2Row?.total ?? BigInt(0)) +
             (resRow?.total ?? BigInt(0)) +
-            BigInt(bunnyData[billedUserId] ?? 0);
-          if (isStripeFeatureEnabled() && totalUsed + assetSizeBytes >= storageLimitBytes) {
+            BigInt(preFetchedBunnyBytes ?? 0);
+          if (isStripeFeatureEnabled() && totalUsed + assetSizeBytes >= storage.limitBytes) {
             throw new QuotaExceededInTxError();
           }
         }
@@ -712,7 +717,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
     if (error instanceof QuotaExceededInTxError) {
-      return apiErrors.storageExceeded() as NextResponse;
+      return storageForRefusal
+        ? storageExceededResponse(storageForRefusal)
+        : (apiErrors.storageExceeded() as NextResponse);
     }
     await releaseStorageReservation(
       reservationId,
