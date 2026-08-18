@@ -6,7 +6,7 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { rateLimit } from '@/lib/rate-limit';
 import { db } from '@/lib/db';
 import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
-import { verifyBunnyUploadToken } from '@/lib/bunny-upload-token';
+import { readBunnyUploadGrant } from '@/lib/bunny-upload-token';
 import { deriveGuestUploadContext, verifyGuestUploadToken } from '@/lib/guest-upload-token';
 import { ensureGuestIdentityFromRequest, setGuestIdentityCookie } from '@/lib/guest-identity';
 import { getShareSessionFromRequest } from '@/lib/share-session';
@@ -32,7 +32,7 @@ import {
   enforceStorageQuota,
   reserveStorageQuota,
   releaseStorageReservation,
-  PLAN_STORAGE_LIMIT_BYTES,
+  getStorageLimitForUser,
 } from '@/lib/storage-quota';
 import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
 import { isStripeFeatureEnabled } from '@/lib/feature-flags';
@@ -494,14 +494,21 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
 
       if (context.viewerUserId) {
-        const isValidUploadToken = verifyBunnyUploadToken(uploadToken, {
+        const grant = readBunnyUploadGrant(uploadToken, {
           userId: context.viewerUserId,
           projectId: context.video.projectId,
           videoId: providerVideoId,
         });
-        if (!isValidUploadToken) {
+        if (!grant) {
           return apiErrors.forbidden('Invalid Bunny upload token');
         }
+
+        // Charged from now on the size the upload was admitted on: Bunny reports
+        // nothing until it has finished encoding, and an asset that reads as zero
+        // bytes for an hour is an hour of uploads measured against a total that
+        // does not include it.
+        assetSizeBytes = grant.declaredSizeBytes ?? BigInt(0);
+        reservationId = grant.reservationId;
       } else {
         const shareSession = getShareSessionFromRequest(request, context.video.id);
         const expectedContext = deriveGuestUploadContext(request, shareSession?.token ?? null);
@@ -529,7 +536,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
       kind = 'VIDEO';
 
-      const quotaError = await enforceStorageQuota(billedUserId, BigInt(0));
+      const quotaError = await enforceStorageQuota(billedUserId, assetSizeBytes);
       if (quotaError) return quotaError;
     }
 
@@ -544,6 +551,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       provider === VideoAssetProvider.R2_VIDEO
         ? await getCachedUserBunnyStorage()
         : null;
+
+    // The ceiling this account is actually held to, read for the fallback below.
+    // It used to compare against the plan limit, which is 200 GiB whoever is
+    // asking: a caller who quoted a reservation id that no longer existed was
+    // measured against the paid ceiling even on a trial worth 3 GiB.
+    const storageLimitBytes = await getStorageLimitForUser(billedUserId);
 
     // Create the VideoAsset and atomically consume the upload reservation (if any)
     // so the spot is never double-counted.
@@ -585,7 +598,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             (r2Row?.total ?? BigInt(0)) +
             (resRow?.total ?? BigInt(0)) +
             BigInt(bunnyData[billedUserId] ?? 0);
-          if (isStripeFeatureEnabled() && totalUsed + assetSizeBytes >= PLAN_STORAGE_LIMIT_BYTES) {
+          if (isStripeFeatureEnabled() && totalUsed + assetSizeBytes >= storageLimitBytes) {
             throw new QuotaExceededInTxError();
           }
         }

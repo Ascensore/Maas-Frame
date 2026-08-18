@@ -233,6 +233,8 @@ export const getCachedUserBunnyStorage = unstable_cache(
           where: { providerId: 'bunny' },
           select: {
             videoId: true,
+            // What the uploader declared, used as a floor below.
+            sizeBytes: true,
             video: {
               select: {
                 project: {
@@ -255,9 +257,27 @@ export const getCachedUserBunnyStorage = unstable_cache(
           select: {
             providerVideoId: true,
             billedUserId: true,
+            sizeBytes: true,
           },
         }),
       ]);
+
+      /**
+       * What this video costs us, as the larger of the two numbers we have.
+       *
+       * Bunny reports nothing for a video until it has finished encoding it,
+       * which on a half-hour source is most of an hour, and reading that zero
+       * literally meant an upload was free for as long as it was being
+       * processed: it did not show on the uploader's storage page and it did not
+       * count against the next upload's quota check. The size declared when the
+       * upload was admitted stands in until Bunny has a figure of its own, and
+       * Bunny's wins once it arrives, because the renditions it makes are the
+       * real bill and they are larger than the source.
+       */
+      const chargeableSize = (reported: number, declared: bigint | null): number => {
+        const declaredBytes = declared === null ? 0 : Number(declared);
+        return reported > declaredBytes ? reported : declaredBytes;
+      };
 
       const seenVideoIds = new Set<string>();
       for (const version of bunnyVersions) {
@@ -266,7 +286,7 @@ export const getCachedUserBunnyStorage = unstable_cache(
         if (seenVideoIds.has(dedupeKey)) continue;
         seenVideoIds.add(dedupeKey);
 
-        const size = bunnyStats.byVideoId[version.videoId] || 0;
+        const size = chargeableSize(bunnyStats.byVideoId[version.videoId] || 0, version.sizeBytes);
         perUserStorage[ownerId] = (perUserStorage[ownerId] || 0) + size;
       }
 
@@ -277,7 +297,10 @@ export const getCachedUserBunnyStorage = unstable_cache(
         if (seenVideoIds.has(dedupeKey)) continue;
         seenVideoIds.add(dedupeKey);
 
-        const size = bunnyStats.byVideoId[asset.providerVideoId] || 0;
+        const size = chargeableSize(
+          bunnyStats.byVideoId[asset.providerVideoId] || 0,
+          asset.sizeBytes
+        );
         perUserStorage[billedUserId] = (perUserStorage[billedUserId] || 0) + size;
       }
     } catch (err) {

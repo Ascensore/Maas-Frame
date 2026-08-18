@@ -5,12 +5,27 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { rateLimit } from '@/lib/rate-limit';
 import crypto from 'crypto';
 import { cleanupBunnyStreamVideos } from '@/lib/bunny-stream-cleanup';
-import { createBunnyUploadToken, verifyBunnyUploadToken } from '@/lib/bunny-upload-token';
-import { isBunnyUploadsEnabled } from '@/lib/feature-flags';
+import {
+  createBunnyUploadToken,
+  readBunnyUploadGrant,
+  verifyBunnyUploadToken,
+} from '@/lib/bunny-upload-token';
+import { getMaxVideoUploadBytes, isBunnyUploadsEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
-import { enforceStorageQuota } from '@/lib/storage-quota';
+import {
+  enforceStorageQuota,
+  releaseStorageReservation,
+  reserveStorageQuota,
+} from '@/lib/storage-quota';
+import { parseDeclaredUploadSize } from '@/lib/upload-size';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
+
+// Long enough to outlive a slow upload and Bunny's own reporting delay, matching
+// what the R2 video path already reserves for. The reservation is what makes
+// concurrent uploads visible to each other, so it has to stay until the bytes it
+// stands for are counted, not until the upload finishes.
+const BUNNY_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
 
 async function getProjectWithEditAccess(projectId: string, userId: string) {
   const project = await db.project.findUnique({
@@ -64,14 +79,37 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('Bunny direct uploads are disabled by this host');
     }
 
-    const quotaError = await enforceStorageQuota(project.workspace.ownerId, BigInt(0));
+    // The size the client says it is about to upload. It is a claim, not proof,
+    // and the bytes never pass through us to be checked: they go straight to
+    // Bunny, whose own reporting is what eventually settles the account. What
+    // the claim buys is the two things asking for zero bytes could not. An
+    // upload that plainly does not fit is refused before it starts instead of
+    // halfway through, and the reservation written below makes concurrent
+    // uploads visible to each other, where previously every request in the same
+    // two-minute window read the same stale total and every one of them passed.
+    const declaredSize = parseDeclaredUploadSize(body?.sizeBytes, getMaxVideoUploadBytes());
+    if ('error' in declaredSize) {
+      return apiErrors.badRequest(declaredSize.error);
+    }
+
+    const billedUserId = project.workspace.ownerId;
+    const quotaError = await enforceStorageQuota(billedUserId, declaredSize.sizeBytes);
     if (quotaError) return quotaError;
+
+    const reserveResult = await reserveStorageQuota(
+      billedUserId,
+      declaredSize.sizeBytes,
+      BUNNY_RESERVATION_TTL_MS
+    );
+    if ('error' in reserveResult) return reserveResult.error;
+    const { reservationId } = reserveResult;
 
     const apiKey = process.env.BUNNY_STREAM_API_KEY;
     const libraryId =
       process.env.BUNNY_STREAM_LIBRARY_ID || process.env.NEXT_PUBLIC_BUNNY_STREAM_LIBRARY_ID;
 
     if (!apiKey || !libraryId) {
+      await releaseStorageReservation(reservationId, billedUserId);
       return apiErrors.internalError('Bunny Stream is not configured correctly');
     }
 
@@ -87,6 +125,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!bunnyRes.ok) {
+      await releaseStorageReservation(reservationId, billedUserId);
       logError('Failed to create Bunny Stream video', await bunnyRes.text());
       return apiErrors.internalError('Failed to initialize video upload with provider');
     }
@@ -94,6 +133,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const bunnyVideo = await bunnyRes.json();
     const videoId = bunnyVideo.guid;
     if (typeof videoId !== 'string' || videoId.length === 0) {
+      await releaseStorageReservation(reservationId, billedUserId);
       return apiErrors.internalError('Upload provider did not return a valid video identifier');
     }
 
@@ -109,6 +149,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         userId: session.user.id,
         projectId,
         videoId,
+        reservationId,
+        declaredSizeBytes: declaredSize.sizeBytes,
       },
       3600
     );
@@ -163,6 +205,18 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     if (!isValidUploadToken) {
       return apiErrors.forbidden('Invalid Bunny upload token');
     }
+
+    // Giving the quota back here rather than waiting for the reservation to
+    // lapse: an abandoned upload that keeps holding gigabytes for two hours is
+    // most of a trial's whole allowance, and the account has nothing to show for
+    // it. Safe to do on a caller's say-so only because the reservation id rides
+    // inside the signed token next to this video id, so releasing it costs the
+    // caller the video it belongs to.
+    await releaseStorageReservation(
+      readBunnyUploadGrant(uploadToken, { userId: session.user.id, projectId, videoId })
+        ?.reservationId ?? null,
+      project.workspace.ownerId
+    );
 
     await cleanupBunnyStreamVideos([{ providerId: 'bunny', videoId }]);
 

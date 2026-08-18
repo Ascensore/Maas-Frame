@@ -17,7 +17,7 @@ export const PLAN_STORAGE_LIMIT_BYTES = BigInt(200) * BigInt(1024) * BigInt(1024
  * directly rather than taking a flag from the caller, so no upload route can
  * forget to pass it.
  */
-async function getStorageLimitForUser(userId: string): Promise<bigint> {
+export async function getStorageLimitForUser(userId: string): Promise<bigint> {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { subscriptionStatus: true, stripeCurrentPeriodEnd: true },
