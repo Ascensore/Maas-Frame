@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, Loader2, UploadCloud, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
@@ -22,6 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { isTrialStorageError, toastApiError } from '@/lib/client/api-error';
 import {
   cleanupPendingProjectUpload,
   getDefaultTitleFromFile,
@@ -46,6 +48,8 @@ type QueueItem = {
   status: QueueItemStatus;
   progress: number;
   error?: string;
+  /** The failure was the trial ceiling, so the row shows the way out. */
+  errorIsTrialLimit?: boolean;
 };
 
 interface VideoDragDropUploaderProps {
@@ -306,12 +310,17 @@ export function VideoDragDropUploader({
           failCount += 1;
 
           const message = error instanceof Error ? error.message : 'Failed to upload video';
+          const isTrialLimit = isTrialStorageError(error);
           setQueue((prev) =>
             prev.map((entry) =>
-              entry.id === item.id ? { ...entry, status: 'error', error: message } : entry
+              entry.id === item.id
+                ? { ...entry, status: 'error', error: message, errorIsTrialLimit: isTrialLimit }
+                : entry
             )
           );
-          toast.error(`${item.file.name}: ${message}`);
+          // Keeps the error code alive to the toast: a trial account that has run
+          // out of room is shown the plan rather than just told the upload failed.
+          toastApiError(error, 'Failed to upload video', { prefix: item.file.name });
         }
       }
 
@@ -500,7 +509,17 @@ export function VideoDragDropUploader({
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">{item.file.name}</p>
                       {item.error ? (
-                        <p className="truncate text-xs text-destructive">{item.error}</p>
+                        <p className="text-xs text-destructive">
+                          <span className="align-middle">{item.error}</span>
+                          {item.errorIsTrialLimit && (
+                            <Link
+                              href="/settings"
+                              className="ml-1 align-middle font-medium underline underline-offset-2"
+                            >
+                              Upgrade
+                            </Link>
+                          )}
+                        </p>
                       ) : (
                         <p className="truncate text-xs text-muted-foreground">
                           {getDefaultTitleFromFile(item.file)}
