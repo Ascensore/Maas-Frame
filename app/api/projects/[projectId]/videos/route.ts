@@ -5,8 +5,9 @@ import { validateUrl, validateOptionalUrlOrAppPath } from '@/lib/validation';
 import { rateLimit } from '@/lib/rate-limit';
 import { notifyProjectOwner } from '@/lib/notifications';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
-import { verifyBunnyUploadToken } from '@/lib/bunny-upload-token';
+import { readBunnyUploadGrant } from '@/lib/bunny-upload-token';
 import { finalizeR2VideoUpload } from '@/lib/r2-video-finalize';
+import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 import { eventKey, recordEvent } from '@/lib/analytics/record';
 
@@ -77,7 +78,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Check project access (must be owner, project admin, or workspace admin)
     const project = await db.project.findUnique({
       where: { id: projectId },
-      select: { id: true, name: true, ownerId: true, workspaceId: true, visibility: true },
+      select: {
+        id: true,
+        name: true,
+        ownerId: true,
+        workspaceId: true,
+        visibility: true,
+        // The billed account, which is who the Bunny reservation is held against.
+        workspace: { select: { ownerId: true } },
+      },
     });
 
     if (!project) {
@@ -135,6 +144,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const normalizedUploadToken = typeof uploadToken === 'string' ? uploadToken.trim() : '';
 
     let versionSizeBytes = BigInt(0);
+    let bunnyReservation: string | null = null;
     let finalizedR2Session: {
       sessionId: string;
       reservationId: string | null;
@@ -147,14 +157,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         return apiErrors.badRequest('Bunny uploads must include videoId and uploadToken');
       }
 
-      const isValidUploadToken = verifyBunnyUploadToken(normalizedUploadToken, {
+      const grant = readBunnyUploadGrant(normalizedUploadToken, {
         userId: session.user.id,
         projectId,
         videoId: normalizedVideoId,
       });
-      if (!isValidUploadToken) {
+      if (!grant) {
         return apiErrors.forbidden('Invalid Bunny upload token');
       }
+
+      // See the versions route: Bunny reports no size at all until it has
+      // finished encoding, so the size the upload was admitted on is what the
+      // account is charged until a real figure arrives.
+      versionSizeBytes = grant.declaredSizeBytes ?? BigInt(0);
+      bunnyReservation = grant.reservationId;
     } else if (normalizedProviderId === 'r2') {
       const normalizedObjectKey = typeof objectKey === 'string' ? objectKey.trim() : '';
       if (!normalizedObjectKey || !normalizedUploadToken) {
@@ -222,9 +238,22 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             where: {
               id: finalizedR2Session.reservationId,
               billedUserId: finalizedR2Session.billedUserId,
+              purpose: UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
             },
           });
         }
+      }
+
+      // Released in the transaction that records the size, so the bytes are never
+      // counted twice and never counted zero times.
+      if (bunnyReservation) {
+        await tx.uploadReservation.deleteMany({
+          where: {
+            id: bunnyReservation,
+            billedUserId: project.workspace.ownerId,
+            purpose: UPLOAD_RESERVATION_PURPOSES.BUNNY,
+          },
+        });
       }
 
       return tx.video.create({

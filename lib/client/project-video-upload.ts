@@ -154,7 +154,9 @@ export async function uploadProjectVideo(
     const initResponse = await fetch(`/api/projects/${projectId}/videos/bunny-init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
+      // The server checks this against the quota and holds a reservation for it,
+      // so an upload that cannot fit is turned away before any of it is sent.
+      body: JSON.stringify({ title, sizeBytes: file.size.toString() }),
     });
 
     const initPayload = (await initResponse.json().catch(() => null)) as {

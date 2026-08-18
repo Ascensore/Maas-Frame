@@ -110,7 +110,7 @@ export function useVersionActions({
     const initRes = await fetch(`/api/projects/${projectId}/videos/bunny-init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ title, sizeBytes: file.size.toString() }),
     });
 
     if (!initRes.ok) throw new Error('Failed to initialize upload');

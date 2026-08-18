@@ -17,7 +17,7 @@ export const PLAN_STORAGE_LIMIT_BYTES = BigInt(200) * BigInt(1024) * BigInt(1024
  * directly rather than taking a flag from the caller, so no upload route can
  * forget to pass it.
  */
-async function getStorageLimitForUser(userId: string): Promise<bigint> {
+export async function getStorageLimitForUser(userId: string): Promise<bigint> {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { subscriptionStatus: true, stripeCurrentPeriodEnd: true },
@@ -28,6 +28,33 @@ async function getStorageLimitForUser(userId: string): Promise<bigint> {
 
 // TTL for upload reservations: 30 minutes is enough for R2 image/audio uploads
 const RESERVATION_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * What a hold was opened for.
+ *
+ * A reservation is only ever consumed by the flow that opened it, and the
+ * finalize routes match on this as well as on the id. Without it, naming a
+ * reservation would be enough to drop it: the asset route takes a reservation id
+ * from the request body, and every hold an account owns is billed to the same
+ * user, so an image being attached could quietly release a video upload that was
+ * still in flight. The ids are not secret. Two of them are handed to the client
+ * outright, and the rest ride inside signed-but-readable token payloads.
+ */
+export const UPLOAD_RESERVATION_PURPOSES = {
+  /** A comment attachment or standalone image going to R2. */
+  IMAGE: 'IMAGE',
+  /** A voice note going to R2. */
+  AUDIO: 'AUDIO',
+  /** Image and voice attachments weighed together when a comment is posted. */
+  ATTACHMENT: 'ATTACHMENT',
+  /** A presigned direct upload to our own S3-compatible storage. */
+  R2_VIDEO: 'R2_VIDEO',
+  /** A direct upload to Bunny, where the bytes never pass through us. */
+  BUNNY: 'BUNNY',
+} as const;
+
+export type UploadReservationPurpose =
+  (typeof UPLOAD_RESERVATION_PURPOSES)[keyof typeof UPLOAD_RESERVATION_PURPOSES];
 
 // Sentinel error thrown inside a Prisma transaction to signal quota exceeded
 class QuotaExceededError extends Error {}
@@ -137,6 +164,7 @@ export async function enforceStorageQuota(
 export async function reserveStorageQuota(
   userId: string,
   incomingSizeBytes: bigint,
+  purpose: UploadReservationPurpose,
   reservationTtlMs: number = RESERVATION_TTL_MS
 ): Promise<{ reservationId: string | null } | { error: NextResponse }> {
   if (!isStripeFeatureEnabled()) {
@@ -199,7 +227,7 @@ export async function reserveStorageQuota(
       }
 
       const reservation = await tx.uploadReservation.create({
-        data: { billedUserId: userId, sizeBytes: incomingSizeBytes, expiresAt },
+        data: { billedUserId: userId, sizeBytes: incomingSizeBytes, expiresAt, purpose },
         select: { id: true },
       });
 
@@ -218,16 +246,22 @@ export async function reserveStorageQuota(
 /**
  * Deletes an upload reservation created by `reserveStorageQuota`.
  * Safe to call with `null` (no-op) for flows where billing is disabled.
+ *
+ * Pass the purpose wherever the caller knows it. A release that names only an id
+ * will delete a hold opened for something else, which is the same hole the
+ * purpose column exists to close.
  */
 export async function releaseStorageReservation(
   reservationId: string | null,
-  billedUserId?: string | null
+  billedUserId?: string | null,
+  purpose?: UploadReservationPurpose
 ): Promise<void> {
   if (!reservationId) return;
   await db.uploadReservation.deleteMany({
     where: {
       id: reservationId,
       ...(billedUserId ? { billedUserId } : {}),
+      ...(purpose ? { purpose } : {}),
     },
   });
 }

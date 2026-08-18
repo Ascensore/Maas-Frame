@@ -419,7 +419,13 @@ describe('useVersionActions uploading a file to Bunny', () => {
 
     await createFromFile(harness);
 
-    expect(bodyOf(callsTo(BUNNY_INIT_URL, 'POST')[0])).toEqual({ title: 'my clip' });
+    // The size goes with the title: the server checks it against the quota and
+    // reserves it before Bunny is asked for anything, so an upload that cannot
+    // fit is refused here rather than after it has been sent.
+    expect(bodyOf(callsTo(BUNNY_INIT_URL, 'POST')[0])).toEqual({
+      title: 'my clip',
+      sizeBytes: '10',
+    });
     expect(tusUploads[0].options.endpoint).toBe('https://video.bunnycdn.com/tusupload');
     expect(tusUploads[0].options.headers).toEqual({
       AuthorizationSignature: 'sig',
@@ -436,7 +442,10 @@ describe('useVersionActions uploading a file to Bunny', () => {
 
     await createFromFile(harness);
 
-    expect(bodyOf(callsTo(BUNNY_INIT_URL, 'POST')[0])).toEqual({ title: 'Client cut' });
+    expect(bodyOf(callsTo(BUNNY_INIT_URL, 'POST')[0])).toEqual({
+      title: 'Client cut',
+      sizeBytes: '10',
+    });
   });
 
   it('registers the version against the Bunny embed and CDN thumbnail', async () => {

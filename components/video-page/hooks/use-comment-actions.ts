@@ -61,6 +61,17 @@ function getAudioUploadFilename(blob: Blob): string {
   return 'recording.webm';
 }
 
+/**
+ * A step of the submit that failed with something worth reading out.
+ *
+ * The attachment goes up before the comment does, so a full account fails on the
+ * image and never reaches the comment at all. Reporting that as "failed to add
+ * comment" tells the uploader to try again, which is the one thing that cannot
+ * work. Carried as its own error type so a network fault, which has no message
+ * anybody wants to see, still falls back to the generic line.
+ */
+class CommentSubmitError extends Error {}
+
 export function useCommentActions({
   videoId,
   setVideo,
@@ -262,7 +273,12 @@ export function useCommentActions({
             body: imageFormData,
           });
 
-          if (!imageRes.ok) throw new Error('Failed to upload image');
+          if (!imageRes.ok) {
+            const imagePayload = (await imageRes.json().catch(() => null)) as {
+              error?: string;
+            } | null;
+            throw new CommentSubmitError(imagePayload?.error || 'Failed to upload image');
+          }
           const imageDataResponse = await imageRes.json();
           imageData = { url: imageDataResponse.data.url };
         }
@@ -320,9 +336,10 @@ export function useCommentActions({
               ),
             };
           });
-          toast.error('Failed to add comment');
+          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+          toast.error(payload?.error || 'Failed to add comment');
         }
-      } catch {
+      } catch (error) {
         setVideo((prev) => {
           if (!prev) return prev;
           return {
@@ -334,7 +351,7 @@ export function useCommentActions({
             ),
           };
         });
-        toast.error('Failed to add comment');
+        toast.error(error instanceof CommentSubmitError ? error.message : 'Failed to add comment');
       } finally {
         setIsSubmittingComment(false);
         setIsUploadingImage(false);

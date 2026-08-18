@@ -703,6 +703,10 @@ model UploadReservation {
   sizeBytes    BigInt
   expiresAt    DateTime
   createdAt    DateTime @default(now())
+  /// What this hold was opened for. A reservation can only be consumed by the
+  /// flow that opened it, so naming one is not enough to drop it. See
+  /// UPLOAD_RESERVATION_PURPOSES in lib/storage-quota.ts.
+  purpose      String
 
   @@index([billedUserId, expiresAt])
   @@map("upload_reservations")

@@ -21,7 +21,11 @@ import {
 } from '@/lib/video-assets';
 import { validateAnnotationStrokes } from '@/lib/validation';
 import { logError } from '@/lib/logger';
-import { reserveStorageQuota, releaseStorageReservation } from '@/lib/storage-quota';
+import {
+  reserveStorageQuota,
+  releaseStorageReservation,
+  UPLOAD_RESERVATION_PURPOSES,
+} from '@/lib/storage-quota';
 import { isValidEmailAddress, normalizeEmail } from '@/lib/email-validation';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
@@ -202,6 +206,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 // POST /api/versions/[versionId]/comments
 export async function POST(request: NextRequest, { params }: RouteParams) {
   let attachmentReservationId: string | null = null;
+  // Carried out of the try so the catch below can scope the release to the
+  // account the hold was opened against.
+  let attachmentBilledUserId: string | null = null;
   try {
     const limited = await rateLimit(request, 'comment');
     if (limited) return limited;
@@ -416,10 +423,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (totalAttachmentBytes > BigInt(0)) {
       const reserveResult = await reserveStorageQuota(
         project.workspace.ownerId,
-        totalAttachmentBytes
+        totalAttachmentBytes,
+        UPLOAD_RESERVATION_PURPOSES.ATTACHMENT
       );
       if ('error' in reserveResult) return reserveResult.error;
       attachmentReservationId = reserveResult.reservationId;
+      attachmentBilledUserId = project.workspace.ownerId;
     }
 
     // Use a transaction to create both the comment and any asset rows atomically.
@@ -427,7 +436,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const result = await db.$transaction(async (tx) => {
       if (attachmentReservationId) {
         await tx.uploadReservation.deleteMany({
-          where: { id: attachmentReservationId, billedUserId: project.workspace.ownerId },
+          where: {
+            id: attachmentReservationId,
+            billedUserId: project.workspace.ownerId,
+            purpose: UPLOAD_RESERVATION_PURPOSES.ATTACHMENT,
+          },
         });
       }
       const comment = await tx.comment.create({
@@ -586,7 +599,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
-    await releaseStorageReservation(attachmentReservationId);
+    await releaseStorageReservation(
+      attachmentReservationId,
+      attachmentBilledUserId,
+      UPLOAD_RESERVATION_PURPOSES.ATTACHMENT
+    );
     logError('Error creating comment:', error);
     return apiErrors.internalError('Failed to create comment');
   }

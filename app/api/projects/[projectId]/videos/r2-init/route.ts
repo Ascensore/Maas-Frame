@@ -35,6 +35,7 @@ import {
   enforceStorageQuota,
   releaseStorageReservation,
   reserveStorageQuota,
+  UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
 import { createR2UploadSession } from '@/lib/r2-upload-session';
 
@@ -129,6 +130,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const reserveResult = await reserveStorageQuota(
       project.workspace.ownerId,
       sizeBytes + THUMBNAIL_RESERVE_BYTES,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
       VIDEO_RESERVATION_TTL_MS
     );
     if ('error' in reserveResult) return reserveResult.error;
@@ -188,7 +190,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         ]);
       }
     } catch (error) {
-      await releaseStorageReservation(reserveResult.reservationId, project.workspace.ownerId);
+      await releaseStorageReservation(
+        reserveResult.reservationId,
+        project.workspace.ownerId,
+        UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+      );
       logError('Failed to create presigned video upload URL:', error);
       return apiErrors.internalError('Failed to initialize video upload');
     }
@@ -340,7 +346,11 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       logError('Failed to delete pending R2 video object:', error);
     }
 
-    await releaseStorageReservation(uploadSession.reservationId, uploadSession.billedUserId);
+    await releaseStorageReservation(
+      uploadSession.reservationId,
+      uploadSession.billedUserId,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     const response = successResponse({ message: 'Pending upload cleaned up' });
     return withCacheControl(response, 'private, no-store');

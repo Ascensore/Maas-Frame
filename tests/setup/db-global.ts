@@ -67,6 +67,7 @@ const REVIEWED_MIGRATIONS = [
   '20260614160000_add_project_allow_downloads',
   '20260627140000_add_video_upload_multipart_id',
   '20260801120000_add_acquisition_analytics',
+  '20260818120000_add_upload_reservation_purpose',
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */

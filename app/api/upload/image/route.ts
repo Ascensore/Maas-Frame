@@ -20,7 +20,11 @@ import {
   verifyGuestUploadToken,
 } from '@/lib/guest-upload-token';
 import { logError } from '@/lib/logger';
-import { reserveStorageQuota, releaseStorageReservation } from '@/lib/storage-quota';
+import {
+  reserveStorageQuota,
+  releaseStorageReservation,
+  UPLOAD_RESERVATION_PURPOSES,
+} from '@/lib/storage-quota';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_MULTIPART_BODY_SIZE = MAX_FILE_SIZE + 512 * 1024; // file + multipart overhead
@@ -137,14 +141,22 @@ export async function POST(request: NextRequest) {
     // All paths use the advisory-locked reservation so concurrent uploads always
     // see each other's in-flight sizes, eliminating the TOCTOU race.
     const workspaceOwnerId = video.project.workspace.ownerId;
-    const reserveResult = await reserveStorageQuota(workspaceOwnerId, BigInt(file.size));
+    const reserveResult = await reserveStorageQuota(
+      workspaceOwnerId,
+      BigInt(file.size),
+      UPLOAD_RESERVATION_PURPOSES.IMAGE
+    );
     if ('error' in reserveResult) return reserveResult.error;
     const reservationId = reserveResult.reservationId;
 
     // Check content type
     const normalizedMime = normalizeImageMime(file.type);
     if (normalizedMime && !isAllowedImageType(normalizedMime)) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.IMAGE
+      );
       return apiErrors.badRequest(`Unsupported image format: ${file.type}`);
     }
 
@@ -153,7 +165,11 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
     const detectedMime = detectImageMime(buffer);
     if (!detectedMime) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.IMAGE
+      );
       return apiErrors.badRequest('Uploaded file content does not match an allowed image type');
     }
 
@@ -173,7 +189,11 @@ export async function POST(request: NextRequest) {
         })
       );
     } catch (uploadError) {
-      await releaseStorageReservation(reservationId);
+      await releaseStorageReservation(
+        reservationId,
+        workspaceOwnerId,
+        UPLOAD_RESERVATION_PURPOSES.IMAGE
+      );
       throw uploadError;
     }
 

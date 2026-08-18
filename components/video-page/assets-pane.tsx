@@ -509,7 +509,10 @@ export const AssetsPane = memo(function AssetsPane({
         const initRes = await fetch(`/api/videos/${videoId}/assets/bunny-init`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: bunnyTitle.trim() || file.name.replace(/\.[^/.]+$/, '') }),
+          body: JSON.stringify({
+            title: bunnyTitle.trim() || file.name.replace(/\.[^/.]+$/, ''),
+            sizeBytes: file.size.toString(),
+          }),
         });
         const initPayload = (await initRes.json().catch(() => null)) as {
           data?: {

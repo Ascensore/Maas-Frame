@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useState } from 'react';
+import { useState, type ChangeEvent } from 'react';
 import { act, renderHook, type RenderHookResult } from '@testing-library/react';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import type { Comment, CommentTag, VideoData } from '@/components/video-page/types';
@@ -291,6 +291,72 @@ describe('useCommentActions adding a comment', () => {
     expect(commentIds(harness)).toEqual(['c1', 'c2']);
     expect(toastError).toHaveBeenCalledWith('Failed to add comment');
     expect(harness.result.current.actions.isSubmittingComment).toBe(false);
+  });
+
+  // The attachment goes up before the comment does, so a full account fails on
+  // the image and never reaches the comment at all. Reporting that as a comment
+  // that would not post told the uploader to try again, which is the one thing
+  // that cannot work.
+  it('reads out the storage error the attachment upload came back with', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/upload/image') {
+        return Promise.resolve({
+          ok: false,
+          status: 507,
+          json: () =>
+            Promise.resolve({
+              error: 'Storage limit exceeded. Please delete some files to free up space.',
+            }),
+        });
+      }
+      return Promise.resolve(ok({ data: serverComment }));
+    });
+    const harness = renderActions();
+
+    // A one-pixel PNG header is enough: the client only sniffs the magic bytes.
+    const png = new File(
+      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+      'n.png',
+      {
+        type: 'image/png',
+      }
+    );
+    await act(async () => {
+      await harness.result.current.actions.handleImageSelect({
+        target: { files: [png] },
+      } as unknown as ChangeEvent<HTMLInputElement>);
+    });
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(toastError).toHaveBeenCalledWith(
+      'Storage limit exceeded. Please delete some files to free up space.'
+    );
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+  });
+
+  it('reads out the storage error the comment itself came back with', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 507,
+      json: () =>
+        Promise.resolve({
+          error: 'Storage limit exceeded. Please delete some files to free up space.',
+        }),
+    });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(toastError).toHaveBeenCalledWith(
+      'Storage limit exceeded. Please delete some files to free up space.'
+    );
   });
 
   it('rolls the comment back out of the list when the request throws', async () => {

@@ -15,6 +15,7 @@ import { db } from '@/lib/db';
 import { getCachedUserBunnyStorage } from '@/lib/admin-stats';
 import {
   PLAN_STORAGE_LIMIT_BYTES,
+  UPLOAD_RESERVATION_PURPOSES,
   enforceStorageQuota,
   getUserStorageInfo,
   getUserTotalStorageBytes,
@@ -83,7 +84,11 @@ describe('the trial ceiling', () => {
     const user = await createUser();
     await createUploadReservation({ billedUserId: user.id, sizeBytes: BigInt(2) * GIB });
 
-    const result = await reserveStorageQuota(user.id, BigInt(2) * GIB);
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(2) * GIB,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('error' in result).toBe(true);
     expect((result as { error: Response }).error.status).toBe(507);
@@ -92,7 +97,11 @@ describe('the trial ceiling', () => {
   it('still lets a trial account upload inside its own ceiling', async () => {
     const user = await createUser();
 
-    const result = await reserveStorageQuota(user.id, BigInt(1) * GIB);
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(1) * GIB,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('reservationId' in result).toBe(true);
   });
@@ -277,7 +286,11 @@ describe('reserveStorageQuota', () => {
   it('writes a reservation row billed to the user with the requested size', async () => {
     const user = await createSubscribedUser();
 
-    const result = await reserveStorageQuota(user.id, BigInt(4096));
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(4096),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('reservationId' in result).toBe(true);
     const reservation = await db.uploadReservation.findFirstOrThrow();
@@ -291,7 +304,11 @@ describe('reserveStorageQuota', () => {
     vi.stubEnv('OPENFRAME_ENABLE_STRIPE', 'false');
     const user = await createSubscribedUser();
 
-    const result = await reserveStorageQuota(user.id, BigInt(4096));
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(4096),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect(result).toEqual({ reservationId: null });
     expect(await db.uploadReservation.count()).toBe(0);
@@ -304,7 +321,11 @@ describe('reserveStorageQuota', () => {
       sizeBytes: PLAN_STORAGE_LIMIT_BYTES - BigInt(1024),
     });
 
-    const result = await reserveStorageQuota(user.id, BigInt(2048));
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(2048),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('error' in result).toBe(true);
     expect('error' in result && result.error.status).toBe(507);
@@ -321,7 +342,11 @@ describe('reserveStorageQuota', () => {
       sizeBytes: PLAN_STORAGE_LIMIT_BYTES - BigInt(100),
     });
 
-    const result = await reserveStorageQuota(scenario.owner.id, BigInt(200));
+    const result = await reserveStorageQuota(
+      scenario.owner.id,
+      BigInt(200),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('error' in result).toBe(true);
     expect(await db.uploadReservation.count()).toBe(0);
@@ -331,7 +356,11 @@ describe('reserveStorageQuota', () => {
     const user = await createSubscribedUser();
     bunnyStorage({ [user.id]: Number(PLAN_STORAGE_LIMIT_BYTES - BigInt(1024)) });
 
-    const result = await reserveStorageQuota(user.id, BigInt(2048));
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(2048),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('error' in result).toBe(true);
     expect(await db.uploadReservation.count()).toBe(0);
@@ -345,7 +374,11 @@ describe('reserveStorageQuota', () => {
       expiresInMs: -60_000,
     });
 
-    const result = await reserveStorageQuota(user.id, BigInt(2048));
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(2048),
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('reservationId' in result).toBe(true);
   });
@@ -358,7 +391,11 @@ describe('reserveStorageQuota', () => {
       sizeBytes: PLAN_STORAGE_LIMIT_BYTES - BigInt(1024),
     });
 
-    const result = await reserveStorageQuota(light.id, BigInt(10) * GIB);
+    const result = await reserveStorageQuota(
+      light.id,
+      BigInt(10) * GIB,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
 
     expect('reservationId' in result).toBe(true);
   });
@@ -375,8 +412,8 @@ describe('reserveStorageQuota', () => {
     expect(headroom(used)).toBe(BigInt(30) * GIB);
 
     const [first, second] = await Promise.all([
-      reserveStorageQuota(user.id, request),
-      reserveStorageQuota(user.id, request),
+      reserveStorageQuota(user.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
+      reserveStorageQuota(user.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
     ]);
 
     const granted = [first, second].filter((result) => 'reservationId' in result);
@@ -401,8 +438,8 @@ describe('reserveStorageQuota', () => {
     const request = BigInt(20) * GIB;
 
     const results = await Promise.all([
-      reserveStorageQuota(user.id, request),
-      reserveStorageQuota(user.id, request),
+      reserveStorageQuota(user.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
+      reserveStorageQuota(user.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
     ]);
 
     expect(results.every((result) => 'reservationId' in result)).toBe(true);
@@ -417,7 +454,9 @@ describe('reserveStorageQuota', () => {
     const request = BigInt(20) * GIB;
 
     const results = await Promise.all(
-      Array.from({ length: 5 }, () => reserveStorageQuota(user.id, request))
+      Array.from({ length: 5 }, () =>
+        reserveStorageQuota(user.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO)
+      )
     );
 
     const granted = results.filter((result) => 'reservationId' in result);
@@ -438,8 +477,8 @@ describe('reserveStorageQuota', () => {
     const request = BigInt(150) * GIB;
 
     const results = await Promise.all([
-      reserveStorageQuota(first.id, request),
-      reserveStorageQuota(second.id, request),
+      reserveStorageQuota(first.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
+      reserveStorageQuota(second.id, request, UPLOAD_RESERVATION_PURPOSES.R2_VIDEO),
     ]);
 
     expect(results.every((result) => 'reservationId' in result)).toBe(true);
@@ -450,7 +489,11 @@ describe('reserveStorageQuota', () => {
 describe('releaseStorageReservation', () => {
   it('deletes the reservation and frees the headroom', async () => {
     const user = await createSubscribedUser();
-    const result = await reserveStorageQuota(user.id, BigInt(10) * GIB);
+    const result = await reserveStorageQuota(
+      user.id,
+      BigInt(10) * GIB,
+      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
+    );
     const reservationId = 'reservationId' in result ? result.reservationId : null;
     expect(reservationId).toBeTruthy();
     expect(await getUserTotalStorageBytes(user.id)).toBe(BigInt(10) * GIB);
@@ -483,6 +526,25 @@ describe('releaseStorageReservation', () => {
     await releaseStorageReservation(reservation.id, attacker.id);
 
     expect(await db.uploadReservation.count()).toBe(1);
+  });
+
+  // The same scoping in the other direction. Every hold an account owns is
+  // billed to the same user, so `billedUserId` alone does not separate them: an
+  // image being attached would release a Bunny upload that was still in flight
+  // if it could name it, and the ids are readable by the client.
+  it('refuses to delete a reservation opened for a different flow', async () => {
+    const owner = await createSubscribedUser();
+    const reservation = await createUploadReservation({
+      billedUserId: owner.id,
+      sizeBytes: BigInt(4096),
+      purpose: UPLOAD_RESERVATION_PURPOSES.BUNNY,
+    });
+
+    await releaseStorageReservation(reservation.id, owner.id, UPLOAD_RESERVATION_PURPOSES.IMAGE);
+    expect(await db.uploadReservation.count()).toBe(1);
+
+    await releaseStorageReservation(reservation.id, owner.id, UPLOAD_RESERVATION_PURPOSES.BUNNY);
+    expect(await db.uploadReservation.count()).toBe(0);
   });
 });
 

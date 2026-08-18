@@ -16,6 +16,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
+import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { deleteR2Object, deleteVideoObject, headVideoObject, readVideoObjectBytes } from '@/lib/r2';
 import { createR2UploadToken } from '@/lib/r2-upload-token';
 import { createR2UploadSession } from '@/lib/r2-upload-session';
@@ -515,6 +516,7 @@ describe('finalizeR2VideoUpload success', () => {
       data: {
         billedUserId: scenario.owner.id,
         sizeBytes: BigInt(4096),
+        purpose: UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
         expiresAt: new Date(Date.now() + 30 * 60 * 1000),
       },
     });

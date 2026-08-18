@@ -2,21 +2,50 @@ import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { rateLimit } from '@/lib/rate-limit';
-import { createBunnyUploadToken, verifyBunnyUploadToken } from '@/lib/bunny-upload-token';
+import {
+  createBunnyUploadToken,
+  readBunnyUploadGrant,
+  type BunnyUploadGrant,
+} from '@/lib/bunny-upload-token';
 import { cleanupBunnyStreamVideos } from '@/lib/bunny-stream-cleanup';
 import {
   createGuestUploadToken,
   deriveGuestUploadContext,
   enforceGuestUploadQuota,
-  verifyGuestUploadToken,
+  readGuestUploadGrant,
+  type GuestUploadGrant,
 } from '@/lib/guest-upload-token';
-import { isBunnyUploadsEnabled } from '@/lib/feature-flags';
+import { getMaxVideoUploadBytes, isBunnyUploadsEnabled } from '@/lib/feature-flags';
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { getVideoAssetAccessContext, SAFE_BUNNY_VIDEO_ID } from '@/lib/video-assets';
 import { logError } from '@/lib/logger';
-import { enforceStorageQuota } from '@/lib/storage-quota';
+import {
+  enforceStorageQuota,
+  releaseStorageReservation,
+  reserveStorageQuota,
+  UPLOAD_RESERVATION_PURPOSES,
+} from '@/lib/storage-quota';
+import { parseDeclaredUploadSize } from '@/lib/upload-size';
 
 type RouteParams = { params: Promise<{ videoId: string }> };
+
+// Matches the project video path: long enough to outlive a slow upload and
+// Bunny's own reporting delay.
+const BUNNY_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * A guest's hold lapses sooner than a member's.
+ *
+ * A guest is whoever opened the share link, and the hold is written against the
+ * workspace owner's quota rather than their own. Declaring a size and then
+ * walking away costs the guest nothing and costs the owner their whole remaining
+ * allowance, which on a trial is the entire account. Half an hour is the same
+ * window the R2 attachment paths already accept, and it bounds what a guest who
+ * never uploads can take away. A guest whose upload outruns it loses only the
+ * concurrency guard for the tail of the transfer; the bytes are still recorded
+ * from the signed size when the asset is created.
+ */
+const GUEST_BUNNY_RESERVATION_TTL_MS = 30 * 60 * 1000;
 
 // POST /api/videos/[videoId]/assets/bunny-init
 export async function POST(request: NextRequest, { params }: RouteParams) {
@@ -37,8 +66,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('Direct uploads are disabled by this host');
     }
 
+    // See the project video route for why the client's declared size is asked for
+    // and what it is worth: it buys an honest refusal before the upload starts,
+    // and a reservation that concurrent uploads can see.
+    const declaredSize = parseDeclaredUploadSize(body?.sizeBytes, getMaxVideoUploadBytes());
+    if ('error' in declaredSize) {
+      return apiErrors.badRequest(declaredSize.error);
+    }
+
     const billedUserId = context.video.project.workspace.ownerId;
-    const quotaError = await enforceStorageQuota(billedUserId, BigInt(0));
+    const quotaError = await enforceStorageQuota(billedUserId, declaredSize.sizeBytes);
     if (quotaError) return quotaError;
 
     const shareSession = getShareSessionFromRequest(request, context.video.id);
@@ -52,10 +89,24 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       if (quotaError) return quotaError;
     }
 
+    const reserveResult = await reserveStorageQuota(
+      billedUserId,
+      declaredSize.sizeBytes,
+      UPLOAD_RESERVATION_PURPOSES.BUNNY,
+      context.viewerUserId ? BUNNY_RESERVATION_TTL_MS : GUEST_BUNNY_RESERVATION_TTL_MS
+    );
+    if ('error' in reserveResult) return reserveResult.error;
+    const { reservationId } = reserveResult;
+
     const apiKey = process.env.BUNNY_STREAM_API_KEY;
     const libraryId =
       process.env.BUNNY_STREAM_LIBRARY_ID || process.env.NEXT_PUBLIC_BUNNY_STREAM_LIBRARY_ID;
     if (!apiKey || !libraryId) {
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       return apiErrors.internalError('Bunny Stream is not configured correctly');
     }
 
@@ -70,6 +121,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     if (!bunnyRes.ok) {
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       logError('Failed to create Bunny Stream video asset', await bunnyRes.text());
       return apiErrors.internalError('Failed to initialize Bunny upload');
     }
@@ -77,6 +133,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const bunnyVideo = await bunnyRes.json();
     const bunnyVideoId = typeof bunnyVideo?.guid === 'string' ? bunnyVideo.guid.trim() : '';
     if (!bunnyVideoId || !SAFE_BUNNY_VIDEO_ID.test(bunnyVideoId)) {
+      await releaseStorageReservation(
+        reservationId,
+        billedUserId,
+        UPLOAD_RESERVATION_PURPOSES.BUNNY
+      );
       return apiErrors.internalError('Upload provider did not return a valid video identifier');
     }
 
@@ -92,21 +153,36 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           userId: context.viewerUserId,
           projectId: context.video.projectId,
           videoId: bunnyVideoId,
+          reservationId,
+          declaredSizeBytes: declaredSize.sizeBytes,
         },
         3600
       );
     } else {
       const expectedContext = deriveGuestUploadContext(request, shareSession?.token ?? null);
       if (!expectedContext) {
+        await releaseStorageReservation(
+          reservationId,
+          billedUserId,
+          UPLOAD_RESERVATION_PURPOSES.BUNNY
+        );
         return apiErrors.forbidden('Missing trusted client IP header');
       }
 
+      // The guest grant carries the same three claims the signed-in one does,
+      // and is bound to the Bunny video as well as to ours. That binding is what
+      // makes releasing safe on the guest's say-so: presenting this token to
+      // cancel deletes the upload it stands for, so it cannot be used to drop the
+      // hold while the transfer carries on.
       uploadToken = createGuestUploadToken(
         {
           projectId: context.video.projectId,
           videoId: context.video.id,
           intent: 'bunny',
           context: expectedContext,
+          providerVideoId: bunnyVideoId,
+          reservationId,
+          declaredSizeBytes: declaredSize.sizeBytes,
         },
         3600
       );
@@ -144,15 +220,18 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('videoId and uploadToken are required');
     }
 
+    // Both grants are read rather than merely checked, because both carry the
+    // reservation this upload holds. Releasing on the caller's say-so is safe
+    // only because the id is signed next to this Bunny video id: presenting the
+    // token costs them the video, which is deleted immediately below.
+    let grant: BunnyUploadGrant | GuestUploadGrant | null = null;
+
     if (context.viewerUserId) {
-      const isValidUploadToken = verifyBunnyUploadToken(uploadToken, {
+      grant = readBunnyUploadGrant(uploadToken, {
         userId: context.viewerUserId,
         projectId: context.video.projectId,
         videoId: bunnyVideoId,
       });
-      if (!isValidUploadToken) {
-        return apiErrors.forbidden('Invalid Bunny upload token');
-      }
     } else {
       const shareSession = getShareSessionFromRequest(request, context.video.id);
       const expectedContext = deriveGuestUploadContext(request, shareSession?.token ?? null);
@@ -160,16 +239,27 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         return apiErrors.forbidden('Missing trusted client IP header');
       }
 
-      const isValidUploadToken = verifyGuestUploadToken(uploadToken, {
-        projectId: context.video.projectId,
-        videoId: context.video.id,
-        intent: 'bunny',
-        context: expectedContext,
-      });
-      if (!isValidUploadToken) {
-        return apiErrors.forbidden('Invalid Bunny upload token');
-      }
+      grant = readGuestUploadGrant(
+        uploadToken,
+        {
+          projectId: context.video.projectId,
+          videoId: context.video.id,
+          intent: 'bunny',
+          context: expectedContext,
+        },
+        bunnyVideoId
+      );
     }
+
+    if (!grant) {
+      return apiErrors.forbidden('Invalid Bunny upload token');
+    }
+
+    await releaseStorageReservation(
+      grant.reservationId,
+      context.video.project.workspace.ownerId,
+      UPLOAD_RESERVATION_PURPOSES.BUNNY
+    );
 
     await cleanupBunnyStreamVideos([{ providerId: 'bunny', videoId: bunnyVideoId }]);
     const response = successResponse({ message: 'Pending upload cleaned up' });
