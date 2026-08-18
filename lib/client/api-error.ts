@@ -42,6 +42,14 @@ export function apiRequestError(
   return new ApiRequestError(payload?.error || fallback, payload?.code);
 }
 
+/**
+ * Whether this failure is the trial ceiling, for callers that draw the way out
+ * themselves rather than handing it to `toastApiError`.
+ */
+export function isTrialStorageError(source: unknown): boolean {
+  return codeOf(source) === API_ERROR_CODES.TRIAL_STORAGE_LIMIT_EXCEEDED;
+}
+
 function codeOf(source: unknown): string | null {
   if (source instanceof ApiRequestError) return source.code;
   if (source && typeof source === 'object' && 'code' in source) {
@@ -82,13 +90,15 @@ export function toastApiError(
   const message = messageOf(source, fallback);
   const text = options.prefix ? `${options.prefix}: ${message}` : message;
 
-  if (codeOf(source) === API_ERROR_CODES.TRIAL_STORAGE_LIMIT_EXCEEDED) {
+  if (isTrialStorageError(source)) {
     toast.error(text, {
       // Longer than a plain error: this one is asking for a decision rather than
       // just reporting, and it disappears under the cursor at the usual timing.
       duration: 12000,
       action: {
-        label: 'See plans',
+        // The message ends in "Upgrade to get 200 GB", so the button is the verb
+        // that sentence just used rather than a second name for the same thing.
+        label: 'Upgrade',
         onClick: () => {
           window.location.href = '/settings';
         },
