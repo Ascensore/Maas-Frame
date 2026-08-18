@@ -13,6 +13,9 @@ import {
   getCohortComparison,
   getScoreboard,
 } from '@/lib/analytics/scoreboard';
+import { GET as growthRoute } from '@/app/api/admin/growth/route';
+import { apiRequest, callRoute, readData } from '../helpers/request';
+import { signedInAs, signedOut } from '../helpers/session';
 import { createUser } from '../factories';
 
 function daysAgo(days: number): Date {
@@ -269,5 +272,78 @@ describe('getCohortComparison', () => {
 
     expect(comparison?.rows.map((row) => row.cohort)).toEqual(['CARD_FIRST', 'CARDLESS']);
     expect(comparison?.rows.every((row) => row.signups === 0)).toBe(true);
+  });
+});
+
+// The token path exists so a scheduled digest can read this endpoint with no
+// browser. It is the only way into admin data that carries no session, so the
+// cases that matter are the ones where it must not open: unset, wrong, and a
+// caller who is signed in but not an admin.
+describe('GET /api/admin/growth', () => {
+  const TOKEN = 'wq7Fr2Tn8Vb4Kd1Mw6Hs9Lp3Cf5Gj0Ye';
+
+  function growthRequest(headers?: Record<string, string>) {
+    return callRoute(growthRoute, apiRequest('/api/admin/growth', { headers }));
+  }
+
+  it('refuses an anonymous caller when no token is configured', async () => {
+    signedOut();
+    vi.stubEnv('OPENFRAME_ADMIN_API_TOKEN', '');
+
+    // The header a caller would send if they had guessed the scheme but there is
+    // nothing to guess: an unset token must never match.
+    const response = await growthRequest({ authorization: `Bearer ${TOKEN}` });
+    expect(response.status).toBe(401);
+  });
+
+  it('refuses a signed-in caller who is not an admin', async () => {
+    const user = await createUser();
+    signedInAs({ id: user.id, email: user.email, isAdmin: false });
+
+    const response = await growthRequest();
+    expect(response.status).toBe(403);
+  });
+
+  it('refuses a bearer token that is not the configured one', async () => {
+    signedOut();
+    vi.stubEnv('OPENFRAME_ADMIN_API_TOKEN', TOKEN);
+
+    const response = await growthRequest({
+      authorization: 'Bearer wq7Fr2Tn8Vb4Kd1Mw6Hs9Lp3Cf5Gj0Yf',
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('serves the scoreboard to a caller carrying the configured token', async () => {
+    signedOut();
+    vi.stubEnv('OPENFRAME_ADMIN_API_TOKEN', TOKEN);
+
+    const paying = await createUser({ subscriptionStatus: 'ACTIVE' });
+    await seedEvent({ name: 'SIGNUP_COMPLETED', occurredAt: daysAgo(1), userId: paying.id });
+
+    const response = await growthRequest({ authorization: `Bearer ${TOKEN}` });
+    expect(response.status).toBe(200);
+
+    const scoreboard = await readData(response);
+    expect(scoreboard.paidAccounts.map((row: { userId: string }) => row.userId)).toContain(
+      paying.id
+    );
+    // Rates ride along with each week; the digest reads them rather than
+    // recomputing the denominators.
+    expect(scoreboard.weeks.at(-1)).toHaveProperty('rates');
+  });
+
+  it('still refuses the token when analytics are off, without saying so', async () => {
+    signedOut();
+    vi.stubEnv('OPENFRAME_ENABLE_ANALYTICS', 'false');
+    vi.stubEnv('OPENFRAME_ADMIN_API_TOKEN', TOKEN);
+
+    // Authorized, but the flag is off: a 400, not a scoreboard.
+    const authorized = await growthRequest({ authorization: `Bearer ${TOKEN}` });
+    expect(authorized.status).toBe(400);
+
+    // Unauthorized callers must not learn the flag's state from the status code.
+    const anonymous = await growthRequest();
+    expect(anonymous.status).toBe(401);
   });
 });
