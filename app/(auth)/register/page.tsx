@@ -1,6 +1,6 @@
 import { after } from 'next/server';
 import { readPageVisitor, recordVisitorEvent } from '@/lib/analytics/visitor';
-import { isInviteCodeRequired } from '@/lib/feature-flags';
+import { isInviteCodeRequired, isStripeFeatureEnabled } from '@/lib/feature-flags';
 import { getInvitationPreviewByToken } from '@/lib/invitations';
 import { isInvitationPreviewAllowed } from '@/lib/invitation-preview-limit';
 import RegisterPageClient from './register-page-client';
@@ -40,6 +40,7 @@ export default async function RegisterPage({ searchParams }: RegisterPageProps) 
   return (
     <RegisterPageClient
       requireInviteCode={isInviteCodeRequired()}
+      trialOnSignup={isStripeFeatureEnabled()}
       googleEnabled={googleEnabled}
       githubEnabled={githubEnabled}
       invitation={invitation}

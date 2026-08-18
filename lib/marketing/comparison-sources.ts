@@ -552,7 +552,7 @@ export const competitorProfiles: Record<string, CompetitorProfile> = {
 export const openFrameProfile = {
   name: 'OpenFrame',
   tagline: 'Fair-source video review and approval with hosted and self-hosted options.',
-  pricingSummary: 'Self-hosted free · Hosted $10/mo after 7-day trial',
+  pricingSummary: 'Self-hosted free · Hosted $10/mo after a 7-day no-card trial',
   trial: '7-day free trial on hosted plan',
   strengths: [
     'Timestamped text, voice, image, and drawn annotations',
