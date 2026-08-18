@@ -90,6 +90,10 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navbarRef = useRef<HTMLElement | null>(null);
   const hostedCtaHref = isLoggedIn ? '/dashboard' : '/register';
+  // Same button, two audiences. Once you are signed in it goes to the dashboard,
+  // and offering a trial to someone who is already using the product reads as a
+  // mistake rather than as an offer.
+  const hostedCtaLabel = isLoggedIn ? 'Open dashboard' : 'Start 7-day free trial, no card required';
 
   useEffect(() => {
     const cleanupHandlers: Array<() => void> = [];
@@ -263,12 +267,12 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 href={hostedCtaHref}
                 className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02]"
               >
-                Start free trial
+                {hostedCtaLabel}
                 <MoveRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
               </CtaLink>
 
               <p className="text-xs text-muted-foreground">
-                7-day free trial · Flat $10/mo — no per-seat fees · No client accounts
+                No credit card · Flat $10/mo after, no per-seat fees · No client accounts
               </p>
 
               <a
@@ -677,7 +681,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                   <span className="text-[#06b6d4]">/ month</span>
                 </div>
                 <p className="mb-6 text-sm text-muted-foreground">
-                  Starts with a 7-day free trial. Cancel anytime.
+                  Starts with a 7-day free trial. No credit card. Cancel anytime.
                 </p>
 
                 <ul className="mb-8 flex-1 space-y-4 text-sm text-foreground/80">
@@ -722,7 +726,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                   href={hostedCtaHref}
                   className="mt-auto group relative isolate inline-flex h-12 w-full items-center justify-center overflow-hidden bg-[#06b6d4] font-medium text-black transition-colors hover:bg-[#06b6d4]/90 text-sm"
                 >
-                  Start free trial
+                  {isLoggedIn ? 'Open dashboard' : 'Start free trial'}
                 </CtaLink>
               </div>
 
@@ -855,7 +859,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                   },
                   {
                     q: 'Is there a free trial?',
-                    a: 'Yes. Hosted Cloud starts with a 7-day free trial. After that it is a flat $10/mo — no per-seat or per-client fees.',
+                    a: 'Yes. Hosted Cloud starts with a 7-day free trial and never asks for a card to begin it. After that it is a flat $10/mo, with no per-seat or per-client fees.',
                   },
                   {
                     q: 'How is this different from sending a Google Drive link?',
@@ -906,7 +910,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
               href={hostedCtaHref}
               className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02] md:min-w-[240px]"
             >
-              Start free trial
+              {hostedCtaLabel}
             </CtaLink>
           </div>
         </section>

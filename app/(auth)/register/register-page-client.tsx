@@ -21,6 +21,11 @@ export interface RegisterInvitation {
 
 interface RegisterPageClientProps {
   requireInviteCode: boolean;
+  /**
+   * Billing is on, so this account starts a free trial. False on a self-hosted
+   * instance, where there is nothing to trial and the promise would be a lie.
+   */
+  trialOnSignup?: boolean;
   googleEnabled: boolean;
   githubEnabled: boolean;
   invitation?: RegisterInvitation | null;
@@ -30,6 +35,7 @@ interface RegisterPageClientProps {
 
 export default function RegisterPageClient({
   requireInviteCode,
+  trialOnSignup = false,
   googleEnabled,
   githubEnabled,
   invitation = null,
@@ -156,6 +162,15 @@ export default function RegisterPageClient({
               Create Account
             </CardTitle>
             <CardDescription>Join OpenFrame to collaborate on video projects</CardDescription>
+            {/* The landing page CTA promises a trial and no card. Say it again here,
+                where the promise is actually kept, rather than making people take the
+                previous page's word for it. Invitees are joining someone else's
+                workspace, so the trial is not what brought them. */}
+            {trialOnSignup && !isInvitationFlow && (
+              <CardDescription>
+                Your 7-day free trial starts as soon as you create the account. No credit card.
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent>
             {/* OAuth Buttons */}

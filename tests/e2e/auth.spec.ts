@@ -63,13 +63,15 @@ test('a new account can be registered with the invite code and then signed in', 
   await page.getByLabel('Password').fill(E2E_PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
 
-  // /settings, not /onboarding, and that is the real product behaviour rather
-  // than a test artefact: POST /api/auth/register does not set `trialEndsAt`, so
-  // with OPENFRAME_ENABLE_STRIPE on a brand new account has no billing access,
-  // and requireBillingAccessOrRedirect() on /dashboard sends it to billing
-  // before it ever sees the onboarding wizard.
-  await expect(page).toHaveURL(/\/settings$/);
-  await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible();
+  // /onboarding rather than /settings, which is the whole point of the cardless
+  // trial: registration grants the trial (here at signup, because SMTP is unset
+  // and there is no verification step to hang it on), so
+  // requireBillingAccessOrRedirect() on /dashboard lets the account through to
+  // the wizard instead of parking it on billing.
+  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(
+    page.getByRole('heading', { name: 'Welcome to OpenFrame, Freshly!', level: 2 })
+  ).toBeVisible();
 
   // The Seed fixture only tracks rows it created itself, so remove this one by
   // hand rather than leaving it behind for the next run.
