@@ -6,7 +6,7 @@ import { PrismaAdapter } from '@auth/prisma-adapter';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { ProjectMemberRole, WorkspaceMemberRole } from '@prisma/client';
-import { hasBillingAccess } from '@/lib/billing';
+import { hasBillingAccess, startCardlessTrial } from '@/lib/billing';
 import { isInviteCodeRequired } from '@/lib/feature-flags';
 import { isEmailVerificationEnabled } from '@/lib/email-verification';
 
@@ -163,6 +163,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         userId: user.id,
         visitor: await readVisitorContextFromHeaders(),
       });
+
+      // And the trial with it, for the same reason: the two places that grant it
+      // are the credentials signup route and the verification link, and a social
+      // signup goes through neither. Without this a Google account reaches a
+      // locked product and a checkout that no longer offers a trial, which is the
+      // opposite of what the signup page promised it. The address is already
+      // proven here: the signIn callback above turns away an OAuth profile that
+      // reports its email as unverified.
+      await startCardlessTrial(user.id);
     },
   },
 });
