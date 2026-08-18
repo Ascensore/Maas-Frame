@@ -27,6 +27,7 @@ import {
   type VideoSource,
 } from '@/lib/video-providers';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { isTrialStorageError } from '@/lib/client/api-error';
 import {
   cleanupPendingProjectUpload,
   getDefaultTitleFromFile,
@@ -68,7 +69,20 @@ export default function NewVideoPageClient({
   const fileDragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [submitError, setSubmitError] = useState('');
+  const [submitError, setSubmitErrorText] = useState('');
+  const [submitErrorIsTrialLimit, setSubmitErrorIsTrialLimit] = useState(false);
+
+  /**
+   * The message and whether it is the trial ceiling, set together.
+   *
+   * The second half is what draws the upgrade link, so it must not outlive the
+   * error it belongs to. Every caller goes through here and hands over the
+   * failure it caught rather than keeping a flag of its own.
+   */
+  const setSubmitError = useCallback((message: string, source?: unknown) => {
+    setSubmitErrorText(message);
+    setSubmitErrorIsTrialLimit(Boolean(message) && isTrialStorageError(source));
+  }, []);
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -226,7 +240,7 @@ export default function NewVideoPageClient({
         }));
       }
     },
-    [formData.title]
+    [formData.title, setSubmitError]
   );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -362,7 +376,7 @@ export default function NewVideoPageClient({
         activeTusUploadRef.current = null;
         failCount += 1;
         const message = error instanceof Error ? error.message : 'Upload failed';
-        setSubmitError(`${file.name}: ${message}`);
+        setSubmitError(`${file.name}: ${message}`, error);
         setUploadStatus('');
       }
     }
@@ -420,7 +434,7 @@ export default function NewVideoPageClient({
 
         if (!response.ok) {
           const data = await response.json();
-          setSubmitError(data.error || 'Failed to add video');
+          setSubmitError(data.error || 'Failed to add video', data);
           return;
         }
 
@@ -447,7 +461,10 @@ export default function NewVideoPageClient({
       await uploadMultipleFiles(selectedFiles);
     } catch (error: unknown) {
       console.error('Failed to add video:', error);
-      setSubmitError(error instanceof Error ? error.message : 'An unexpected error occurred');
+      setSubmitError(
+        error instanceof Error ? error.message : 'An unexpected error occurred',
+        error
+      );
       // Cleared on the failure path too. Leaving it set showed the error above a stale
       // "Initializing upload...", so the form claimed to be doing both at once.
       setUploadStatus('');
@@ -705,9 +722,19 @@ export default function NewVideoPageClient({
             ) : null}
 
             {submitError && (
-              <p className="text-sm text-destructive flex items-center gap-1">
-                <AlertCircle className="h-4 w-4" />
-                {submitError}
+              <p className="text-sm text-destructive flex items-start gap-1">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  {submitError}
+                  {submitErrorIsTrialLimit && (
+                    <Link
+                      href="/settings"
+                      className="ml-1 font-medium underline underline-offset-2"
+                    >
+                      Upgrade
+                    </Link>
+                  )}
+                </span>
               </p>
             )}
 
