@@ -185,6 +185,48 @@ describe('isPaidTier', () => {
     ).toBe(false);
   });
 
+  // A checkout whose first charge never went through. Stripe hands back a
+  // subscription carrying a period end a month out, and reading that as payment
+  // would have given a free account the full 200 GB and unlimited projects.
+  it('does not count an incomplete subscription as paid, period end or not', () => {
+    expect(
+      isPaidTier(
+        {
+          subscriptionStatus: BillingSubscriptionStatus.INCOMPLETE,
+          stripeCurrentPeriodEnd: new Date(NOW.getTime() + 30 * DAY_MS),
+        },
+        NOW
+      )
+    ).toBe(false);
+  });
+
+  it('does not count an expired incomplete subscription as paid', () => {
+    expect(
+      isPaidTier(
+        {
+          subscriptionStatus: BillingSubscriptionStatus.INCOMPLETE_EXPIRED,
+          stripeCurrentPeriodEnd: new Date(NOW.getTime() + 30 * DAY_MS),
+        },
+        NOW
+      )
+    ).toBe(false);
+  });
+
+  // A card that failed on renewal is a customer, not a free account: the period
+  // it is inside was paid for. Kept as a test because the fix above is one
+  // `Set.has` away from catching this case too.
+  it('still counts a past due subscription inside its paid period as paid', () => {
+    expect(
+      isPaidTier(
+        {
+          subscriptionStatus: BillingSubscriptionStatus.PAST_DUE,
+          stripeCurrentPeriodEnd: new Date(NOW.getTime() + DAY_MS),
+        },
+        NOW
+      )
+    ).toBe(true);
+  });
+
   it('does not count an expired paid period as paid', () => {
     expect(
       isPaidTier(

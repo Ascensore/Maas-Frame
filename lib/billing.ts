@@ -25,6 +25,16 @@ const RECOVERABLE_SUBSCRIPTION_STATUSES = new Set<BillingSubscriptionStatus>([
   BillingSubscriptionStatus.INCOMPLETE,
 ]);
 
+// Statuses that mean no payment on this subscription has ever gone through.
+// Stripe stamps a current period on an `incomplete` subscription all the same,
+// so a checkout whose first charge failed leaves `stripeCurrentPeriodEnd` a
+// month into the future with nothing paid behind it. Every other status in the
+// enum follows at least one successful charge, or has no period end at all.
+const UNPAID_SUBSCRIPTION_STATUSES = new Set<BillingSubscriptionStatus>([
+  BillingSubscriptionStatus.INCOMPLETE,
+  BillingSubscriptionStatus.INCOMPLETE_EXPIRED,
+]);
+
 export const DEFAULT_TRIAL_PERIOD_DAYS = 7;
 const STORAGE_CLEANUP_GRACE_DAYS = 15;
 
@@ -94,6 +104,14 @@ export function isPaidTier(
 
   if (hasActiveSubscription(subject.subscriptionStatus)) {
     return true;
+  }
+
+  // The period end alone is not proof of payment. Checked here and not in
+  // `hasBillingAccess`, which keeps granting access on a period end it did not
+  // question before: the cost of being wrong there is a customer locked out,
+  // while the cost of being wrong here is a free account holding 200 GB.
+  if (UNPAID_SUBSCRIPTION_STATUSES.has(subject.subscriptionStatus)) {
+    return false;
   }
 
   return Boolean(
