@@ -379,7 +379,14 @@ export async function getScoreboard(options?: { weeks?: number }): Promise<Score
       SELECT u.id AS user_id,
              u.name,
              u.email,
-             u."subscriptionStatus"::text AS status,
+             -- A cardless trial has no Stripe subscription to carry the status,
+             -- so it sits at FREE with only a date to go on. Reported as the
+             -- trial it is, and matched by the WHERE below for the same reason.
+             CASE
+               WHEN u."subscriptionStatus"::text = 'FREE' AND u."trialEndsAt" > NOW()
+                 THEN 'TRIALING'
+               ELSE u."subscriptionStatus"::text
+             END AS status,
              ua.channel,
              ua.self_reported,
              COUNT(e.id) FILTER (WHERE e.occurred_at >= NOW() - INTERVAL '7 days')::int
@@ -393,7 +400,9 @@ export async function getScoreboard(options?: { weeks?: number }): Promise<Score
         ON e.user_id = u.id
        AND e.name::text = ANY(${[...VALUE_EVENT_NAMES]}::text[])
       WHERE u."subscriptionStatus"::text IN ('ACTIVE', 'TRIALING')
-      GROUP BY u.id, u.name, u.email, u."subscriptionStatus", ua.channel, ua.self_reported
+         OR (u."subscriptionStatus"::text = 'FREE' AND u."trialEndsAt" > NOW())
+      GROUP BY u.id, u.name, u.email, u."subscriptionStatus", u."trialEndsAt", ua.channel,
+               ua.self_reported
       ORDER BY MAX(e.occurred_at) ASC NULLS FIRST
       LIMIT ${PAID_ACCOUNT_LIMIT + 1}
     `,

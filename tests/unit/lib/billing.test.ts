@@ -4,11 +4,14 @@ import { BillingSubscriptionStatus } from '@prisma/client';
 import {
   DEFAULT_TRIAL_PERIOD_DAYS,
   buildBillingAccessWhereInput,
+  buildCardlessTrialWhereInput,
+  buildEffectiveBillingStatusWhereInput,
   buildExpiredBillingWhereInput,
   getBillingAccessEndDate,
   getBillingOverview,
   getBillingStatusLabel,
   getDefaultTrialEndsAt,
+  getEffectiveBillingStatus,
   getOrCreateStripeCustomerId,
   getStorageCleanupEligibleAt,
   getStripeCheckoutState,
@@ -543,6 +546,90 @@ describe('getBillingStatusLabel', () => {
 
   it.each(ALL_STATUSES)('labels status %s', (status) => {
     expect(getBillingStatusLabel(status)).toBe(labels[status]);
+  });
+});
+
+describe('getEffectiveBillingStatus', () => {
+  const future = new Date(NOW.getTime() + DAY_MS);
+  const past = new Date(NOW.getTime() - DAY_MS);
+
+  // The bug this exists for: a cardless trial writes trialEndsAt and nothing
+  // else, so the admin panel read every live trial as a free account.
+  it('reports a cardless trial as trialing', () => {
+    expect(
+      getEffectiveBillingStatus(
+        { subscriptionStatus: BillingSubscriptionStatus.FREE, trialEndsAt: future },
+        NOW
+      )
+    ).toBe(BillingSubscriptionStatus.TRIALING);
+  });
+
+  it('reports an expired trial as free again', () => {
+    expect(
+      getEffectiveBillingStatus(
+        { subscriptionStatus: BillingSubscriptionStatus.FREE, trialEndsAt: past },
+        NOW
+      )
+    ).toBe(BillingSubscriptionStatus.FREE);
+  });
+
+  it('reports a free account with no trial as free', () => {
+    expect(
+      getEffectiveBillingStatus(
+        { subscriptionStatus: BillingSubscriptionStatus.FREE, trialEndsAt: null },
+        NOW
+      )
+    ).toBe(BillingSubscriptionStatus.FREE);
+  });
+
+  // Anything Stripe has an opinion about keeps that opinion. An abandoned
+  // checkout leaves INCOMPLETE while the trial runs on, and INCOMPLETE is the
+  // more useful half of that to show.
+  it.each(ALL_STATUSES.filter((status) => status !== BillingSubscriptionStatus.FREE))(
+    'leaves the stored status %s alone even during a running trial',
+    (status) => {
+      expect(
+        getEffectiveBillingStatus({ subscriptionStatus: status, trialEndsAt: future }, NOW)
+      ).toBe(status);
+    }
+  );
+});
+
+describe('buildCardlessTrialWhereInput', () => {
+  it('matches a free account whose trial is still running', () => {
+    expect(buildCardlessTrialWhereInput(NOW)).toEqual({
+      subscriptionStatus: BillingSubscriptionStatus.FREE,
+      trialEndsAt: { gt: NOW },
+    });
+  });
+});
+
+describe('buildEffectiveBillingStatusWhereInput', () => {
+  it('folds cardless trials into the trialing filter', () => {
+    expect(buildEffectiveBillingStatusWhereInput(BillingSubscriptionStatus.TRIALING, NOW)).toEqual({
+      OR: [
+        { subscriptionStatus: BillingSubscriptionStatus.TRIALING },
+        { subscriptionStatus: BillingSubscriptionStatus.FREE, trialEndsAt: { gt: NOW } },
+      ],
+    });
+  });
+
+  it('keeps cardless trials out of the free filter', () => {
+    expect(buildEffectiveBillingStatusWhereInput(BillingSubscriptionStatus.FREE, NOW)).toEqual({
+      subscriptionStatus: BillingSubscriptionStatus.FREE,
+      OR: [{ trialEndsAt: null }, { trialEndsAt: { lte: NOW } }],
+    });
+  });
+
+  it.each(
+    ALL_STATUSES.filter(
+      (status) =>
+        status !== BillingSubscriptionStatus.FREE && status !== BillingSubscriptionStatus.TRIALING
+    )
+  )('matches the stored column alone for %s', (status) => {
+    expect(buildEffectiveBillingStatusWhereInput(status, NOW)).toEqual({
+      subscriptionStatus: status,
+    });
   });
 });
 

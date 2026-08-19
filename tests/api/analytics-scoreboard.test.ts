@@ -162,7 +162,8 @@ describe('getScoreboard', () => {
     const busy = await createUser({ subscriptionStatus: 'ACTIVE' });
     const silent = await createUser({ subscriptionStatus: 'ACTIVE' });
     const trialing = await createUser({ subscriptionStatus: 'TRIALING' });
-    await createUser({ subscriptionStatus: 'FREE' });
+    // Free with nothing left to run, so it stays out of the table.
+    await createUser({ subscriptionStatus: 'FREE', trialEndsAt: null });
 
     await seedEvent({ name: 'VIDEO_ADDED', occurredAt: daysAgo(2), userId: busy.id });
     await seedEvent({ name: 'SHARE_LINK_CREATED', occurredAt: daysAgo(20), userId: busy.id });
@@ -184,6 +185,27 @@ describe('getScoreboard', () => {
     const busyRow = scoreboard.paidAccounts.find((row) => row.userId === busy.id);
     expect(busyRow?.valueEvents7).toBe(1);
     expect(busyRow?.valueEvents30).toBe(2);
+  });
+
+  // A cardless trial has no Stripe subscription to hold the status, so it sits at
+  // FREE with only a date behind it. Filtering on the status column alone left
+  // every trial account out of this table and out of the at-risk list with it.
+  it('includes a cardless trial and reports it as trialing', async () => {
+    const cardless = await createUser({
+      subscriptionStatus: 'FREE',
+      trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
+    const expired = await createUser({
+      subscriptionStatus: 'FREE',
+      trialEndsAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    });
+
+    const scoreboard = await getScoreboard({ weeks: 4 });
+    const ids = scoreboard.paidAccounts.map((row) => row.userId);
+
+    expect(ids).toEqual([cardless.id]);
+    expect(ids).not.toContain(expired.id);
+    expect(scoreboard.paidAccounts[0]?.status).toBe('TRIALING');
   });
 });
 
