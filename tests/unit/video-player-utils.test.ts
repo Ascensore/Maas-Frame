@@ -235,8 +235,9 @@ describe('getSpeedOptionsForProvider', () => {
   });
 
   it('marks the rates the browser plays without audio', () => {
-    expect(SILENT_ABOVE_SPEED).toBe(4);
-    expect(NATIVE_SPEED_OPTIONS.filter((speed) => speed > SILENT_ABOVE_SPEED)).toEqual([6, 8, 16]);
+    // Measured in the browser: 6x and 8x still carry audio, 16x is the only silent rate.
+    expect(SILENT_ABOVE_SPEED).toBe(8);
+    expect(NATIVE_SPEED_OPTIONS.filter((speed) => speed > SILENT_ABOVE_SPEED)).toEqual([16]);
     expect(YOUTUBE_SPEED_OPTIONS.every((speed) => speed <= SILENT_ABOVE_SPEED)).toBe(true);
   });
 
