@@ -39,6 +39,7 @@ import type {
 import { useApprovals } from '@/components/video-page/hooks/use-approvals';
 import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { getSpeedOptionsForProvider } from '@/components/video-page/hooks/video-player-utils';
 
 function formatTime(seconds: number): string {
   const totalSeconds = Math.floor(seconds);
@@ -63,8 +64,6 @@ function formatBunnyQualityLabel(
   }
   return `Level ${index + 1}`;
 }
-
-const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 export type VideoPageMode = 'dashboard' | 'watch';
 
@@ -275,6 +274,7 @@ export function VideoPageContent({
     );
   }, [video?.versions, activeVersionId]);
   const activeProviderId = activeVersion?.providerId;
+  const speedOptions = getSpeedOptionsForProvider(activeProviderId);
   const activeVersionDuration = activeVersion?.duration;
   const bunnyCdnHostname = useMemo(() => resolvePublicBunnyCdnHostname(), []);
   const embedUrl = useMemo(() => {
@@ -354,7 +354,7 @@ export function VideoPageContent({
     playerRef,
     formatTime,
     formatBunnyQualityLabel,
-    speedOptions: SPEED_OPTIONS,
+    speedOptions,
     scheduleWatchProgressSaveRef,
     setViewingAnnotation,
   });
@@ -819,7 +819,7 @@ export function VideoPageContent({
             qualityOptions={qualityOptions}
             handleQualityChange={handleQualityChange}
             playbackSpeed={playbackSpeed}
-            speedOptions={SPEED_OPTIONS}
+            speedOptions={speedOptions}
             handleSpeedChange={handleSpeedChange}
             toggleFullscreen={toggleFullscreen}
             showComments={showComments}

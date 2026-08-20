@@ -95,6 +95,23 @@ export function timeFromClientX(
   return percentage * duration;
 }
 
+// Speed ladders. YouTube is played through its iframe API, which silently
+// ignores any rate outside the list `getAvailablePlaybackRates()` returns, so
+// 2x is the ceiling there. Bunny and R2 are plain <video> elements, where the
+// ceiling is the browser's: Chrome and Firefox both clamp `playbackRate` at 16,
+// and setting more throws, so 16x is the top of the ladder.
+export const YOUTUBE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+export const NATIVE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 6, 8, 16];
+
+// Past 4x the browsers stop pitch-correcting and drop the audio track entirely.
+// The video still plays, so the fast rates are worth offering, but the picker
+// says so rather than letting a silent 8x read as a broken file.
+export const SILENT_ABOVE_SPEED = 4;
+
+export function getSpeedOptionsForProvider(providerId: string | null | undefined): number[] {
+  return providerId === 'youtube' ? YOUTUBE_SPEED_OPTIONS : NATIVE_SPEED_OPTIONS;
+}
+
 /**
  * Next or previous entry in the speed ladder, or `null` at either end. An
  * unknown current speed behaves like index -1, so stepping up lands on the
