@@ -6,13 +6,14 @@ import { getGuestIdentityFromRequest } from '@/lib/guest-identity';
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { validateShareLinkAccess } from '@/lib/share-links';
 import { canDownloadProjectMedia } from '@/lib/project-download';
+import { SAFE_IMAGE_PROXY_PATH } from '@/lib/image-upload-validation';
+
+export { SAFE_IMAGE_PROXY_PATH };
 
 const IMAGE_PROXY_PREFIX = '/api/upload/image/';
 const AUDIO_PROXY_PREFIX = '/api/upload/audio/';
 const VIDEO_PROXY_PREFIX = '/api/upload/video/';
 
-export const SAFE_IMAGE_PROXY_PATH =
-  /^\/api\/upload\/image\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 export const SAFE_AUDIO_PROXY_PATH =
   /^\/api\/upload\/audio\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 export const SAFE_VIDEO_PROXY_PATH =

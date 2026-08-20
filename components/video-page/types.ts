@@ -75,6 +75,11 @@ export interface ApprovalRequest {
   decisions: ApprovalDecision[];
 }
 
+export interface CommentImage {
+  id: string;
+  url: string;
+}
+
 export interface CommentReply {
   id: string;
   content: string | null;
@@ -82,7 +87,7 @@ export interface CommentReply {
   timestampEnd: number | null;
   voiceUrl: string | null;
   voiceDuration: number | null;
-  imageUrl: string | null;
+  images: CommentImage[];
   annotationData: string | null;
   createdAt: string;
   author: { id: string; name: string | null; image: string | null } | null;
@@ -99,7 +104,7 @@ export interface Comment {
   timestampEnd: number | null;
   voiceUrl: string | null;
   voiceDuration: number | null;
-  imageUrl: string | null;
+  images: CommentImage[];
   annotationData: string | null;
   isResolved: boolean;
   createdAt: string;
@@ -210,7 +215,7 @@ export interface VideoPageCommentsActions {
   onReplyComment: (
     parentId: string,
     voiceData?: { url: string; duration: number },
-    imageData?: { url: string }
+    imageUrls?: string[]
   ) => void;
   onSubmitReplyWithMedia: (parentId: string) => void;
   onStartEditAnnotation: () => void;

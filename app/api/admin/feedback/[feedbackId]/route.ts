@@ -105,8 +105,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
         const [commentReferenced, feedbackReferenced, feedbackAttachmentReferenced] =
           await Promise.all([
-            db.comment.findFirst({
-              where: { imageUrl: url },
+            db.commentImage.findFirst({
+              where: { url },
               select: { id: true },
             }),
             userFeedbackDelegate.findFirst({

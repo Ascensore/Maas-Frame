@@ -270,6 +270,26 @@ describe('collectVideoMediaUrls', () => {
     );
   });
 
+  // A comment can carry several screenshots; collecting only the first would
+  // leave the rest behind in R2 after the video is gone.
+  it('collects every image on a comment, not only the first', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    const version = await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: OWN_VERSION_VIDEO,
+    });
+    await createComment({
+      versionId: version.id,
+      imageUrls: [OWN_COMMENT_IMAGE, OWN_ASSET_IMAGE],
+    });
+
+    const urls = await collectVideoMediaUrls(video.id);
+
+    expect(new Set(urls)).toEqual(new Set([OWN_VERSION_VIDEO, OWN_COMMENT_IMAGE, OWN_ASSET_IMAGE]));
+  });
+
   // A youtube or bunny version's originalUrl is not an object this deployment
   // owns, and a BUNNY asset is cleaned up through the Bunny API instead.
   it('ignores versions from other providers and assets that are not R2 images', async () => {

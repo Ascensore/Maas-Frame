@@ -50,6 +50,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                       voiceUrl: true,
                       voiceDuration: true,
                       imageUrl: true,
+                      images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
                       annotationData: true,
                       parentId: true,
                       authorId: true,
@@ -75,6 +76,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                                 voiceUrl: true,
                                 voiceDuration: true,
                                 imageUrl: true,
+                                images: {
+                                  select: { id: true, url: true },
+                                  orderBy: { position: 'asc' },
+                                },
                                 annotationData: true,
                                 parentId: true,
                                 authorId: true,

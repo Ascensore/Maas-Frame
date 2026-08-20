@@ -50,7 +50,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       if (asset.provider === VideoAssetProvider.R2_IMAGE) {
         const [assetReferenceCount, commentReferenceCount] = await Promise.all([
           tx.videoAsset.count({ where: { sourceUrl: asset.sourceUrl } }),
-          tx.comment.count({ where: { imageUrl: asset.sourceUrl } }),
+          tx.commentImage.count({ where: { url: asset.sourceUrl } }),
         ]);
         shouldDeleteImageObject = assetReferenceCount === 0 && commentReferenceCount === 0;
       }
@@ -73,7 +73,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         if (asset.thumbnailUrl) {
           const [assetThumbnailCount, commentImageCount] = await Promise.all([
             tx.videoAsset.count({ where: { thumbnailUrl: asset.thumbnailUrl } }),
-            tx.comment.count({ where: { imageUrl: asset.thumbnailUrl } }),
+            tx.commentImage.count({ where: { url: asset.thumbnailUrl } }),
           ]);
           shouldDeleteVideoThumbnail = assetThumbnailCount === 0 && commentImageCount === 0;
         }

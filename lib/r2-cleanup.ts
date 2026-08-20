@@ -85,10 +85,10 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
   const [comments, assets, versions] = await Promise.all([
     db.comment.findMany({
       where: {
-        OR: [{ voiceUrl: { not: null } }, { imageUrl: { not: null } }],
+        OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
         version: { videoParentId: videoId },
       },
-      select: { voiceUrl: true, imageUrl: true },
+      select: { voiceUrl: true, images: { select: { url: true } } },
     }),
     db.videoAsset.findMany({
       where: {
@@ -105,7 +105,7 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
   const urls: string[] = [];
   comments.forEach((c) => {
     if (c.voiceUrl) urls.push(c.voiceUrl);
-    if (c.imageUrl) urls.push(c.imageUrl);
+    c.images.forEach((image) => urls.push(image.url));
   });
   assets.forEach((asset) => {
     if (asset.sourceUrl) urls.push(asset.sourceUrl);
@@ -124,10 +124,10 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
   const [comments, assets, versions] = await Promise.all([
     db.comment.findMany({
       where: {
-        OR: [{ voiceUrl: { not: null } }, { imageUrl: { not: null } }],
+        OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
         version: { video: { projectId } },
       },
-      select: { voiceUrl: true, imageUrl: true },
+      select: { voiceUrl: true, images: { select: { url: true } } },
     }),
     db.videoAsset.findMany({
       where: {
@@ -144,7 +144,7 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
   const urls: string[] = [];
   comments.forEach((c) => {
     if (c.voiceUrl) urls.push(c.voiceUrl);
-    if (c.imageUrl) urls.push(c.imageUrl);
+    c.images.forEach((image) => urls.push(image.url));
   });
   assets.forEach((asset) => {
     if (asset.sourceUrl) urls.push(asset.sourceUrl);
@@ -163,10 +163,10 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
   const [comments, assets, versions] = await Promise.all([
     db.comment.findMany({
       where: {
-        OR: [{ voiceUrl: { not: null } }, { imageUrl: { not: null } }],
+        OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
         version: { video: { project: { workspaceId } } },
       },
-      select: { voiceUrl: true, imageUrl: true },
+      select: { voiceUrl: true, images: { select: { url: true } } },
     }),
     db.videoAsset.findMany({
       where: {
@@ -183,7 +183,7 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
   const urls: string[] = [];
   comments.forEach((c) => {
     if (c.voiceUrl) urls.push(c.voiceUrl);
-    if (c.imageUrl) urls.push(c.imageUrl);
+    c.images.forEach((image) => urls.push(image.url));
   });
   assets.forEach((asset) => {
     if (asset.sourceUrl) urls.push(asset.sourceUrl);

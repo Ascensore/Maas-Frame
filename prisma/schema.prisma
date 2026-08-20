@@ -432,8 +432,10 @@ model Comment {
   voiceUrl      String?     // URL to voice recording file
   voiceDuration Float?      // Duration of voice recording in seconds
   
-  // Image attachment (optional)
+  // Image attachment (optional). `imageUrl` is the first image and stays for
+  // backwards compatibility; `images` is the full, ordered list.
   imageUrl      String?     // URL to uploaded image file
+  images        CommentImage[]
   
   // Annotation drawing data (JSON string of strokes)
   annotationData String?    @db.Text
@@ -479,6 +481,20 @@ model Comment {
   @@index([versionId, isResolved, timestamp])
   @@index([versionId, parentId, createdAt])
   @@map("comments")
+}
+
+model CommentImage {
+  id        String   @id @default(cuid())
+  url       String   @unique
+  position  Int      @default(0)
+
+  commentId String
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([commentId, position])
+  @@map("comment_images")
 }
 
 model CommentTag {

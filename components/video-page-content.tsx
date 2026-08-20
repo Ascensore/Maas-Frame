@@ -436,14 +436,14 @@ export function VideoPageContent({
     recordingTime,
     audioBlob,
     isUploadingAudio,
-    imageBlob,
-    setImageBlob,
+    imageFiles,
     commentRangeStart,
     commentRangeEnd,
     toggleCommentRangeSelection,
     clearCommentRangeSelection,
     isUploadingImage,
     imageInputRef,
+    removeImageFile,
     handleAddComment,
     handleImageSelect,
     handlePaste,
@@ -460,8 +460,7 @@ export function VideoPageContent({
     isReplyRecording,
     replyRecordingTime,
     replyAudioBlob,
-    replyImageBlob,
-    setReplyImageBlob,
+    replyImageFiles,
     replyRangeStart,
     replyRangeEnd,
     toggleReplyRangeSelection,
@@ -475,7 +474,6 @@ export function VideoPageContent({
     cancelReplyRecording,
     submitReplyWithMedia,
     editingCommentId,
-    setEditingCommentId,
     editText,
     setEditText,
     editTagId,
@@ -484,6 +482,13 @@ export function VideoPageContent({
     setEditAnnotationData,
     isEditingAnnotation,
     setIsEditingAnnotation,
+    editImageUrls,
+    editImageFiles,
+    editImageInputRef,
+    startEditingComment,
+    startEditingReply,
+    cancelEditingComment,
+    removeEditImageUrl,
     isSubmittingEdit,
     handleEditComment,
     handleDeleteComment,
@@ -853,13 +858,17 @@ export function VideoPageContent({
           currentUserId={currentUserId}
           projectOwnerId={video.project.ownerId}
           editingCommentId={editingCommentId}
-          setEditingCommentId={setEditingCommentId}
+          startEditingComment={startEditingComment}
+          startEditingReply={startEditingReply}
+          cancelEditingComment={cancelEditingComment}
           editText={editText}
           setEditText={setEditText}
           editTagId={editTagId}
           setEditTagId={setEditTagId}
-          setEditAnnotationData={setEditAnnotationData}
-          setIsEditingAnnotation={setIsEditingAnnotation}
+          editImageUrls={editImageUrls}
+          editImageFiles={editImageFiles}
+          editImageInputRef={editImageInputRef}
+          removeEditImageUrl={removeEditImageUrl}
           onStartEditAnnotation={commentsActions.onStartEditAnnotation}
           isSubmittingEdit={isSubmittingEdit}
           availableTags={availableTags}
@@ -888,9 +897,9 @@ export function VideoPageContent({
           stopReplyRecording={stopReplyRecording}
           cancelReplyRecording={cancelReplyRecording}
           replyAudioBlob={replyAudioBlob}
-          replyImageBlob={replyImageBlob}
-          setReplyImageBlob={setReplyImageBlob}
+          replyImageFiles={replyImageFiles}
           replyImageInputRef={replyImageInputRef}
+          removeImageFile={removeImageFile}
           handleImageSelect={handleImageSelect}
           handlePaste={handlePaste}
           handleDrop={handleDrop}
@@ -931,9 +940,9 @@ export function VideoPageContent({
               stopRecording={stopRecording}
               cancelRecording={cancelRecording}
               audioBlob={audioBlob}
-              imageBlob={imageBlob}
+              imageFiles={imageFiles}
               imageInputRef={imageInputRef}
-              setImageBlob={setImageBlob}
+              removeImageFile={(index) => removeImageFile(index, 'comment')}
               commentText={commentText}
               setCommentText={setCommentText}
               commentRangeStart={commentRangeStart}

@@ -11,6 +11,7 @@ import {
   GET as getCommentRoute,
   PATCH as patchCommentRoute,
 } from '@/app/api/comments/[commentId]/route';
+import { isFreshAttachment } from '@/lib/upload-freshness';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
 import {
@@ -27,6 +28,32 @@ import {
   createWorkspace,
   seedVersion,
 } from '../factories';
+
+// The real check heads the object in R2. Standing in for it lets these tests
+// drive the attachment paths; a suite that wants a stale upload overrides it.
+vi.mock('@/lib/upload-freshness', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/upload-freshness')>();
+  return {
+    ...actual,
+    isFreshAttachment: vi.fn(async () => ({ isFresh: true, sizeBytes: BigInt(1024) })),
+  };
+});
+
+const IMAGE_A = '/api/upload/image/11111111-2222-3333-4444-555555555555.png';
+const IMAGE_B = '/api/upload/image/66666666-7777-8888-9999-aaaaaaaaaaaa.png';
+const IMAGE_C = '/api/upload/image/bbbbbbbb-cccc-dddd-eeee-ffffffffffff.png';
+const IMAGE_D = '/api/upload/image/12121212-3434-5656-7878-909090909090.png';
+const IMAGE_E = '/api/upload/image/abababab-cdcd-efef-0101-232323232323.png';
+const IMAGE_F = '/api/upload/image/45454545-6767-8989-0a0a-1b1b1b1b1b1b.png';
+
+async function imageUrlsOf(commentId: string): Promise<string[]> {
+  const images = await db.commentImage.findMany({
+    where: { commentId },
+    orderBy: { position: 'asc' },
+    select: { url: true },
+  });
+  return images.map((image) => image.url);
+}
 
 const VALID_STROKE = {
   points: [
@@ -726,6 +753,264 @@ describe('POST /api/versions/[versionId]/comments', () => {
 
     expect(response.status).toBe(400);
     expect(await db.comment.count()).toBe(0);
+  });
+});
+
+// A comment used to carry a single image. Screenshots arrive in batches, so the
+// list is the contract now and the old `imageUrl` column follows its first entry.
+describe('comment image attachments', () => {
+  it('stores every image in order, points imageUrl at the first, and lists them all as assets', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), {
+        body: { content: 'three shots', timestamp: 1, imageUrls: [IMAGE_A, IMAGE_B, IMAGE_C] },
+      }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await readData<{ id: string; images: { url: string }[] }>(response);
+    expect(created.images.map((image) => image.url)).toEqual([IMAGE_A, IMAGE_B, IMAGE_C]);
+
+    const stored = await db.comment.findUniqueOrThrow({ where: { id: created.id } });
+    expect(stored.imageUrl).toBe(IMAGE_A);
+    expect(await imageUrlsOf(created.id)).toEqual([IMAGE_A, IMAGE_B, IMAGE_C]);
+
+    const assets = await db.videoAsset.findMany({
+      where: { videoId: scenario.video.id, provider: 'R2_IMAGE' },
+      select: { sourceUrl: true },
+    });
+    expect(assets.map((asset) => asset.sourceUrl).sort()).toEqual(
+      [IMAGE_A, IMAGE_B, IMAGE_C].sort()
+    );
+  });
+
+  it('still accepts the legacy single imageUrl', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), {
+        body: { content: 'one shot', timestamp: 1, imageUrl: IMAGE_A },
+      }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await readData<{ id: string }>(response);
+    expect(await imageUrlsOf(created.id)).toEqual([IMAGE_A]);
+  });
+
+  it('accepts a comment that is nothing but images', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), {
+        body: { timestamp: 1, imageUrls: [IMAGE_A] },
+      }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+  });
+
+  it('refuses more images than a comment may hold, and writes nothing', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), {
+        body: {
+          content: 'too many',
+          timestamp: 1,
+          imageUrls: [IMAGE_A, IMAGE_B, IMAGE_C, IMAGE_D, IMAGE_E, IMAGE_F],
+        },
+      }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toBe('A comment can have at most 5 images');
+    expect(await db.comment.count()).toBe(0);
+    expect(await db.commentImage.count()).toBe(0);
+  });
+
+  it('refuses the whole comment when one of the uploads has expired', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+    vi.mocked(isFreshAttachment).mockImplementation(async (url: string) => ({
+      isFresh: url !== IMAGE_B,
+      sizeBytes: BigInt(1024),
+    }));
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), {
+        body: { content: 'stale', timestamp: 1, imageUrls: [IMAGE_A, IMAGE_B] },
+      }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await db.comment.count()).toBe(0);
+    expect(await db.commentImage.count()).toBe(0);
+    vi.mocked(isFreshAttachment).mockResolvedValue({ isFresh: true, sizeBytes: BigInt(1024) });
+  });
+
+  it('replaces the list on edit: keeps one, drops one, adds one', async () => {
+    const scenario = await seedVersion();
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_A, IMAGE_B],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { content: 'reworded', imageUrls: [IMAGE_B, IMAGE_C] },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await imageUrlsOf(comment.id)).toEqual([IMAGE_B, IMAGE_C]);
+    // The legacy column follows the new first image.
+    expect((await db.comment.findUniqueOrThrow({ where: { id: comment.id } })).imageUrl).toBe(
+      IMAGE_B
+    );
+    // The image added while editing shows up in the assets pane like any other.
+    expect(await db.videoAsset.count({ where: { sourceUrl: IMAGE_C } })).toBe(1);
+    // The detached file is not deleted here: the assets pane owns its lifetime.
+    expect(await db.commentImage.count({ where: { url: IMAGE_A } })).toBe(0);
+  });
+
+  it('clears every image when the edit sends an empty list', async () => {
+    const scenario = await seedVersion();
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_A, IMAGE_B],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { content: 'text only now', imageUrls: [] },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await imageUrlsOf(comment.id)).toEqual([]);
+    expect((await db.comment.findUniqueOrThrow({ where: { id: comment.id } })).imageUrl).toBeNull();
+  });
+
+  it('leaves the images alone when the edit does not mention them', async () => {
+    const scenario = await seedVersion();
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_A],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { content: 'only the words changed' },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await imageUrlsOf(comment.id)).toEqual([IMAGE_A]);
+  });
+
+  it('returns 403 when somebody other than the author changes the images', async () => {
+    const scenario = await seedVersion();
+    const author = await createUser();
+    await addProjectMember({ projectId: scenario.project.id, userId: author.id });
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: author.id,
+      imageUrls: [IMAGE_A],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { imageUrls: [IMAGE_A, IMAGE_B] },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(403);
+    expect(await imageUrlsOf(comment.id)).toEqual([IMAGE_A]);
+  });
+
+  it('refuses to steal an image that already hangs off another comment', async () => {
+    const scenario = await seedVersion();
+    const other = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_A],
+    });
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_B],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { imageUrls: [IMAGE_B, IMAGE_A] },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await imageUrlsOf(comment.id)).toEqual([IMAGE_B]);
+    expect(await imageUrlsOf(other.id)).toEqual([IMAGE_A]);
+  });
+
+  it('refuses an edit that would carry more images than the cap', async () => {
+    const scenario = await seedVersion();
+    const comment = await createComment({
+      versionId: scenario.version.id,
+      authorId: scenario.owner.id,
+      imageUrls: [IMAGE_A],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchCommentRoute,
+      apiRequest(`/api/comments/${comment.id}`, {
+        method: 'PATCH',
+        body: { imageUrls: [IMAGE_A, IMAGE_B, IMAGE_C, IMAGE_D, IMAGE_E, IMAGE_F] },
+      }),
+      { commentId: comment.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await imageUrlsOf(comment.id)).toEqual([IMAGE_A]);
   });
 });
 

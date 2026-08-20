@@ -10,6 +10,14 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { getGuestIdentityFromRequest } from '@/lib/guest-identity';
 import { runWithConcurrency } from '@/lib/async-pool';
 import { validateAnnotationStrokes } from '@/lib/validation';
+import { parseCommentImageUrls } from '@/lib/comment-images';
+import { isFreshAttachment } from '@/lib/upload-freshness';
+import { extractImageFileNameFromProxyUrl, sanitizeAssetDisplayName } from '@/lib/video-assets';
+import {
+  reserveStorageQuota,
+  releaseStorageReservation,
+  UPLOAD_RESERVATION_PURPOSES,
+} from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 
 const CLEANUP_DELETE_CONCURRENCY = 5;
@@ -36,6 +44,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         voiceUrl: true,
         voiceDuration: true,
         imageUrl: true,
+        images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
         parentId: true,
         authorId: true,
         tagId: true,
@@ -57,6 +66,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             voiceUrl: true,
             voiceDuration: true,
             imageUrl: true,
+            images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
             parentId: true,
             authorId: true,
             tagId: true,
@@ -103,6 +113,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
 // PATCH /api/comments/[commentId]
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
+  // Carried out of the try so the catch below can scope the release to the
+  // account the hold was opened against.
+  let attachmentReservationId: string | null = null;
+  let attachmentBilledUserId: string | null = null;
   try {
     const limited = await rateLimit(request, 'mutate');
     if (limited) return limited;
@@ -115,11 +129,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     const comment = await db.comment.findUnique({
       where: { id: commentId },
       include: {
+        images: { select: { url: true }, orderBy: { position: 'asc' } },
         version: {
           include: {
             video: {
               include: {
-                project: true,
+                project: { include: { workspace: { select: { ownerId: true } } } },
               },
             },
           },
@@ -169,12 +184,67 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // Only author can edit content or tag
+    // `imageUrls` (or the legacy `imageUrl`) is the full list the comment should
+    // end up with, so anything the caller left out is detached.
+    const wantsImageUpdate = body.imageUrls !== undefined || body.imageUrl !== undefined;
+
+    // Only author can edit content, tag or attachments
     if (
-      (content !== undefined || tagId !== undefined || annotationData !== undefined) &&
+      (content !== undefined ||
+        tagId !== undefined ||
+        annotationData !== undefined ||
+        wantsImageUpdate) &&
       !canEditOwnContent
     ) {
       return apiErrors.forbidden('Only the author can edit comment content');
+    }
+
+    let desiredImageUrls: string[] = [];
+    let removedImageUrls: string[] = [];
+    let addedImages: { url: string; sizeBytes: bigint }[] = [];
+
+    if (wantsImageUpdate) {
+      const parsedImageUrls = parseCommentImageUrls(body);
+      if ('error' in parsedImageUrls) {
+        return apiErrors.badRequest(parsedImageUrls.error);
+      }
+      desiredImageUrls = parsedImageUrls.urls;
+
+      const existingUrls = comment.images.map((image) => image.url);
+      const addedUrls = desiredImageUrls.filter((url) => !existingUrls.includes(url));
+      removedImageUrls = existingUrls.filter((url) => !desiredImageUrls.includes(url));
+
+      if (addedUrls.length > 0) {
+        // A file that already hangs off another comment would trip the unique
+        // index mid-transaction, so refuse it here and answer with a 400.
+        const alreadyClaimed = await db.commentImage.findFirst({
+          where: { url: { in: addedUrls } },
+          select: { id: true },
+        });
+        if (alreadyClaimed) {
+          return apiErrors.badRequest('Image is already attached to another comment');
+        }
+
+        const checks = await Promise.all(
+          addedUrls.map(async (url) => ({ url, ...(await isFreshAttachment(url, 'image')) }))
+        );
+        if (checks.some((check) => !check.isFresh)) {
+          return apiErrors.badRequest('Image upload expired. Please upload again.');
+        }
+        addedImages = checks;
+      }
+
+      const addedBytes = addedImages.reduce((total, image) => total + image.sizeBytes, BigInt(0));
+      if (addedBytes > BigInt(0)) {
+        const reserveResult = await reserveStorageQuota(
+          project.workspace.ownerId,
+          addedBytes,
+          UPLOAD_RESERVATION_PURPOSES.ATTACHMENT
+        );
+        if ('error' in reserveResult) return reserveResult.error;
+        attachmentReservationId = reserveResult.reservationId;
+        attachmentBilledUserId = project.workspace.ownerId;
+      }
     }
 
     // Owner, author, members, or workspace members can resolve/unresolve
@@ -214,20 +284,79 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       updateData.isResolved = isResolved;
       updateData.resolvedAt = isResolved ? new Date() : null;
     }
+    if (wantsImageUpdate) {
+      // The legacy column keeps pointing at the first image.
+      updateData.imageUrl = desiredImageUrls[0] ?? null;
+    }
 
-    const updatedComment = await db.comment.update({
-      where: { id: commentId },
-      data: updateData,
-      include: {
-        author: { select: { id: true, name: true, image: true } },
-        tag: { select: { id: true, name: true, color: true } },
-        replies: {
-          include: {
-            author: { select: { id: true, name: true, image: true } },
-            tag: { select: { id: true, name: true, color: true } },
+    const updatedComment = await db.$transaction(async (tx) => {
+      // Consume the hold inside the transaction so quota is never double-counted.
+      if (attachmentReservationId) {
+        await tx.uploadReservation.deleteMany({
+          where: {
+            id: attachmentReservationId,
+            billedUserId: project.workspace.ownerId,
+            purpose: UPLOAD_RESERVATION_PURPOSES.ATTACHMENT,
+          },
+        });
+      }
+
+      if (wantsImageUpdate) {
+        if (removedImageUrls.length > 0) {
+          // Only the link is dropped. The file stays in R2 and in the assets pane,
+          // which is where a detached upload is deleted from and where its storage
+          // is already accounted for.
+          await tx.commentImage.deleteMany({
+            where: { commentId, url: { in: removedImageUrls } },
+          });
+        }
+
+        for (const [index, url] of desiredImageUrls.entries()) {
+          const added = addedImages.find((image) => image.url === url);
+          if (!added) {
+            await tx.commentImage.update({ where: { url }, data: { position: index } });
+            continue;
+          }
+
+          await tx.commentImage.create({ data: { commentId, url, position: index } });
+
+          const fileName = extractImageFileNameFromProxyUrl(url);
+          await tx.videoAsset.create({
+            data: {
+              videoId: comment.version.video.id,
+              kind: 'IMAGE',
+              provider: 'R2_IMAGE',
+              displayName: sanitizeAssetDisplayName(null, fileName || 'Comment Image'),
+              sourceUrl: url,
+              thumbnailUrl: url,
+              sizeBytes: added.sizeBytes,
+              uploadedByUserId: userId,
+              uploadedByGuestIdentityId: userId ? null : guestIdentityId,
+              uploadedByGuestName: userId
+                ? null
+                : sanitizeAssetDisplayName(comment.guestName, 'Guest').slice(0, 80),
+              billedUserId: project.workspace.ownerId,
+            },
+          });
+        }
+      }
+
+      return tx.comment.update({
+        where: { id: commentId },
+        data: updateData,
+        include: {
+          author: { select: { id: true, name: true, image: true } },
+          tag: { select: { id: true, name: true, color: true } },
+          images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
+          replies: {
+            include: {
+              author: { select: { id: true, name: true, image: true } },
+              tag: { select: { id: true, name: true, color: true } },
+              images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
+            },
           },
         },
-      },
+      });
     });
 
     const updatedCommentData = Object.fromEntries(
@@ -256,6 +385,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     });
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
+    await releaseStorageReservation(
+      attachmentReservationId,
+      attachmentBilledUserId,
+      UPLOAD_RESERVATION_PURPOSES.ATTACHMENT
+    );
     logError('Error updating comment:', error);
     return apiErrors.internalError('Failed to update comment');
   }
@@ -282,7 +416,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
             },
           },
         },
-        replies: { select: { voiceUrl: true, imageUrl: true } },
+        images: { select: { url: true } },
+        replies: {
+          select: { voiceUrl: true, images: { select: { url: true } } },
+        },
       },
     });
 
@@ -339,10 +476,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     // Collect all media URLs to delete from R2 (comment + its replies)
     const mediaUrls: string[] = [];
     if (comment.voiceUrl) mediaUrls.push(comment.voiceUrl);
-    if (comment.imageUrl) mediaUrls.push(comment.imageUrl);
+    for (const image of comment.images) mediaUrls.push(image.url);
     for (const reply of comment.replies) {
       if (reply.voiceUrl) mediaUrls.push(reply.voiceUrl);
-      if (reply.imageUrl) mediaUrls.push(reply.imageUrl);
+      for (const image of reply.images) mediaUrls.push(image.url);
     }
 
     await db.comment.delete({ where: { id: commentId } });

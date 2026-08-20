@@ -17,15 +17,17 @@ import type { AnnotationCanvasHandle, AnnotationStroke } from '@/components/anno
 import type {
   Comment,
   CommentActionsConfig,
+  CommentImage,
   CommentReply,
   CommentTag,
   Version,
   VideoData,
 } from '@/components/video-page/types';
 import {
-  extractPastedImageFile,
+  extractPastedImageFiles,
   validateImageFile,
 } from '@/components/video-page/image-upload-utils';
+import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
 import { validateAnnotationStrokes } from '@/lib/validation';
 import { withWebmDuration } from '@/lib/webm-duration';
 import { ApiRequestError, apiRequestError, toastApiError } from '@/lib/client/api-error';
@@ -52,6 +54,9 @@ interface UseCommentActionsParams extends CommentActionsConfig {
   fetchVersionComments: (versionId: string, useEtag: boolean) => Promise<void>;
   fetchAssets: () => Promise<void>;
 }
+
+/** Which of the three editors an attachment is being staged for. */
+export type ImageAttachTarget = 'comment' | 'reply' | 'edit';
 
 function getAudioUploadFilename(blob: Blob): string {
   const mime = blob.type.split(';')[0].trim().toLowerCase();
@@ -91,7 +96,7 @@ export function useCommentActions({
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
-  const [imageBlob, setImageBlob] = useState<File | null>(null);
+  const [imageFiles, setImageFiles] = useState<File[]>([]);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [commentRangeStart, setCommentRangeStart] = useState<number | null>(null);
   const [commentRangeEnd, setCommentRangeEnd] = useState<number | null>(null);
@@ -108,7 +113,7 @@ export function useCommentActions({
   const [replyRecordingTime, setReplyRecordingTime] = useState(0);
   const [replyAudioBlob, setReplyAudioBlob] = useState<Blob | null>(null);
   const [isUploadingReplyAudio, setIsUploadingReplyAudio] = useState(false);
-  const [replyImageBlob, setReplyImageBlob] = useState<File | null>(null);
+  const [replyImageFiles, setReplyImageFiles] = useState<File[]>([]);
   const [isUploadingReplyImage, setIsUploadingReplyImage] = useState(false);
   const [replyRangeStart, setReplyRangeStart] = useState<number | null>(null);
   const [replyRangeEnd, setReplyRangeEnd] = useState<number | null>(null);
@@ -130,6 +135,10 @@ export function useCommentActions({
     undefined
   );
   const [isEditingAnnotation, setIsEditingAnnotation] = useState(false);
+  // The images the edited comment keeps, and the ones staged to be added to it.
+  const [editImageUrls, setEditImageUrls] = useState<string[]>([]);
+  const [editImageFiles, setEditImageFiles] = useState<File[]>([]);
+  const editImageInputRef = useRef<HTMLInputElement>(null);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
@@ -189,9 +198,98 @@ export function useCommentActions({
     [isGuest, videoId]
   );
 
+  /** Upload a batch of staged images and hand back their URLs, in the same order. */
+  const uploadImageFiles = useCallback(
+    async (files: File[]): Promise<string[]> => {
+      if (files.length === 0) return [];
+
+      // One grant covers the whole batch: it is bound to the intent and the
+      // client, not to a single file.
+      const uploadToken = await getGuestUploadToken('image');
+
+      return Promise.all(
+        files.map(async (file) => {
+          const formData = new FormData();
+          formData.append('image', file);
+          formData.append('videoId', videoId);
+          if (uploadToken) formData.append('uploadToken', uploadToken);
+
+          const response = await fetch('/api/upload/image', {
+            method: 'POST',
+            body: formData,
+          });
+          if (!response.ok) {
+            // The attachments go up before the comment does, so a full account
+            // fails here and never reaches the comment at all. Thrown with the
+            // code attached so the caller can offer the way out.
+            const payload = (await response.json().catch(() => null)) as {
+              error?: string;
+              code?: string;
+            } | null;
+            throw apiRequestError(payload, 'Failed to upload image');
+          }
+          const payload = await response.json();
+          return payload.data.url as string;
+        })
+      );
+    },
+    [getGuestUploadToken, videoId]
+  );
+
+  /** Stage validated images on one of the editors, up to the per-comment cap. */
+  const attachImageFiles = useCallback(
+    async (files: File[], target: ImageAttachTarget) => {
+      if (files.length === 0) return;
+
+      for (const file of files) {
+        const imageError = await validateImageFile(file);
+        if (imageError) {
+          toast.error(imageError);
+          return;
+        }
+      }
+
+      const staged =
+        target === 'reply' ? replyImageFiles : target === 'edit' ? editImageFiles : imageFiles;
+      // Images the edited comment already has count against the same cap.
+      const alreadyOnComment = target === 'edit' ? editImageUrls.length : 0;
+      const room = MAX_COMMENT_IMAGES - alreadyOnComment - staged.length;
+      if (room <= 0) {
+        toast.error(`A comment can have at most ${MAX_COMMENT_IMAGES} images`);
+        return;
+      }
+      if (files.length > room) {
+        toast.error(
+          room === 1
+            ? 'Only 1 more image fits on this comment'
+            : `Only ${room} more images fit on this comment`
+        );
+      }
+
+      const next = [...staged, ...files.slice(0, room)];
+      if (target === 'reply') setReplyImageFiles(next);
+      else if (target === 'edit') setEditImageFiles(next);
+      else setImageFiles(next);
+    },
+    [editImageFiles, editImageUrls, imageFiles, replyImageFiles]
+  );
+
+  const removeImageFile = useCallback((index: number, target: ImageAttachTarget) => {
+    const drop = (files: File[]) => files.filter((_, current) => current !== index);
+    if (target === 'reply') setReplyImageFiles(drop);
+    else if (target === 'edit') setEditImageFiles(drop);
+    else setImageFiles(drop);
+  }, []);
+
   const handleAddComment = useCallback(
     async (voiceData?: { url: string; duration: number }) => {
-      if (!voiceData && !imageBlob && !commentText.trim() && !annotationStrokes && !isAnnotating)
+      if (
+        !voiceData &&
+        imageFiles.length === 0 &&
+        !commentText.trim() &&
+        !annotationStrokes &&
+        !isAnnotating
+      )
         return;
       if (!activeVersion || !activeVersionId) return;
 
@@ -206,14 +304,18 @@ export function useCommentActions({
       const tempId = `temp-${Date.now()}`;
       const commentTimestamp = commentRangeStart ?? currentTime;
       const serializedAnnotation = effectiveStrokes ? JSON.stringify(effectiveStrokes) : null;
+      const hasImages = imageFiles.length > 0;
       const optimisticComment: Comment = {
         id: tempId,
-        content: voiceData || imageBlob ? commentText.trim() || null : commentText,
+        content: voiceData || hasImages ? commentText.trim() || null : commentText,
         timestamp: commentTimestamp,
         timestampEnd: commentRangeEnd,
         voiceUrl: voiceData?.url ?? null,
         voiceDuration: voiceData?.duration ?? null,
-        imageUrl: imageBlob ? URL.createObjectURL(imageBlob) : null,
+        images: imageFiles.map((file, index) => ({
+          id: `${tempId}-image-${index}`,
+          url: URL.createObjectURL(file),
+        })),
         annotationData: serializedAnnotation,
         isResolved: false,
         createdAt: new Date().toISOString(),
@@ -238,7 +340,7 @@ export function useCommentActions({
       setCommentText('');
       setSelectedTagId(availableTags.length > 0 ? availableTags[0].id : null);
       setAudioBlob(null);
-      setImageBlob(null);
+      setImageFiles([]);
       setAnnotationStrokes(null);
       setIsAnnotating(false);
       clearCommentRangeSelection();
@@ -248,44 +350,22 @@ export function useCommentActions({
       isMutatingRef.current = true;
 
       try {
-        let imageData: { url: string } | undefined;
+        let uploadedImageUrls: string[] = [];
 
-        if (imageBlob) {
+        if (hasImages) {
           setIsUploadingImage(true);
-          const imageFormData = new FormData();
-          imageFormData.append('image', imageBlob);
-          imageFormData.append('videoId', videoId);
-          const uploadToken = await getGuestUploadToken('image');
-          if (uploadToken) imageFormData.append('uploadToken', uploadToken);
-
-          const imageRes = await fetch('/api/upload/image', {
-            method: 'POST',
-            body: imageFormData,
-          });
-
-          if (!imageRes.ok) {
-            // The attachment goes up before the comment does, so a full account
-            // fails here and never reaches the comment at all. Thrown with the
-            // code attached so the catch below can offer the way out.
-            const imagePayload = (await imageRes.json().catch(() => null)) as {
-              error?: string;
-              code?: string;
-            } | null;
-            throw apiRequestError(imagePayload, 'Failed to upload image');
-          }
-          const imageDataResponse = await imageRes.json();
-          imageData = { url: imageDataResponse.data.url };
+          uploadedImageUrls = await uploadImageFiles(imageFiles);
         }
 
         const res = await fetch(`/api/versions/${activeVersion.id}/comments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            content: voiceData || imageBlob ? commentText.trim() || null : commentText,
+            content: voiceData || hasImages ? commentText.trim() || null : commentText,
             timestamp: commentTimestamp,
             ...(commentRangeEnd !== null && { timestampEnd: commentRangeEnd }),
             ...(voiceData && { voiceUrl: voiceData.url, voiceDuration: voiceData.duration }),
-            ...(imageData && { imageUrl: imageData.url }),
+            ...(uploadedImageUrls.length > 0 && { imageUrls: uploadedImageUrls }),
             ...(isGuest && normalizedGuestName && { guestName: normalizedGuestName }),
             ...(selectedTagId && { tagId: selectedTagId }),
             ...(effectiveStrokes && { annotationData: effectiveStrokes }),
@@ -314,8 +394,8 @@ export function useCommentActions({
             };
           });
 
-          // If an image was attached, refresh the assets list
-          if (imageData) {
+          // If images were attached, refresh the assets list
+          if (uploadedImageUrls.length > 0) {
             void fetchAssets();
           }
         } else {
@@ -369,11 +449,10 @@ export function useCommentActions({
       currentUserName,
       selectedTagId,
       availableTags,
-      imageBlob,
+      imageFiles,
+      uploadImageFiles,
       annotationStrokes,
       isAnnotating,
-      videoId,
-      getGuestUploadToken,
       annotationCanvasRef,
       setSelectedTagId,
       setAnnotationStrokes,
@@ -386,63 +465,34 @@ export function useCommentActions({
   );
 
   const handleImageSelect = useCallback(
-    async (e: ChangeEvent<HTMLInputElement>, isReply: boolean = false) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      const imageError = await validateImageFile(file);
-      if (imageError) {
-        toast.error(imageError);
-        return;
-      }
-
-      if (isReply) {
-        setReplyImageBlob(file);
-      } else {
-        setImageBlob(file);
-      }
+    async (e: ChangeEvent<HTMLInputElement>, target: ImageAttachTarget = 'comment') => {
+      const files = Array.from(e.target.files ?? []);
+      // Clearing the input lets the same file be picked again after it is removed.
+      e.target.value = '';
+      await attachImageFiles(files, target);
     },
-    []
+    [attachImageFiles]
   );
 
   const handlePaste = useCallback(
-    async (e: ClipboardEvent<HTMLTextAreaElement>, isReply: boolean = false) => {
-      const file = extractPastedImageFile(e.clipboardData);
-      if (!file) return;
+    async (e: ClipboardEvent<HTMLTextAreaElement>, target: ImageAttachTarget = 'comment') => {
+      const files = extractPastedImageFiles(e.clipboardData);
+      if (files.length === 0) return;
       e.preventDefault();
-
-      const imageError = await validateImageFile(file);
-      if (imageError) {
-        toast.error(imageError);
-        return;
-      }
-
-      if (isReply) {
-        setReplyImageBlob(file);
-      } else {
-        setImageBlob(file);
-      }
+      await attachImageFiles(files, target);
     },
-    []
+    [attachImageFiles]
   );
 
-  const handleDrop = useCallback(async (e: DragEvent<HTMLDivElement>, isReply: boolean = false) => {
-    e.preventDefault();
-    const file = extractPastedImageFile(e.dataTransfer);
-    if (!file) return;
-
-    const imageError = await validateImageFile(file);
-    if (imageError) {
-      toast.error(imageError);
-      return;
-    }
-
-    if (isReply) {
-      setReplyImageBlob(file);
-    } else {
-      setImageBlob(file);
-    }
-  }, []);
+  const handleDrop = useCallback(
+    async (e: DragEvent<HTMLDivElement>, target: ImageAttachTarget = 'comment') => {
+      e.preventDefault();
+      const files = extractPastedImageFiles(e.dataTransfer);
+      if (files.length === 0) return;
+      await attachImageFiles(files, target);
+    },
+    [attachImageFiles]
+  );
 
   const startRecording = useCallback(async () => {
     try {
@@ -543,13 +593,13 @@ export function useCommentActions({
   const submitCommentWithMedia = useCallback(async () => {
     if (!activeVersion) return;
 
-    if (audioBlob && !imageBlob && !commentText.trim()) {
+    if (audioBlob && imageFiles.length === 0 && !commentText.trim()) {
       submitVoiceComment();
       return;
     }
 
     if (audioBlob) setIsUploadingAudio(true);
-    if (imageBlob) setIsUploadingImage(true);
+    if (imageFiles.length > 0) setIsUploadingImage(true);
 
     try {
       let voiceData: { url: string; duration: number } | undefined;
@@ -569,7 +619,7 @@ export function useCommentActions({
 
       setAudioBlob(null);
       setRecordingTime(0);
-      setImageBlob(null);
+      setImageFiles([]);
       if (imageInputRef.current) imageInputRef.current.value = '';
     } catch (err) {
       console.error('Failed to submit comment with media:', err);
@@ -580,7 +630,7 @@ export function useCommentActions({
     }
   }, [
     audioBlob,
-    imageBlob,
+    imageFiles,
     activeVersion,
     recordingTime,
     commentText,
@@ -676,21 +726,25 @@ export function useCommentActions({
     async (
       parentId: string,
       voiceData?: { url: string; duration: number },
-      imageData?: { url: string }
+      alreadyUploadedImageUrls?: string[]
     ) => {
-      if (!voiceData && !replyImageBlob && !replyText.trim()) return;
+      if (!voiceData && replyImageFiles.length === 0 && !replyText.trim()) return;
       if (!activeVersion || !activeVersionId) return;
 
+      const hasReplyImages = replyImageFiles.length > 0;
       const tempId = `temp-reply-${Date.now()}`;
       const replyTimestamp = replyRangeStart ?? currentTime;
       const optimisticReply: CommentReply = {
         id: tempId,
-        content: voiceData || replyImageBlob ? replyText.trim() || null : replyText,
+        content: voiceData || hasReplyImages ? replyText.trim() || null : replyText,
         timestamp: replyTimestamp,
         timestampEnd: replyRangeEnd,
         voiceUrl: voiceData?.url ?? null,
         voiceDuration: voiceData?.duration ?? null,
-        imageUrl: replyImageBlob ? URL.createObjectURL(replyImageBlob) : null,
+        images: replyImageFiles.map((file, index) => ({
+          id: `${tempId}-image-${index}`,
+          url: URL.createObjectURL(file),
+        })),
         annotationData: null,
         createdAt: new Date().toISOString(),
         author: isGuest ? null : { id: 'current-user', name: currentUserName, image: null },
@@ -723,43 +777,31 @@ export function useCommentActions({
       setReplyingTo(null);
       setReplyAudioBlob(null);
       setReplyRecordingTime(0);
-      setReplyImageBlob(null);
+      setReplyImageFiles([]);
       clearReplyRangeSelection();
 
       setIsSubmittingReply(true);
       isMutatingRef.current = true;
 
       try {
-        let submittedImageData: { url: string } | undefined = imageData;
+        let submittedImageUrls: string[] = alreadyUploadedImageUrls ?? [];
 
-        if (replyImageBlob && !imageData) {
+        if (hasReplyImages && submittedImageUrls.length === 0) {
           setIsUploadingReplyImage(true);
-          const imageFormData = new FormData();
-          imageFormData.append('image', replyImageBlob);
-          imageFormData.append('videoId', videoId);
-          const uploadToken = await getGuestUploadToken('image');
-          if (uploadToken) imageFormData.append('uploadToken', uploadToken);
-
-          const imageRes = await fetch('/api/upload/image', {
-            method: 'POST',
-            body: imageFormData,
-          });
-
-          if (!imageRes.ok) throw new Error('Failed to upload image reply');
-          const imageDataResponse = await imageRes.json();
-          submittedImageData = { url: imageDataResponse.data.url };
+          submittedImageUrls = await uploadImageFiles(replyImageFiles);
         }
 
         const res = await fetch(`/api/versions/${activeVersion.id}/comments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            content: voiceData || submittedImageData ? replyText.trim() || null : replyText,
+            content:
+              voiceData || submittedImageUrls.length > 0 ? replyText.trim() || null : replyText,
             timestamp: replyTimestamp,
             ...(replyRangeEnd !== null && { timestampEnd: replyRangeEnd }),
             parentId,
             ...(voiceData && { voiceUrl: voiceData.url, voiceDuration: voiceData.duration }),
-            ...(submittedImageData && { imageUrl: submittedImageData.url }),
+            ...(submittedImageUrls.length > 0 && { imageUrls: submittedImageUrls }),
             ...(isGuest && normalizedGuestName && { guestName: normalizedGuestName }),
           }),
         });
@@ -791,8 +833,8 @@ export function useCommentActions({
             };
           });
 
-          // If an image was attached, refresh the assets list
-          if (submittedImageData) {
+          // If images were attached, refresh the assets list
+          if (submittedImageUrls.length > 0) {
             void fetchAssets();
           }
         } else {
@@ -852,9 +894,8 @@ export function useCommentActions({
       isGuest,
       normalizedGuestName,
       currentUserName,
-      replyImageBlob,
-      videoId,
-      getGuestUploadToken,
+      replyImageFiles,
+      uploadImageFiles,
       setVideo,
       fetchAssets,
       clearReplyRangeSelection,
@@ -949,13 +990,13 @@ export function useCommentActions({
     async (parentId: string) => {
       if (!activeVersion) return;
 
-      if (replyAudioBlob && !replyImageBlob && !replyText.trim()) {
+      if (replyAudioBlob && replyImageFiles.length === 0 && !replyText.trim()) {
         submitVoiceReply(parentId);
         return;
       }
 
       if (replyAudioBlob) setIsUploadingReplyAudio(true);
-      if (replyImageBlob) setIsUploadingReplyImage(true);
+      if (replyImageFiles.length > 0) setIsUploadingReplyImage(true);
 
       try {
         let voiceData: { url: string; duration: number } | undefined;
@@ -976,7 +1017,7 @@ export function useCommentActions({
 
         setReplyAudioBlob(null);
         setReplyRecordingTime(0);
-        setReplyImageBlob(null);
+        setReplyImageFiles([]);
         if (replyImageInputRef.current) replyImageInputRef.current.value = '';
       } catch (err) {
         console.error('Failed to submit reply with media:', err);
@@ -988,7 +1029,7 @@ export function useCommentActions({
     },
     [
       replyAudioBlob,
-      replyImageBlob,
+      replyImageFiles,
       activeVersion,
       replyRecordingTime,
       replyText,
@@ -999,9 +1040,41 @@ export function useCommentActions({
     ]
   );
 
+  const startEditingComment = useCallback((comment: Comment) => {
+    setEditingCommentId(comment.id);
+    setEditText(comment.content || '');
+    setEditTagId(comment.tag?.id || null);
+    setEditImageUrls(comment.images.map((image) => image.url));
+    setEditImageFiles([]);
+  }, []);
+
+  const startEditingReply = useCallback((reply: CommentReply) => {
+    setEditingCommentId(reply.id);
+    setEditText(reply.content || '');
+    // No tag picker on a reply: undefined keeps the PATCH from carrying a tagId at all.
+    setEditTagId(undefined);
+    setEditImageUrls(reply.images.map((image) => image.url));
+    setEditImageFiles([]);
+  }, []);
+
+  const cancelEditingComment = useCallback(() => {
+    setEditingCommentId(null);
+    setEditText('');
+    setEditTagId(undefined);
+    setEditAnnotationData(undefined);
+    setIsEditingAnnotation(false);
+    setEditImageUrls([]);
+    setEditImageFiles([]);
+  }, []);
+
+  const removeEditImageUrl = useCallback((url: string) => {
+    setEditImageUrls((prev) => prev.filter((current) => current !== url));
+  }, []);
+
   const handleEditComment = useCallback(
     async (commentId: string) => {
-      if (!editText.trim() && !editAnnotationData) return;
+      const keepsImages = editImageUrls.length > 0 || editImageFiles.length > 0;
+      if (!editText.trim() && !editAnnotationData && !keepsImages) return;
       if (!activeVersionId) return;
 
       setIsSubmittingEdit(true);
@@ -1016,7 +1089,12 @@ export function useCommentActions({
       }
 
       try {
-        const body: Record<string, unknown> = { content: editText };
+        const uploadedImageUrls = await uploadImageFiles(editImageFiles);
+        // The list the comment should end up with: what the editor kept, then
+        // whatever was pasted into it while it was open.
+        const nextImageUrls = [...editImageUrls, ...uploadedImageUrls];
+
+        const body: Record<string, unknown> = { content: editText, imageUrls: nextImageUrls };
         if (editTagId !== undefined) body.tagId = editTagId;
         if (finalAnnotationData !== undefined) {
           body.annotationData =
@@ -1028,10 +1106,21 @@ export function useCommentActions({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        const payload = (await res.json().catch(() => null)) as {
+          data?: { images?: CommentImage[] };
+          error?: string;
+          code?: string;
+        } | null;
+
         if (res.ok) {
           const editedTag = editTagId
             ? availableTags.find((t) => t.id === editTagId) || null
             : null;
+          // The response carries the saved rows with their real ids; fall back to
+          // the URLs that were sent if it did not come back as JSON.
+          const savedImages: CommentImage[] =
+            payload?.data?.images ??
+            nextImageUrls.map((url, index) => ({ id: `${commentId}-image-${index}`, url }));
           setVideo((prev) => {
             if (!prev) return prev;
             return {
@@ -1045,6 +1134,7 @@ export function useCommentActions({
                           return {
                             ...c,
                             content: editText.trim(),
+                            images: savedImages,
                             tag: editTagId !== undefined ? editedTag : c.tag,
                             annotationData:
                               finalAnnotationData !== undefined
@@ -1054,7 +1144,9 @@ export function useCommentActions({
                         return {
                           ...c,
                           replies: (c.replies || []).map((r) =>
-                            r.id === commentId ? { ...r, content: editText.trim() } : r
+                            r.id === commentId
+                              ? { ...r, content: editText.trim(), images: savedImages }
+                              : r
                           ),
                         };
                       }),
@@ -1063,11 +1155,10 @@ export function useCommentActions({
               ),
             };
           });
-          setEditingCommentId(null);
-          setEditText('');
-          setEditTagId(undefined);
-          setEditAnnotationData(undefined);
-          setIsEditingAnnotation(false);
+          cancelEditingComment();
+          if (uploadedImageUrls.length > 0) {
+            void fetchAssets();
+          }
           if (finalAnnotationData !== undefined && finalAnnotationData) {
             try {
               const parsed = JSON.parse(finalAnnotationData);
@@ -1079,9 +1170,13 @@ export function useCommentActions({
           } else if (finalAnnotationData === null) {
             setViewingAnnotation(null);
           }
+        } else {
+          toastApiError(payload, 'Failed to save changes');
         }
-      } catch (err) {
-        console.error('Failed to edit comment:', err);
+      } catch (error) {
+        // An upload can fail on quota before the comment is ever touched, and
+        // that message is worth showing; a network fault falls back.
+        toastApiError(error instanceof ApiRequestError ? error : null, 'Failed to save changes');
       } finally {
         setIsSubmittingEdit(false);
         isMutatingRef.current = false;
@@ -1091,12 +1186,17 @@ export function useCommentActions({
       editText,
       editTagId,
       editAnnotationData,
+      editImageFiles,
+      editImageUrls,
+      uploadImageFiles,
+      cancelEditingComment,
       isEditingAnnotation,
       activeVersionId,
       availableTags,
       isGuest,
       normalizedGuestName,
       editAnnotationCanvasRef,
+      fetchAssets,
       setVideo,
       setViewingAnnotation,
     ]
@@ -1203,14 +1303,15 @@ export function useCommentActions({
     recordingTime,
     audioBlob,
     isUploadingAudio,
-    imageBlob,
-    setImageBlob,
+    imageFiles,
+    setImageFiles,
     commentRangeStart,
     commentRangeEnd,
     toggleCommentRangeSelection,
     clearCommentRangeSelection,
     isUploadingImage,
     imageInputRef,
+    removeImageFile,
     handleAddComment,
     handleImageSelect,
     handlePaste,
@@ -1228,8 +1329,8 @@ export function useCommentActions({
     isReplyRecording,
     replyRecordingTime,
     replyAudioBlob,
-    replyImageBlob,
-    setReplyImageBlob,
+    replyImageFiles,
+    setReplyImageFiles,
     replyRangeStart,
     replyRangeEnd,
     toggleReplyRangeSelection,
@@ -1253,6 +1354,13 @@ export function useCommentActions({
     setEditAnnotationData,
     isEditingAnnotation,
     setIsEditingAnnotation,
+    editImageUrls,
+    editImageFiles,
+    editImageInputRef,
+    startEditingComment,
+    startEditingReply,
+    cancelEditingComment,
+    removeEditImageUrl,
     isSubmittingEdit,
     handleEditComment,
     handleDeleteComment,

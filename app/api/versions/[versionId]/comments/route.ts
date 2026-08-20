@@ -6,8 +6,6 @@ import { notifyProjectOwner } from '@/lib/notifications';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { validateShareLinkAccess } from '@/lib/share-links';
 import { getShareSessionFromRequest } from '@/lib/share-session';
-import { HeadObjectCommand } from '@aws-sdk/client-s3';
-import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
 import {
   ensureGuestIdentityFromRequest,
   getGuestIdentityFromRequest,
@@ -20,6 +18,8 @@ import {
   sanitizeAssetDisplayName,
 } from '@/lib/video-assets';
 import { validateAnnotationStrokes } from '@/lib/validation';
+import { parseCommentImageUrls } from '@/lib/comment-images';
+import { isFreshAttachment } from '@/lib/upload-freshness';
 import { logError } from '@/lib/logger';
 import {
   reserveStorageQuota,
@@ -29,35 +29,8 @@ import {
 import { isValidEmailAddress, normalizeEmail } from '@/lib/email-validation';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
-const SAFE_IMAGE_PATH =
-  /^\/api\/upload\/image\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 const SAFE_AUDIO_PATH =
   /^\/api\/upload\/audio\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
-const UNATTACHED_UPLOAD_TTL_MS = 15 * 60 * 1000;
-
-type AttachmentCheck = { isFresh: boolean; sizeBytes: bigint };
-
-async function isFreshAttachment(url: string, kind: 'audio' | 'image'): Promise<AttachmentCheck> {
-  const prefix = kind === 'audio' ? '/api/upload/audio/' : '/api/upload/image/';
-  if (!url.startsWith(prefix)) return { isFresh: false, sizeBytes: BigInt(0) };
-
-  const filename = url.slice(prefix.length);
-  const key = kind === 'audio' ? `voice/${filename}` : `images/${filename}`;
-
-  try {
-    const head = await r2Client.send(
-      new HeadObjectCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key: key,
-      })
-    );
-    if (!head.LastModified) return { isFresh: false, sizeBytes: BigInt(0) };
-    const isFresh = Date.now() - head.LastModified.getTime() <= UNATTACHED_UPLOAD_TTL_MS;
-    return { isFresh, sizeBytes: BigInt(head.ContentLength ?? 0) };
-  } catch {
-    return { isFresh: false, sizeBytes: BigInt(0) };
-  }
-}
 
 function normalizeEtag(value: string): string {
   return value.trim().replace(/^W\//, '');
@@ -153,6 +126,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         voiceUrl: true,
         voiceDuration: true,
         imageUrl: true,
+        images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
         annotationData: true,
         parentId: true,
         authorId: true,
@@ -175,6 +149,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             voiceUrl: true,
             voiceDuration: true,
             imageUrl: true,
+            images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
             annotationData: true,
             parentId: true,
             authorId: true,
@@ -275,9 +250,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       guestName,
       guestEmail,
       tagId,
-      imageUrl,
       annotationData,
     } = body;
+
+    // A comment carries a list of images now; `imageUrl` is still accepted as a
+    // one-element list so an older client keeps working.
+    const imageUrlsResult = parseCommentImageUrls(body);
+    if ('error' in imageUrlsResult) {
+      return apiErrors.badRequest(imageUrlsResult.error);
+    }
+    const attachedImageUrls = imageUrlsResult.urls;
+    const primaryImageUrl = attachedImageUrls[0] ?? null;
 
     // Validate required fields
     if (timestamp === undefined || timestamp === null) {
@@ -324,7 +307,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    if (!content && !voiceUrl && !imageUrl && !annotationData) {
+    if (!content && !voiceUrl && attachedImageUrls.length === 0 && !annotationData) {
       return apiErrors.badRequest(
         'Either content, a voice recording, an image attachment, or an annotation is required'
       );
@@ -402,17 +385,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       voiceSizeBytes = voiceCheck.sizeBytes;
     }
 
-    if (imageUrl && !SAFE_IMAGE_PATH.test(imageUrl)) {
-      return apiErrors.badRequest('Image URL must reference an uploaded image file');
+    // The uploads happened in parallel, so check them the same way rather than
+    // paying one R2 round trip per screenshot.
+    const imageChecks = await Promise.all(
+      attachedImageUrls.map(async (url) => ({ url, ...(await isFreshAttachment(url, 'image')) }))
+    );
+    if (imageChecks.some((check) => !check.isFresh)) {
+      return apiErrors.badRequest('Image upload expired. Please upload again.');
     }
-    let imageSizeBytes = BigInt(0);
-    if (imageUrl) {
-      const imageCheck = await isFreshAttachment(imageUrl, 'image');
-      if (!imageCheck.isFresh) {
-        return apiErrors.badRequest('Image upload expired. Please upload again.');
-      }
-      imageSizeBytes = imageCheck.sizeBytes;
-    }
+    const imageSizeBytes = imageChecks.reduce((total, check) => total + check.sizeBytes, BigInt(0));
 
     const guestIdentity = isGuest ? ensureGuestIdentityFromRequest(request) : null;
 
@@ -451,7 +432,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           parentId: parentId || null,
           voiceUrl: voiceUrl || null,
           voiceDuration: voiceDuration || null,
-          imageUrl: imageUrl || null,
+          imageUrl: primaryImageUrl,
+          images: {
+            create: attachedImageUrls.map((url, index) => ({ url, position: index })),
+          },
           annotationData: serializedAnnotationData,
           authorId: session?.user?.id || null,
           guestName: isGuest ? guestName : null,
@@ -463,18 +447,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         include: {
           author: { select: { id: true, name: true, image: true } },
           tag: { select: { id: true, name: true, color: true } },
+          images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
           replies: {
             include: {
               author: { select: { id: true, name: true, image: true } },
               tag: { select: { id: true, name: true, color: true } },
+              images: { select: { id: true, url: true }, orderBy: { position: 'asc' } },
             },
           },
         },
       });
 
-      // If an image was attached to the comment, also add it to the assets pane
-      if (imageUrl) {
-        const fileName = extractImageFileNameFromProxyUrl(imageUrl);
+      // Every attached image also shows up in the assets pane
+      for (const check of imageChecks) {
+        const fileName = extractImageFileNameFromProxyUrl(check.url);
         const displayName = sanitizeAssetDisplayName(null, fileName || 'Comment Image');
         const safeGuestName = sanitizeAssetDisplayName(guestName, 'Guest').slice(0, 80);
 
@@ -484,9 +470,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             kind: 'IMAGE',
             provider: 'R2_IMAGE',
             displayName,
-            sourceUrl: imageUrl,
-            thumbnailUrl: imageUrl,
-            sizeBytes: imageSizeBytes,
+            sourceUrl: check.url,
+            thumbnailUrl: check.url,
+            sizeBytes: check.sizeBytes,
             uploadedByUserId: session?.user?.id || null,
             uploadedByGuestIdentityId: isGuest ? (guestIdentity?.identityId ?? null) : null,
             uploadedByGuestName: isGuest ? safeGuestName : null,
@@ -543,7 +529,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           projectName: project.name,
           videoTitle,
           replyAuthor: commentAuthorName,
-          replyText: content?.trim() || (imageUrl ? '(image attachment)' : '(voice note)'),
+          replyText: content?.trim() || (primaryImageUrl ? '(image attachment)' : '(voice note)'),
           parentAuthor: parentComment?.author?.name || parentComment?.guestName || 'Someone',
           timestamp: ts,
           url: `${baseUrl}/watch/${version.video.id}`,
@@ -554,7 +540,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           projectName: project.name,
           videoTitle,
           commentAuthor: commentAuthorName,
-          commentText: content?.trim() || (imageUrl ? '(image attachment)' : '(voice note)'),
+          commentText: content?.trim() || (primaryImageUrl ? '(image attachment)' : '(voice note)'),
           timestamp: ts,
           url: `${baseUrl}/watch/${version.video.id}`,
         }).catch((err) => logError('Notification failed:', err));
