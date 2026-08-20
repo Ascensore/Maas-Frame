@@ -19,7 +19,6 @@ import {
   deleteVideoObject,
 } from '@/lib/r2';
 import {
-  getMaxVideoUploadBytes,
   getR2MultipartPartSizeBytes,
   getR2MultipartThresholdBytes,
   isS3VideoUploadsEnabled,
@@ -33,10 +32,12 @@ import {
 import { logError } from '@/lib/logger';
 import {
   enforceStorageQuota,
+  getMaxVideoUploadBytesForUser,
   releaseStorageReservation,
   reserveStorageQuota,
   UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
+import { uploadTooLargeMessage } from '@/lib/upload-size';
 import { createR2UploadSession } from '@/lib/r2-upload-session';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
@@ -106,9 +107,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('sizeBytes must be a positive integer');
     }
 
-    const maxBytes = getMaxVideoUploadBytes();
+    const maxBytes = await getMaxVideoUploadBytesForUser(project.workspace.ownerId);
     if (sizeBytes > maxBytes) {
-      return apiErrors.badRequest('Video file exceeds the maximum allowed upload size');
+      return apiErrors.badRequest(uploadTooLargeMessage(maxBytes));
     }
 
     const contentType = resolveVideoContentType(fileName, contentTypeInput);

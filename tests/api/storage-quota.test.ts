@@ -17,6 +17,7 @@ import {
   PLAN_STORAGE_LIMIT_BYTES,
   UPLOAD_RESERVATION_PURPOSES,
   enforceStorageQuota,
+  getMaxVideoUploadBytesForUser,
   getUserStorageInfo,
   getUserTotalStorageBytes,
   releaseStorageReservation,
@@ -104,6 +105,48 @@ describe('the trial ceiling', () => {
     );
 
     expect('reservationId' in result).toBe(true);
+  });
+});
+
+// One upload may take 80% of whatever ceiling the account is held to. The fifth
+// left free is for what the upload turns into: the provider derives its own
+// renditions (1080p, 720p and down) from the file and bills them to the same
+// account, so a file that filled the quota exactly would put the account over it
+// once processing finished.
+describe('getMaxVideoUploadBytesForUser', () => {
+  it('is 80% of the plan ceiling for a paying account', async () => {
+    const user = await createSubscribedUser();
+
+    expect(await getMaxVideoUploadBytesForUser(user.id)).toBe(BigInt(160) * GIB);
+  });
+
+  it('is 80% of the trial ceiling for an unpaid one', async () => {
+    const user = await createUser();
+
+    expect(await getMaxVideoUploadBytesForUser(user.id)).toBe(
+      (BigInt(3) * GIB * BigInt(80)) / BigInt(100)
+    );
+  });
+
+  it('drops to a host ceiling that is stricter than the account share', async () => {
+    vi.stubEnv('OPENFRAME_MAX_VIDEO_UPLOAD_BYTES', (BigInt(5) * GIB).toString());
+    const user = await createSubscribedUser();
+
+    expect(await getMaxVideoUploadBytesForUser(user.id)).toBe(BigInt(5) * GIB);
+  });
+
+  it('ignores a host ceiling looser than the account share, which the quota would refuse anyway', async () => {
+    vi.stubEnv('OPENFRAME_MAX_VIDEO_UPLOAD_BYTES', (BigInt(500) * GIB).toString());
+    const user = await createSubscribedUser();
+
+    expect(await getMaxVideoUploadBytesForUser(user.id)).toBe(BigInt(160) * GIB);
+  });
+
+  it('falls back to the flat default where there is no billing, and so no quota to divide', async () => {
+    vi.stubEnv('OPENFRAME_ENABLE_STRIPE', 'false');
+    const user = await createUser();
+
+    expect(await getMaxVideoUploadBytesForUser(user.id)).toBe(BigInt(5) * GIB);
   });
 });
 

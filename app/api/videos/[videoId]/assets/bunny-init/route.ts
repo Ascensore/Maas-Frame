@@ -15,12 +15,13 @@ import {
   readGuestUploadGrant,
   type GuestUploadGrant,
 } from '@/lib/guest-upload-token';
-import { getMaxVideoUploadBytes, isBunnyUploadsEnabled } from '@/lib/feature-flags';
+import { isBunnyUploadsEnabled } from '@/lib/feature-flags';
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { getVideoAssetAccessContext, SAFE_BUNNY_VIDEO_ID } from '@/lib/video-assets';
 import { logError } from '@/lib/logger';
 import {
   enforceStorageQuota,
+  getMaxVideoUploadBytesForUser,
   releaseStorageReservation,
   reserveStorageQuota,
   UPLOAD_RESERVATION_PURPOSES,
@@ -69,12 +70,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // See the project video route for why the client's declared size is asked for
     // and what it is worth: it buys an honest refusal before the upload starts,
     // and a reservation that concurrent uploads can see.
-    const declaredSize = parseDeclaredUploadSize(body?.sizeBytes, getMaxVideoUploadBytes());
+    const billedUserId = context.video.project.workspace.ownerId;
+    const declaredSize = parseDeclaredUploadSize(
+      body?.sizeBytes,
+      await getMaxVideoUploadBytesForUser(billedUserId)
+    );
     if ('error' in declaredSize) {
       return apiErrors.badRequest(declaredSize.error);
     }
 
-    const billedUserId = context.video.project.workspace.ownerId;
     const quotaError = await enforceStorageQuota(billedUserId, declaredSize.sizeBytes);
     if (quotaError) return quotaError;
 

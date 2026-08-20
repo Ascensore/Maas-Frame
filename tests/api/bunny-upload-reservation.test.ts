@@ -100,16 +100,50 @@ describe('POST /api/projects/[projectId]/videos/bunny-init', () => {
     expect(await readError(response)).toContain('maximum allowed upload size');
   });
 
-  // The trial ceiling is 3 GiB, so this is refused on the way in rather than
-  // after four gigabytes have been pushed to Bunny.
-  it('refuses an upload the remaining quota cannot hold', async () => {
+  // One file may take 80% of the account's ceiling, not all of it: what the
+  // provider transcodes the upload into is billed to the same account, so a file
+  // that filled the quota would be over it by the time it finished processing.
+  // 2.5 GiB fits inside a trial's 3 GiB and is still refused.
+  it('refuses a size beyond the share of the quota one file may take', async () => {
     const scenario = await seedProject();
     signedInAs(scenario.owner);
 
-    const response = await initUpload(scenario.project.id, BigInt(4) * GIB);
+    const response = await initUpload(scenario.project.id, (BigInt(5) * GIB) / BigInt(2));
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toContain('2.4 GB');
+    expect(await db.uploadReservation.count()).toBe(0);
+  });
+
+  // And the same rule read against the paid ceiling, where 80% of 200 GiB is a
+  // number no fixed per-file limit would have allowed.
+  it('lets a paying account send a file far past what a trial could', async () => {
+    const scenario = await seedProject({ ownerUser: await createSubscribedUser() });
+    signedInAs(scenario.owner);
+
+    const overCeiling = await initUpload(scenario.project.id, BigInt(161) * GIB);
+    const underCeiling = await initUpload(scenario.project.id, BigInt(150) * GIB);
+
+    expect(overCeiling.status).toBe(400);
+    expect(await readError(overCeiling)).toContain('160 GB');
+    expect(underCeiling.status).toBe(200);
+  });
+
+  // The trial ceiling is 3 GiB, so this is refused on the way in rather than
+  // after the bytes have been pushed to Bunny. The declared size is inside the
+  // per-file ceiling, so it is the quota refusing it and not the size check.
+  it('refuses an upload the remaining quota cannot hold', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+    await createUploadReservation({
+      billedUserId: scenario.owner.id,
+      sizeBytes: BigInt(2) * GIB,
+    });
+
+    const response = await initUpload(scenario.project.id, BigInt(2) * GIB);
 
     expect(response.status).toBe(507);
-    expect(await db.uploadReservation.count()).toBe(0);
+    expect(await db.uploadReservation.count()).toBe(1);
   });
 
   it('holds the declared size as a reservation for the workspace owner', async () => {
@@ -278,8 +312,12 @@ describe('what the storage refusal says', () => {
   it('names the trial ceiling and its own code for an unpaid account', async () => {
     const scenario = await seedProject();
     signedInAs(scenario.owner);
+    await createUploadReservation({
+      billedUserId: scenario.owner.id,
+      sizeBytes: BigInt(2) * GIB,
+    });
 
-    const response = await initUpload(scenario.project.id, BigInt(4) * GIB);
+    const response = await initUpload(scenario.project.id, BigInt(2) * GIB);
 
     expect(response.status).toBe(507);
     const body = (await response.json()) as { error: string; code: string };

@@ -77,20 +77,31 @@ export function isDirectFileUploadEnabled() {
   return isS3VideoUploadsEnabled() || isBunnyUploadsEnabled();
 }
 
-export function getMaxVideoUploadBytes(): bigint {
+/**
+ * The per-file ceiling for a host that has no billing, and therefore no per
+ * account quota to derive one from.
+ */
+export const DEFAULT_MAX_VIDEO_UPLOAD_BYTES =
+  BigInt(5) * BigInt(1024) * BigInt(1024) * BigInt(1024);
+
+/**
+ * A flat per-file ceiling this host has pinned, or null when it has not.
+ *
+ * Null is the ordinary case. The ceiling that applies to a paying account is a
+ * share of that account's own storage quota, which one number in the
+ * environment cannot express (see `getMaxVideoUploadBytesForUser`). A host that
+ * wants an absolute cap on top of that still sets this, and the lower of the
+ * two wins.
+ */
+export function getConfiguredMaxVideoUploadBytes(): bigint | null {
   const raw = process.env.OPENFRAME_MAX_VIDEO_UPLOAD_BYTES?.trim();
-  if (!raw) {
-    return BigInt(5) * BigInt(1024) * BigInt(1024) * BigInt(1024);
-  }
+  if (!raw) return null;
 
   try {
     const parsed = BigInt(raw);
-    if (parsed <= BigInt(0)) {
-      return BigInt(5) * BigInt(1024) * BigInt(1024) * BigInt(1024);
-    }
-    return parsed;
+    return parsed > BigInt(0) ? parsed : null;
   } catch {
-    return BigInt(5) * BigInt(1024) * BigInt(1024) * BigInt(1024);
+    return null;
   }
 }
 

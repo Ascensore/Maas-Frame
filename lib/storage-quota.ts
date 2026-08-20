@@ -1,10 +1,15 @@
 import type { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { apiErrors } from '@/lib/api-response';
-import { isStripeFeatureEnabled } from '@/lib/feature-flags';
+import {
+  DEFAULT_MAX_VIDEO_UPLOAD_BYTES,
+  getConfiguredMaxVideoUploadBytes,
+  isStripeFeatureEnabled,
+} from '@/lib/feature-flags';
 import { getUserBunnyStorageBytes } from '@/lib/admin-stats';
 import { isPaidTier } from '@/lib/billing';
 import { getStorageLimitBytes } from '@/lib/trial-limits';
+import { formatSizeLimit } from '@/lib/upload-size';
 
 // 200 GB expressed in bytes
 export const PLAN_STORAGE_LIMIT_BYTES = BigInt(200) * BigInt(1024) * BigInt(1024) * BigInt(1024);
@@ -46,12 +51,41 @@ export async function getStorageContextForUser(userId: string): Promise<StorageC
 }
 
 /**
- * Whole gigabytes where the number is whole, which every ceiling we ship is.
- * A host that sets an odd one gets a decimal rather than a rounded lie.
+ * The share of an account's storage ceiling one single upload may take.
+ *
+ * A video costs more than the file that was handed to us: the provider derives
+ * its own renditions from it (1080p, 720p and down) and those land in the same
+ * account's usage. A file allowed to fill the whole quota would therefore be
+ * over the quota by the time it finished processing, so a fifth of the ceiling
+ * is left free for what the upload turns into.
  */
-function formatStorageLimit(bytes: bigint): string {
-  const gigabytes = Number(bytes) / 1024 ** 3;
-  return `${Number.isInteger(gigabytes) ? gigabytes : gigabytes.toFixed(1)} GB`;
+export const MAX_UPLOAD_SHARE_PERCENT = BigInt(80);
+
+/** The largest single file that fits under `limitBytes` with room to transcode. */
+export function getMaxUploadBytesForLimit(limitBytes: bigint): bigint {
+  return (limitBytes * MAX_UPLOAD_SHARE_PERCENT) / BigInt(100);
+}
+
+/**
+ * The largest single file this account may upload.
+ *
+ * Derived from the account's own ceiling rather than fixed, so the answer moves
+ * with the plan: 200 GB of storage allows a 160 GB file, and a cardless trial's
+ * 3 GB allows 2.4 GB. A host that has pinned an absolute cap still wins where
+ * it is the lower of the two, and a host running without billing has no quota
+ * to divide, so it falls back to the flat default.
+ */
+export async function getMaxVideoUploadBytesForUser(userId: string): Promise<bigint> {
+  const hostCeiling = getConfiguredMaxVideoUploadBytes();
+
+  if (!isStripeFeatureEnabled()) {
+    return hostCeiling ?? DEFAULT_MAX_VIDEO_UPLOAD_BYTES;
+  }
+
+  const { limitBytes } = await getStorageContextForUser(userId);
+  const quotaCeiling = getMaxUploadBytesForLimit(limitBytes);
+
+  return hostCeiling !== null && hostCeiling < quotaCeiling ? hostCeiling : quotaCeiling;
 }
 
 /**
@@ -68,8 +102,8 @@ export function storageExceededResponse(context: StorageContext): NextResponse {
   }
 
   return apiErrors.trialStorageExceeded(
-    `Your free trial includes ${formatStorageLimit(context.limitBytes)} of storage. ` +
-      `Upgrade to get ${formatStorageLimit(PLAN_STORAGE_LIMIT_BYTES)}.`
+    `Your free trial includes ${formatSizeLimit(context.limitBytes)} of storage. ` +
+      `Upgrade to get ${formatSizeLimit(PLAN_STORAGE_LIMIT_BYTES)}.`
   ) as NextResponse;
 }
 
