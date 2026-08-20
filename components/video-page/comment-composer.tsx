@@ -395,9 +395,7 @@ export const CommentComposer = memo(function CommentComposer({
               )}
             </div>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Cmd+Enter to submit &middot; paste or drop up to {MAX_COMMENT_IMAGES} images
-          </p>
+          <p className="text-xs text-muted-foreground mt-2">Cmd+Enter to submit</p>
         </>
       )}
     </div>
