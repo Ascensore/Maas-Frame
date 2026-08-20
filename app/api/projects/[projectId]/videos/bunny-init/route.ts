@@ -6,10 +6,11 @@ import { rateLimit } from '@/lib/rate-limit';
 import crypto from 'crypto';
 import { cleanupBunnyStreamVideos } from '@/lib/bunny-stream-cleanup';
 import { createBunnyUploadToken, readBunnyUploadGrant } from '@/lib/bunny-upload-token';
-import { getMaxVideoUploadBytes, isBunnyUploadsEnabled } from '@/lib/feature-flags';
+import { isBunnyUploadsEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
 import {
   enforceStorageQuota,
+  getMaxVideoUploadBytesForUser,
   releaseStorageReservation,
   reserveStorageQuota,
   UPLOAD_RESERVATION_PURPOSES,
@@ -84,12 +85,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // halfway through, and the reservation written below makes concurrent
     // uploads visible to each other, where previously every request in the same
     // two-minute window read the same stale total and every one of them passed.
-    const declaredSize = parseDeclaredUploadSize(body?.sizeBytes, getMaxVideoUploadBytes());
+    const billedUserId = project.workspace.ownerId;
+    const declaredSize = parseDeclaredUploadSize(
+      body?.sizeBytes,
+      await getMaxVideoUploadBytesForUser(billedUserId)
+    );
     if ('error' in declaredSize) {
       return apiErrors.badRequest(declaredSize.error);
     }
 
-    const billedUserId = project.workspace.ownerId;
     const quotaError = await enforceStorageQuota(billedUserId, declaredSize.sizeBytes);
     if (quotaError) return quotaError;
 

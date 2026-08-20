@@ -1,5 +1,5 @@
 import { db } from '@/lib/db';
-import { getMaxVideoUploadBytes } from '@/lib/feature-flags';
+import { getConfiguredMaxVideoUploadBytes } from '@/lib/feature-flags';
 import { deleteR2Object, deleteVideoObject, headVideoObject, readVideoObjectBytes } from '@/lib/r2';
 import { parseR2UploadToken, verifyR2UploadToken } from '@/lib/r2-upload-token';
 import {
@@ -154,7 +154,12 @@ export async function finalizeR2VideoUpload(
     return cancelPendingUpload('Uploaded video was not found in storage');
   }
 
-  if (head.contentLength > getMaxVideoUploadBytes()) {
+  // Only the host's absolute cap is re-checked here. The account's own ceiling
+  // was applied when the upload was initiated, and re-deriving it now would
+  // delete a finished upload over a plan that lapsed while the bytes were in
+  // flight. Anything larger than what was declared is caught on the next line.
+  const hostCeiling = getConfiguredMaxVideoUploadBytes();
+  if (hostCeiling !== null && head.contentLength > hostCeiling) {
     return cancelPendingUpload('Uploaded video exceeds the maximum allowed upload size');
   }
 

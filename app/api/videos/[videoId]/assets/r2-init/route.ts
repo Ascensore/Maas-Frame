@@ -14,7 +14,7 @@ import {
   deleteR2Object,
   deleteVideoObject,
 } from '@/lib/r2';
-import { getMaxVideoUploadBytes, isS3VideoUploadsEnabled } from '@/lib/feature-flags';
+import { isS3VideoUploadsEnabled } from '@/lib/feature-flags';
 import {
   buildVideoObjectKey,
   getVideoExtensionFromMime,
@@ -24,10 +24,12 @@ import {
 import { logError } from '@/lib/logger';
 import {
   enforceStorageQuota,
+  getMaxVideoUploadBytesForUser,
   releaseStorageReservation,
   reserveStorageQuota,
   UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
+import { uploadTooLargeMessage } from '@/lib/upload-size';
 import { createR2UploadSession } from '@/lib/r2-upload-session';
 import { getVideoAssetAccessContext } from '@/lib/video-assets';
 
@@ -74,9 +76,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('sizeBytes must be a positive integer');
     }
 
-    const maxBytes = getMaxVideoUploadBytes();
+    const billedUserId = context.video.project.workspace.ownerId;
+    const projectId = context.video.projectId;
+
+    const maxBytes = await getMaxVideoUploadBytesForUser(billedUserId);
     if (sizeBytes > maxBytes) {
-      return apiErrors.badRequest('Video file exceeds the maximum allowed upload size');
+      return apiErrors.badRequest(uploadTooLargeMessage(maxBytes));
     }
 
     const contentType = resolveVideoContentType(fileName, contentTypeInput);
@@ -88,9 +93,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!ext) {
       return apiErrors.badRequest('Unsupported video format');
     }
-
-    const billedUserId = context.video.project.workspace.ownerId;
-    const projectId = context.video.projectId;
 
     const quotaError = await enforceStorageQuota(billedUserId, sizeBytes + THUMBNAIL_RESERVE_BYTES);
     if (quotaError) return quotaError;

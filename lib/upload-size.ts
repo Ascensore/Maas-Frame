@@ -7,8 +7,27 @@
 export type DeclaredUploadSize = { sizeBytes: bigint } | { error: string };
 
 /**
+ * A byte count in the unit a person reading a limit expects.
+ *
+ * Whole gigabytes where the number is whole, which most ceilings we ship are,
+ * and one decimal otherwise so a share of a small quota is not rounded into a
+ * lie. Lives here rather than next to the quota because the upload routes need
+ * it too, and this module imports nothing.
+ */
+export function formatSizeLimit(bytes: bigint): string {
+  const gigabytes = Number(bytes) / 1024 ** 3;
+  if (gigabytes < 1) return `${Math.round(Number(bytes) / 1024 ** 2)} MB`;
+  return `${Number.isInteger(gigabytes) ? gigabytes : gigabytes.toFixed(1)} GB`;
+}
+
+/** The refusal, with the ceiling in it, so the client knows what would fit. */
+export function uploadTooLargeMessage(maxBytes: bigint): string {
+  return `File exceeds the maximum allowed upload size (${formatSizeLimit(maxBytes)})`;
+}
+
+/**
  * Reads a declared upload size, refusing anything that is not a whole positive
- * number of bytes within the host's per-file ceiling.
+ * number of bytes within the ceiling this account is held to.
  *
  * The number is the client's word and is treated as such. Overstating it only
  * spends the caller's own quota, and understating it is caught where the bytes
@@ -34,7 +53,7 @@ export function parseDeclaredUploadSize(raw: unknown, maxBytes: bigint): Declare
   }
 
   if (sizeBytes > maxBytes) {
-    return { error: 'File exceeds the maximum allowed upload size' };
+    return { error: uploadTooLargeMessage(maxBytes) };
   }
 
   return { sizeBytes };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  getMaxVideoUploadBytes,
+  getConfiguredMaxVideoUploadBytes,
   getR2MultipartPartSizeBytes,
   getR2MultipartThresholdBytes,
   hasBunnyUploadsConfig,
@@ -264,26 +264,26 @@ describe('direct upload precedence', () => {
   });
 });
 
-describe('getMaxVideoUploadBytes', () => {
-  it('defaults to 5 GiB', () => {
-    expect(getMaxVideoUploadBytes()).toBe(BigInt(5) * GIB);
+describe('getConfiguredMaxVideoUploadBytes', () => {
+  it('is null when unset, leaving the ceiling to the account quota', () => {
+    expect(getConfiguredMaxVideoUploadBytes()).toBeNull();
   });
 
   it('uses a valid explicit byte count', () => {
     vi.stubEnv('OPENFRAME_MAX_VIDEO_UPLOAD_BYTES', '1073741824');
-    expect(getMaxVideoUploadBytes()).toBe(GIB);
+    expect(getConfiguredMaxVideoUploadBytes()).toBe(GIB);
   });
 
   it('trims surrounding whitespace before parsing', () => {
     vi.stubEnv('OPENFRAME_MAX_VIDEO_UPLOAD_BYTES', '  1073741824  ');
-    expect(getMaxVideoUploadBytes()).toBe(GIB);
+    expect(getConfiguredMaxVideoUploadBytes()).toBe(GIB);
   });
 
   it.each(['0', '-1', '-1073741824', 'abc', '1.5', '1e9', '1_000', '  '])(
-    'falls back to 5 GiB for the invalid value %s',
+    'reads the invalid value %s as no ceiling rather than as a number',
     (raw) => {
       vi.stubEnv('OPENFRAME_MAX_VIDEO_UPLOAD_BYTES', raw);
-      expect(getMaxVideoUploadBytes()).toBe(BigInt(5) * GIB);
+      expect(getConfiguredMaxVideoUploadBytes()).toBeNull();
     }
   );
 });

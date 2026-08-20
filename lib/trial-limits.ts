@@ -26,10 +26,10 @@ export const TRIAL_PROJECT_LIMIT = 1;
  */
 export const TRIAL_STORAGE_LIMIT_BYTES = BigInt(3) * BigInt(1024) * BigInt(1024) * BigInt(1024);
 
-// There is deliberately no separate per-file ceiling for trials. The default
-// per-file limit is 5 GiB and the trial's total is 3 GiB, so the quota check
-// already refuses anything bigger, and a second limit would only add a second
-// way to be told no.
+// There is deliberately no separate per-file ceiling for trials. The per-file
+// ceiling is a share of whatever limit applies to the account (see
+// `getMaxVideoUploadBytesForUser`), so a trial is already held to 80% of these
+// 3 GiB without a second number to keep in step with this one.
 
 export function getStorageLimitBytes(isPaid: boolean, planLimitBytes: bigint): bigint {
   if (isPaid) return planLimitBytes;
