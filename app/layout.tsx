@@ -2,6 +2,10 @@ import type { Metadata } from 'next';
 import { Geist_Mono, JetBrains_Mono } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ThemeProvider } from '@/components/theme-provider';
+import {
+  buildRuntimePublicConfig,
+  RUNTIME_PUBLIC_CONFIG_ELEMENT_ID,
+} from '@/lib/runtime-public-config';
 import { seoConfig } from '@/lib/seo';
 import './globals.css';
 
@@ -120,6 +124,16 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="antialiased min-h-screen bg-background font-sans">
+        {/* Not executed, only parsed by readRuntimePublicConfig(). It carries the
+            public settings the browser cannot get from NEXT_PUBLIC_* variables,
+            which are frozen into the bundle when the image is built. */}
+        <script
+          id={RUNTIME_PUBLIC_CONFIG_ELEMENT_ID}
+          type="application/json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(buildRuntimePublicConfig()).replace(/</g, '\\u003c'),
+          }}
+        />
         {/* One script per object: single-object payloads with a top-level
             @context survive naive JSON-LD consumers that choke on arrays. */}
         {structuredData.map((data) => (

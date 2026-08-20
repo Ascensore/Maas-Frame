@@ -125,6 +125,9 @@ function urlsFetched(): string[] {
 }
 
 beforeEach(() => {
+  // The runtime resolver reads BUNNY_CDN_URL first, so pin it rather than
+  // inheriting the value a developer has in .env.
+  vi.stubEnv('BUNNY_CDN_URL', undefined);
   vi.stubEnv('NEXT_PUBLIC_BUNNY_CDN_URL', `https://${BUNNY_HOST}`);
   vi.stubEnv('NEXT_PUBLIC_DIRECT_DOWNLOAD_ALLOWED_HOSTS', ALLOWED_DIRECT_HOST);
   clicked = [];
