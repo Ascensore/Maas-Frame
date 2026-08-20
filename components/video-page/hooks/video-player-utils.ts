@@ -103,10 +103,11 @@ export function timeFromClientX(
 export const YOUTUBE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 export const NATIVE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 6, 8, 16];
 
-// Past 4x the browsers stop pitch-correcting and drop the audio track entirely.
-// The video still plays, so the fast rates are worth offering, but the picker
-// says so rather than letting a silent 8x read as a broken file.
-export const SILENT_ABOVE_SPEED = 4;
+// The browsers keep the audio track well past the point where they stop
+// pitch-correcting: playback is still audible at 8x, and only the 16x clamp is
+// silent. The video plays either way, so the rate stays on the ladder and the
+// picker labels it rather than letting a silent 16x read as a broken file.
+export const SILENT_ABOVE_SPEED = 8;
 
 export function getSpeedOptionsForProvider(providerId: string | null | undefined): number[] {
   return providerId === 'youtube' ? YOUTUBE_SPEED_OPTIONS : NATIVE_SPEED_OPTIONS;
