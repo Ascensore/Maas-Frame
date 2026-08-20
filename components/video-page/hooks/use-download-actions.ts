@@ -10,6 +10,7 @@ import type {
   VideoData,
 } from '@/components/video-page/types';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { resolvePublicDirectDownloadAllowedHosts } from '@/lib/runtime-public-config';
 import {
   downloadNamedFile,
   downloadProgressLabel,
@@ -32,11 +33,9 @@ function sanitizeDownloadFileName(value: string): string {
 function getAllowedHosts() {
   const bunnyCdnHostname = resolvePublicBunnyCdnHostname();
   return [
-    ...(bunnyCdnHostname ? [bunnyCdnHostname] : []),
-    ...(process.env.NEXT_PUBLIC_DIRECT_DOWNLOAD_ALLOWED_HOSTS ?? '').split(','),
-  ]
-    .map((host) => host.trim().toLowerCase())
-    .filter(Boolean);
+    ...(bunnyCdnHostname ? [bunnyCdnHostname.trim().toLowerCase()] : []),
+    ...resolvePublicDirectDownloadAllowedHosts(),
+  ].filter(Boolean);
 }
 
 function getSafeDirectDownloadUrl(rawUrl: string): string | null {

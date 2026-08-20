@@ -103,11 +103,13 @@ describe('resolvePublicBunnyCdnHostname', () => {
     expect(resolvePublicBunnyCdnHostname()).toBeNull();
   });
 
-  it('reads only the public variable, ignoring the server-only one', () => {
-    // This runs in the browser bundle, where BUNNY_CDN_URL is never inlined.
+  it('falls back to the server variable when no config has been injected', () => {
+    // No document here, which is the SSR pass of a client component: the
+    // server-only variable is readable and has to yield the same hostname the
+    // browser will read out of the injected config, or hydration diverges.
     vi.stubEnv('BUNNY_CDN_URL', 'https://server.b-cdn.net');
 
-    expect(resolvePublicBunnyCdnHostname()).toBeNull();
+    expect(resolvePublicBunnyCdnHostname()).toBe('server.b-cdn.net');
   });
 
   it('reduces the configured public url to its hostname', () => {

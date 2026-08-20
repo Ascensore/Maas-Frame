@@ -173,6 +173,9 @@ function makeFile(name = 'my clip.mp4') {
 beforeEach(() => {
   tusUploads.length = 0;
   tusFailure = null;
+  // The runtime resolver reads BUNNY_CDN_URL first, so pin it rather than
+  // inheriting the value a developer has in .env.
+  vi.stubEnv('BUNNY_CDN_URL', undefined);
   vi.stubEnv('NEXT_PUBLIC_BUNNY_CDN_URL', 'https://cdn.example.test');
   fetchMock = vi.fn((url: string) => {
     if (url === BUNNY_INIT_URL) {
