@@ -82,7 +82,7 @@ export default async function AdminDashboardPage() {
       where: { voiceUrl: { not: null } },
     }),
     db.comment.count({
-      where: { imageUrl: { not: null } },
+      where: { images: { some: {} } },
     }),
   ]);
 

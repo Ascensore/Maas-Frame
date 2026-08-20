@@ -15,6 +15,7 @@ export interface CreateCommentInput {
   tagId?: string | null;
   annotationData?: string | null;
   imageUrl?: string | null;
+  imageUrls?: string[];
   voiceUrl?: string | null;
   voiceDuration?: number | null;
   isResolved?: boolean;
@@ -23,6 +24,8 @@ export interface CreateCommentInput {
 
 export async function createComment(input: CreateCommentInput): Promise<Comment> {
   const seq = nextSeq();
+  // A comment's images live in their own table; `imageUrl` is the first of them.
+  const imageUrls = input.imageUrls ?? (input.imageUrl ? [input.imageUrl] : []);
   return db.comment.create({
     data: {
       versionId: input.versionId,
@@ -36,7 +39,8 @@ export async function createComment(input: CreateCommentInput): Promise<Comment>
       parentId: input.parentId ?? null,
       tagId: input.tagId ?? null,
       annotationData: input.annotationData ?? null,
-      imageUrl: input.imageUrl ?? null,
+      imageUrl: imageUrls[0] ?? null,
+      images: { create: imageUrls.map((url, index) => ({ url, position: index })) },
       voiceUrl: input.voiceUrl ?? null,
       voiceDuration: input.voiceDuration ?? null,
       isResolved: input.isResolved ?? false,

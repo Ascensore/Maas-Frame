@@ -2,18 +2,7 @@
 
 import { memo, type RefObject } from 'react';
 import Link from 'next/link';
-import {
-  Image as ImageIcon,
-  Loader2,
-  Mic,
-  Pause,
-  Pencil,
-  Play,
-  Send,
-  Tag,
-  Trash2,
-  X,
-} from 'lucide-react';
+import { Image as ImageIcon, Loader2, Mic, Pause, Pencil, Play, Send, Tag, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -23,6 +12,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { AnnotationStroke } from '@/components/annotation-canvas';
+import { ImageAttachmentStrip } from '@/components/video-page/image-attachments';
+import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
 import { MentionTextarea } from '@/components/video-page/mention-textarea';
 import type { CommentTag, VideoAsset } from '@/components/video-page/types';
 
@@ -32,9 +23,9 @@ interface CommentComposerProps {
   stopRecording: () => void;
   cancelRecording: () => void;
   audioBlob: Blob | null;
-  imageBlob: File | null;
+  imageFiles: File[];
   imageInputRef: RefObject<HTMLInputElement | null>;
-  setImageBlob: (blob: File | null) => void;
+  removeImageFile: (index: number) => void;
   commentText: string;
   setCommentText: (value: string) => void;
   commentRangeStart: number | null;
@@ -58,8 +49,8 @@ interface CommentComposerProps {
   handleAddComment: () => void;
   isSubmittingComment: boolean;
   startRecording: () => void;
-  handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>, isReply?: boolean) => void;
-  handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>, isReply?: boolean) => void;
+  handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   availableTags: CommentTag[];
   selectedTagId: string | null;
   setSelectedTagId: (value: string | null) => void;
@@ -75,9 +66,9 @@ export const CommentComposer = memo(function CommentComposer({
   stopRecording,
   cancelRecording,
   audioBlob,
-  imageBlob,
+  imageFiles,
   imageInputRef,
-  setImageBlob,
+  removeImageFile,
   commentText,
   setCommentText,
   commentRangeStart,
@@ -179,28 +170,7 @@ export const CommentComposer = memo(function CommentComposer({
             </Button>
           </div>
 
-          {imageBlob && (
-            <div className="relative group rounded-md overflow-hidden bg-muted flex items-center justify-center max-h-40 mb-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={URL.createObjectURL(imageBlob)}
-                alt="Preview"
-                className="max-h-40 w-auto object-contain"
-              />
-              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                <Button
-                  size="icon"
-                  variant="destructive"
-                  onClick={() => {
-                    setImageBlob(null);
-                    if (imageInputRef.current) imageInputRef.current.value = '';
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          )}
+          <ImageAttachmentStrip files={imageFiles} onRemoveFile={removeImageFile} />
 
           <MentionTextarea
             placeholder="Add a note to your voice comment (optional)..."
@@ -271,28 +241,7 @@ export const CommentComposer = memo(function CommentComposer({
               </button>
             </div>
           )}
-          {imageBlob && (
-            <div className="relative group rounded-md overflow-hidden bg-muted flex items-center justify-center max-h-40 mb-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={URL.createObjectURL(imageBlob)}
-                alt="Preview"
-                className="max-h-40 w-auto object-contain"
-              />
-              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                <Button
-                  size="icon"
-                  variant="destructive"
-                  onClick={() => {
-                    setImageBlob(null);
-                    if (imageInputRef.current) imageInputRef.current.value = '';
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          )}
+          <ImageAttachmentStrip files={imageFiles} onRemoveFile={removeImageFile} />
           <div className="mb-2 flex items-center gap-2 flex-wrap">
             <Button
               size="sm"
@@ -332,7 +281,7 @@ export const CommentComposer = memo(function CommentComposer({
                     handleAddComment();
                   }
                 }}
-                onPaste={(e) => handlePaste(e, false)}
+                onPaste={handlePaste}
               />
             </div>
             <div className="flex flex-col gap-1 self-end">
@@ -340,7 +289,7 @@ export const CommentComposer = memo(function CommentComposer({
                 size="icon"
                 onClick={handleAddComment}
                 disabled={
-                  (!commentText.trim() && !imageBlob && !annotationStrokes) ||
+                  (!commentText.trim() && imageFiles.length === 0 && !annotationStrokes) ||
                   isSubmittingComment ||
                   isUploadingImage
                 }
@@ -363,7 +312,8 @@ export const CommentComposer = memo(function CommentComposer({
                 size="icon"
                 variant="outline"
                 onClick={() => imageInputRef.current?.click()}
-                title="Attach Image"
+                disabled={imageFiles.length >= MAX_COMMENT_IMAGES}
+                title={`Attach images (up to ${MAX_COMMENT_IMAGES})`}
               >
                 <ImageIcon className="h-4 w-4" />
               </Button>
@@ -387,6 +337,7 @@ export const CommentComposer = memo(function CommentComposer({
               <input
                 type="file"
                 accept="image/*"
+                multiple
                 className="hidden"
                 ref={imageInputRef}
                 onChange={handleImageSelect}
@@ -444,7 +395,9 @@ export const CommentComposer = memo(function CommentComposer({
               )}
             </div>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">Cmd+Enter to submit</p>
+          <p className="text-xs text-muted-foreground mt-2">
+            Cmd+Enter to submit &middot; paste or drop up to {MAX_COMMENT_IMAGES} images
+          </p>
         </>
       )}
     </div>

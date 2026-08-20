@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useState, type ChangeEvent } from 'react';
+import { useState, type ChangeEvent, type ClipboardEvent } from 'react';
 import { act, renderHook, type RenderHookResult } from '@testing-library/react';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import type { Comment, CommentTag, VideoData } from '@/components/video-page/types';
@@ -31,7 +31,7 @@ function makeComment(overrides: Partial<Comment> = {}): Comment {
     timestampEnd: null,
     voiceUrl: null,
     voiceDuration: null,
-    imageUrl: null,
+    images: [],
     annotationData: null,
     isResolved: false,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -79,7 +79,7 @@ function makeVideo(): VideoData {
                 timestampEnd: null,
                 voiceUrl: null,
                 voiceDuration: null,
-                imageUrl: null,
+                images: [],
                 annotationData: null,
                 createdAt: '2026-01-01T00:01:00.000Z',
                 author: { id: 'user2', name: 'Linus', image: null },
@@ -495,7 +495,7 @@ describe('useCommentActions replying', () => {
     timestampEnd: null,
     voiceUrl: null,
     voiceDuration: null,
-    imageUrl: null,
+    images: [],
     annotationData: null,
     createdAt: '2026-01-02T00:00:00.000Z',
     author: { id: 'user1', name: 'Ada', image: null },
@@ -815,6 +815,7 @@ describe('useCommentActions editing', () => {
 
     expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0])).toEqual({
       content: 'Reworded note',
+      imageUrls: [],
     });
     expect(findComment(harness, 'c1')?.tag).toEqual(TAGS[0]);
   });
@@ -832,6 +833,7 @@ describe('useCommentActions editing', () => {
 
     expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0])).toEqual({
       content: 'Reworded note',
+      imageUrls: [],
       tagId: null,
     });
     expect(findComment(harness, 'c1')?.tag).toBeNull();
@@ -850,6 +852,196 @@ describe('useCommentActions editing', () => {
 
     expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0]).tagId).toBe('tag-audio');
     expect(findComment(harness, 'c1')?.tag).toEqual(TAGS[0]);
+  });
+});
+
+// A screenshot batch arrives as several clipboard items in one paste, and the
+// composer used to keep only the first of them.
+describe('useCommentActions image attachments', () => {
+  // A one-pixel PNG header is enough: the client only sniffs the magic bytes.
+  function pngFile(name: string): File {
+    return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], name, {
+      type: 'image/png',
+    });
+  }
+
+  function pasteOf(files: File[]) {
+    return {
+      clipboardData: {
+        items: files.map((file) => ({ type: file.type, getAsFile: () => file })),
+      },
+      preventDefault: vi.fn(),
+    } as unknown as ClipboardEvent<HTMLTextAreaElement>;
+  }
+
+  beforeEach(() => {
+    let uploaded = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/api/upload/image') {
+        uploaded += 1;
+        return Promise.resolve(ok({ data: { url: `/api/upload/image/shot-${uploaded}.png` } }));
+      }
+      if (url === `/api/versions/${ACTIVE_VERSION}/comments`) {
+        return Promise.resolve(ok({ data: serverComment }));
+      }
+      return Promise.resolve(ok({ data: {} }));
+    });
+  });
+
+  it('stages every image in a single paste', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(
+        pasteOf([pngFile('a.png'), pngFile('b.png'), pngFile('c.png')])
+      );
+    });
+
+    expect(harness.result.current.actions.imageFiles.map((file) => file.name)).toEqual([
+      'a.png',
+      'b.png',
+      'c.png',
+    ]);
+  });
+
+  it('stops at the cap and says so', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(
+        pasteOf(['a', 'b', 'c', 'd', 'e', 'f'].map((name) => pngFile(`${name}.png`)))
+      );
+    });
+
+    expect(harness.result.current.actions.imageFiles).toHaveLength(5);
+    expect(toastError).toHaveBeenCalledWith('Only 5 more images fit on this comment');
+  });
+
+  it('uploads each staged image and posts the whole list', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(
+        pasteOf([pngFile('a.png'), pngFile('b.png')])
+      );
+    });
+    act(() => harness.result.current.actions.setCommentText('Two shots'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(callsTo('/api/upload/image', 'POST')).toHaveLength(2);
+    expect(bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0])).toEqual({
+      content: 'Two shots',
+      timestamp: 12,
+      imageUrls: ['/api/upload/image/shot-1.png', '/api/upload/image/shot-2.png'],
+    });
+    expect(harness.result.current.actions.imageFiles).toEqual([]);
+  });
+
+  it('sends the images a reply was pasted into', async () => {
+    const harness = renderActions();
+
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(
+        pasteOf([pngFile('a.png'), pngFile('b.png')]),
+        'reply'
+      );
+    });
+    act(() => harness.result.current.actions.setReplyText('Same here'));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    const body = bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0]);
+    expect(body.parentId).toBe('c1');
+    expect(body.imageUrls).toEqual([
+      '/api/upload/image/shot-1.png',
+      '/api/upload/image/shot-2.png',
+    ]);
+    // The composer's own staging must not have been touched by a reply paste.
+    expect(harness.result.current.actions.imageFiles).toEqual([]);
+  });
+
+  it('seeds the editor from the comment and saves only the images left on it', async () => {
+    const harness = renderActions();
+    const existing = makeComment({
+      id: 'c1',
+      images: [
+        { id: 'i1', url: '/api/upload/image/kept.png' },
+        { id: 'i2', url: '/api/upload/image/dropped.png' },
+      ],
+    });
+
+    act(() => harness.result.current.actions.startEditingComment(existing));
+    expect(harness.result.current.actions.editImageUrls).toEqual([
+      '/api/upload/image/kept.png',
+      '/api/upload/image/dropped.png',
+    ]);
+
+    act(() => harness.result.current.actions.removeEditImageUrl('/api/upload/image/dropped.png'));
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0]).imageUrls).toEqual([
+      '/api/upload/image/kept.png',
+    ]);
+    expect(findComment(harness, 'c1')?.images.map((image) => image.url)).toEqual([
+      '/api/upload/image/kept.png',
+    ]);
+  });
+
+  it('uploads an image pasted into an open editor and appends it to the comment', async () => {
+    const harness = renderActions();
+    const existing = makeComment({
+      id: 'c1',
+      images: [{ id: 'i1', url: '/api/upload/image/kept.png' }],
+    });
+
+    act(() => harness.result.current.actions.startEditingComment(existing));
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(pasteOf([pngFile('new.png')]), 'edit');
+    });
+
+    expect(harness.result.current.actions.editImageFiles).toHaveLength(1);
+
+    await act(async () => {
+      await harness.result.current.actions.handleEditComment('c1');
+    });
+
+    expect(callsTo('/api/upload/image', 'POST')).toHaveLength(1);
+    expect(bodyOf(callsTo('/api/comments/c1', 'PATCH')[0]).imageUrls).toEqual([
+      '/api/upload/image/kept.png',
+      '/api/upload/image/shot-1.png',
+    ]);
+    // The editor closes on a successful save, so its staging has to be empty.
+    expect(harness.result.current.actions.editImageFiles).toEqual([]);
+    expect(harness.result.current.actions.editingCommentId).toBeNull();
+  });
+
+  it('counts the images already on the comment against the cap', async () => {
+    const harness = renderActions();
+    const existing = makeComment({
+      id: 'c1',
+      images: [
+        { id: 'i1', url: '/api/upload/image/one.png' },
+        { id: 'i2', url: '/api/upload/image/two.png' },
+        { id: 'i3', url: '/api/upload/image/three.png' },
+        { id: 'i4', url: '/api/upload/image/four.png' },
+      ],
+    });
+
+    act(() => harness.result.current.actions.startEditingComment(existing));
+    await act(async () => {
+      await harness.result.current.actions.handlePaste(
+        pasteOf([pngFile('a.png'), pngFile('b.png'), pngFile('c.png')]),
+        'edit'
+      );
+    });
+
+    expect(harness.result.current.actions.editImageFiles).toHaveLength(1);
+    expect(toastError).toHaveBeenCalledWith('Only 1 more image fits on this comment');
   });
 });
 

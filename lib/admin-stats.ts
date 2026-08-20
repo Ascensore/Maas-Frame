@@ -390,10 +390,10 @@ export async function getCachedUserMediaStorage(): Promise<
 
     const [mediaComments, imageAssets, audioAssets] = await Promise.all([
       db.comment.findMany({
-        where: { OR: [{ voiceUrl: { not: null } }, { imageUrl: { not: null } }] },
+        where: { OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }] },
         select: {
           voiceUrl: true,
-          imageUrl: true,
+          images: { select: { url: true } },
           version: {
             select: {
               video: {
@@ -448,8 +448,8 @@ export async function getCachedUserMediaStorage(): Promise<
         }
       }
 
-      if (comment.imageUrl) {
-        const keyParts = comment.imageUrl.split('/');
+      for (const image of comment.images) {
+        const keyParts = image.url.split('/');
         const filename = keyParts[keyParts.length - 1];
         const r2Key = `images/${filename}`;
         const dedupeKey = `${billedUserId}:${r2Key}`;

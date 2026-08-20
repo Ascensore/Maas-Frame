@@ -18,16 +18,22 @@ export async function validateImageFile(file: File): Promise<string | null> {
   return null;
 }
 
-export function extractPastedImageFile(data: DataTransfer | null | undefined): File | null {
+/**
+ * Every image on the clipboard or in a drop, in the order the browser lists them.
+ * A screenshot batch arrives as several items in one paste, so taking only the
+ * first would silently drop the rest.
+ */
+export function extractPastedImageFiles(data: DataTransfer | null | undefined): File[] {
   const items = data?.items;
-  if (!items) return null;
+  if (!items) return [];
 
+  const files: File[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (!item.type.startsWith('image/')) continue;
     const file = item.getAsFile();
-    if (file) return file;
+    if (file) files.push(file);
   }
 
-  return null;
+  return files;
 }

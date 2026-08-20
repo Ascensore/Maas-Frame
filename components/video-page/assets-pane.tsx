@@ -38,7 +38,7 @@ import { AssetListSection } from '@/components/video-page/asset-list-section';
 import type { DirectUploadProvider, VideoAsset } from '@/components/video-page/types';
 import { uploadAssetVideoToR2 } from '@/lib/client/r2-asset-video-upload';
 import {
-  extractPastedImageFile,
+  extractPastedImageFiles,
   validateImageFile,
 } from '@/components/video-page/image-upload-utils';
 import { useCommentMedia } from '@/components/video-page/hooks/use-comment-media';
@@ -472,10 +472,10 @@ export const AssetsPane = memo(function AssetsPane({
 
   const handleImagePaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
     if (uploadTab !== 'image' || !canUploadAssets || isCreatingAsset) return;
-    const pastedImage = extractPastedImageFile(event.clipboardData);
-    if (!pastedImage) return;
+    const pastedImages = extractPastedImageFiles(event.clipboardData);
+    if (pastedImages.length === 0) return;
     event.preventDefault();
-    await stageImageFiles([pastedImage]);
+    await stageImageFiles(pastedImages);
   };
 
   const handleCreateYoutubeAsset = async () => {

@@ -146,44 +146,51 @@ async function findReferencedUrls(urls: string[]): Promise<Set<string>> {
   ).userFeedbackScreenshot;
 
   for (const group of chunk(urls, CHUNK_SIZE)) {
-    const [commentRows, feedbackRows, feedbackAttachmentRows, assetRows, versionRows] =
-      await Promise.all([
-        db.comment.findMany({
-          where: {
-            OR: [{ voiceUrl: { in: group } }, { imageUrl: { in: group } }],
-          },
-          select: {
-            voiceUrl: true,
-            imageUrl: true,
-          },
-        }),
-        db.userFeedback.findMany({
-          where: { screenshotUrl: { in: group } },
-          select: { screenshotUrl: true },
-        }),
-        userFeedbackScreenshotDelegate
-          ? userFeedbackScreenshotDelegate.findMany({
-              where: { url: { in: group } },
-              select: { url: true },
-            })
-          : Promise.resolve([] as Array<{ url: string }>),
-        db.videoAsset.findMany({
-          where: {
-            OR: [{ sourceUrl: { in: group } }, { thumbnailUrl: { in: group } }],
-          },
-          select: { sourceUrl: true, thumbnailUrl: true },
-        }),
-        db.videoVersion.findMany({
-          where: {
-            OR: [{ originalUrl: { in: group } }, { thumbnailUrl: { in: group } }],
-          },
-          select: { originalUrl: true, thumbnailUrl: true },
-        }),
-      ]);
+    const [
+      commentRows,
+      commentImageRows,
+      feedbackRows,
+      feedbackAttachmentRows,
+      assetRows,
+      versionRows,
+    ] = await Promise.all([
+      db.comment.findMany({
+        where: { voiceUrl: { in: group } },
+        select: { voiceUrl: true },
+      }),
+      db.commentImage.findMany({
+        where: { url: { in: group } },
+        select: { url: true },
+      }),
+      db.userFeedback.findMany({
+        where: { screenshotUrl: { in: group } },
+        select: { screenshotUrl: true },
+      }),
+      userFeedbackScreenshotDelegate
+        ? userFeedbackScreenshotDelegate.findMany({
+            where: { url: { in: group } },
+            select: { url: true },
+          })
+        : Promise.resolve([] as Array<{ url: string }>),
+      db.videoAsset.findMany({
+        where: {
+          OR: [{ sourceUrl: { in: group } }, { thumbnailUrl: { in: group } }],
+        },
+        select: { sourceUrl: true, thumbnailUrl: true },
+      }),
+      db.videoVersion.findMany({
+        where: {
+          OR: [{ originalUrl: { in: group } }, { thumbnailUrl: { in: group } }],
+        },
+        select: { originalUrl: true, thumbnailUrl: true },
+      }),
+    ]);
 
     for (const row of commentRows) {
       if (row.voiceUrl) referenced.add(row.voiceUrl);
-      if (row.imageUrl) referenced.add(row.imageUrl);
+    }
+    for (const row of commentImageRows) {
+      if (row.url) referenced.add(row.url);
     }
     for (const row of feedbackRows) {
       if (row.screenshotUrl) referenced.add(row.screenshotUrl);

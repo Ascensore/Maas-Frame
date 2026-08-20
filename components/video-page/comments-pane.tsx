@@ -36,7 +36,19 @@ import {
 import { cn } from '@/lib/utils';
 import { MentionTextarea } from '@/components/video-page/mention-textarea';
 import { CommentRichText } from '@/components/video-page/comment-rich-text';
-import type { Comment, CommentTag, Version, VideoAsset } from '@/components/video-page/types';
+import {
+  CommentImageGallery,
+  ImageAttachmentStrip,
+} from '@/components/video-page/image-attachments';
+import type { ImageAttachTarget } from '@/components/video-page/hooks/use-comment-actions';
+import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
+import type {
+  Comment,
+  CommentReply,
+  CommentTag,
+  Version,
+  VideoAsset,
+} from '@/components/video-page/types';
 
 interface CommentsPaneProps {
   isMobileCommentsOpen: boolean;
@@ -63,13 +75,17 @@ interface CommentsPaneProps {
   currentUserId: string | null;
   projectOwnerId: string;
   editingCommentId: string | null;
-  setEditingCommentId: (id: string | null) => void;
+  startEditingComment: (comment: Comment) => void;
+  startEditingReply: (reply: CommentReply) => void;
+  cancelEditingComment: () => void;
   editText: string;
   setEditText: (value: string) => void;
   editTagId: string | null | undefined;
   setEditTagId: (value: string | null | undefined) => void;
-  setEditAnnotationData: (value: string | null | undefined) => void;
-  setIsEditingAnnotation: (value: boolean) => void;
+  editImageUrls: string[];
+  editImageFiles: File[];
+  editImageInputRef: RefObject<HTMLInputElement | null>;
+  removeEditImageUrl: (url: string) => void;
   onStartEditAnnotation: () => void;
   isSubmittingEdit: boolean;
   availableTags: CommentTag[];
@@ -94,7 +110,7 @@ interface CommentsPaneProps {
   handleReplyComment: (
     parentId: string,
     voiceData?: { url: string; duration: number },
-    imageData?: { url: string }
+    imageUrls?: string[]
   ) => void;
   startReplyRecording: () => void;
   isReplyRecording: boolean;
@@ -102,12 +118,12 @@ interface CommentsPaneProps {
   stopReplyRecording: () => void;
   cancelReplyRecording: () => void;
   replyAudioBlob: Blob | null;
-  replyImageBlob: File | null;
-  setReplyImageBlob: (file: File | null) => void;
+  replyImageFiles: File[];
   replyImageInputRef: RefObject<HTMLInputElement | null>;
-  handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>, isReply?: boolean) => void;
-  handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>, isReply?: boolean) => void;
-  handleDrop: (e: React.DragEvent<HTMLDivElement>, isReply?: boolean) => void;
+  removeImageFile: (index: number, target: ImageAttachTarget) => void;
+  handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>, target?: ImageAttachTarget) => void;
+  handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>, target?: ImageAttachTarget) => void;
+  handleDrop: (e: React.DragEvent<HTMLDivElement>, target?: ImageAttachTarget) => void;
   submitReplyWithMedia: (parentId: string) => void;
   isSubmittingReply: boolean;
   isUploadingReplyAudio: boolean;
@@ -141,13 +157,17 @@ export const CommentsPane = memo(function CommentsPane({
   currentUserId,
   projectOwnerId,
   editingCommentId,
-  setEditingCommentId,
+  startEditingComment,
+  startEditingReply,
+  cancelEditingComment,
   editText,
   setEditText,
   editTagId,
   setEditTagId,
-  setEditAnnotationData,
-  setIsEditingAnnotation,
+  editImageUrls,
+  editImageFiles,
+  editImageInputRef,
+  removeEditImageUrl,
   onStartEditAnnotation,
   isSubmittingEdit,
   availableTags,
@@ -176,9 +196,9 @@ export const CommentsPane = memo(function CommentsPane({
   stopReplyRecording,
   cancelReplyRecording,
   replyAudioBlob,
-  replyImageBlob,
-  setReplyImageBlob,
+  replyImageFiles,
   replyImageInputRef,
+  removeImageFile,
   handleImageSelect,
   handlePaste,
   handleDrop,
@@ -241,12 +261,15 @@ export const CommentsPane = memo(function CommentsPane({
         onDrop={(e) => {
           setIsPaneDraggingOver(false);
           if (activePane !== 'comments') return;
-          handleDrop(e, replyingTo !== null);
+          handleDrop(
+            e,
+            editingCommentId !== null ? 'edit' : replyingTo !== null ? 'reply' : 'comment'
+          );
         }}
       >
         {isPaneDraggingOver && (
           <div className="absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-primary bg-primary/10 pointer-events-none">
-            <p className="text-sm font-medium text-primary">Drop image to attach</p>
+            <p className="text-sm font-medium text-primary">Drop images to attach</p>
           </div>
         )}
         <div className="shrink-0 p-4 border-b lg:cursor-default space-y-2">
@@ -446,13 +469,7 @@ export const CommentsPane = memo(function CommentsPane({
                                 Reply
                               </DropdownMenuItem>
                               {canEditComment && (
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setEditingCommentId(comment.id);
-                                    setEditText(comment.content || '');
-                                    setEditTagId(comment.tag?.id || null);
-                                  }}
-                                >
+                                <DropdownMenuItem onClick={() => startEditingComment(comment)}>
                                   <Pencil className="h-4 w-4 mr-2" />
                                   Edit
                                 </DropdownMenuItem>
@@ -486,19 +503,28 @@ export const CommentsPane = memo(function CommentsPane({
                               handleEditComment(comment.id);
                             }
                             if (e.key === 'Escape') {
-                              setEditingCommentId(null);
-                              setEditText('');
-                              setEditTagId(undefined);
-                              setEditAnnotationData(undefined);
-                              setIsEditingAnnotation(false);
+                              cancelEditingComment();
                             }
                           }}
+                          onPaste={(e) => handlePaste(e, 'edit')}
+                        />
+                        <ImageAttachmentStrip
+                          existingUrls={editImageUrls}
+                          onRemoveExisting={removeEditImageUrl}
+                          files={editImageFiles}
+                          onRemoveFile={(index) => removeImageFile(index, 'edit')}
+                          compact
                         />
                         <div className="flex items-center gap-1 flex-wrap">
                           <Button
                             size="sm"
                             onClick={() => handleEditComment(comment.id)}
-                            disabled={!editText.trim() || isSubmittingEdit}
+                            disabled={
+                              (!editText.trim() &&
+                                editImageUrls.length === 0 &&
+                                editImageFiles.length === 0) ||
+                              isSubmittingEdit
+                            }
                             className="h-7 text-xs"
                           >
                             {isSubmittingEdit ? (
@@ -510,17 +536,31 @@ export const CommentsPane = memo(function CommentsPane({
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => {
-                              setEditingCommentId(null);
-                              setEditText('');
-                              setEditTagId(undefined);
-                              setEditAnnotationData(undefined);
-                              setIsEditingAnnotation(false);
-                            }}
+                            onClick={cancelEditingComment}
                             className="h-7 text-xs"
                           >
                             Cancel
                           </Button>
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-7 w-7"
+                            onClick={() => editImageInputRef.current?.click()}
+                            disabled={
+                              editImageUrls.length + editImageFiles.length >= MAX_COMMENT_IMAGES
+                            }
+                            title={`Attach images (up to ${MAX_COMMENT_IMAGES})`}
+                          >
+                            <ImageIcon className="h-3.5 w-3.5" />
+                          </Button>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            ref={editImageInputRef}
+                            onChange={(e) => handleImageSelect(e, 'edit')}
+                          />
                           <Button
                             size="icon"
                             variant={comment.annotationData ? 'default' : 'outline'}
@@ -595,19 +635,11 @@ export const CommentsPane = memo(function CommentsPane({
                             />
                           </p>
                         )}
-                        {comment.imageUrl && (
-                          <div
-                            className="rounded-md overflow-hidden bg-muted mb-2 max-h-60 flex items-center justify-center cursor-pointer hover:opacity-90 transition-opacity"
-                            onClick={() => setPreviewImage(comment.imageUrl)}
-                          >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={comment.imageUrl}
-                              alt="Attachment"
-                              className="max-h-60 w-auto object-contain"
-                            />
-                          </div>
-                        )}
+                        <CommentImageGallery
+                          images={comment.images}
+                          onOpen={setPreviewImage}
+                          className="mb-2"
+                        />
                       </div>
                     )}
 
@@ -722,15 +754,7 @@ export const CommentsPane = memo(function CommentsPane({
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
                                       {canEditReply && (
-                                        <DropdownMenuItem
-                                          onClick={() => {
-                                            setEditingCommentId(reply.id);
-                                            setEditText(reply.content || '');
-                                            // No tag picker on a reply: undefined keeps
-                                            // the PATCH from carrying a tagId at all.
-                                            setEditTagId(undefined);
-                                          }}
-                                        >
+                                        <DropdownMenuItem onClick={() => startEditingReply(reply)}>
                                           <Pencil className="h-4 w-4 mr-2" />
                                           Edit
                                         </DropdownMenuItem>
@@ -762,16 +786,28 @@ export const CommentsPane = memo(function CommentsPane({
                                         handleEditComment(reply.id);
                                       }
                                       if (e.key === 'Escape') {
-                                        setEditingCommentId(null);
-                                        setEditText('');
+                                        cancelEditingComment();
                                       }
                                     }}
+                                    onPaste={(e) => handlePaste(e, 'edit')}
+                                  />
+                                  <ImageAttachmentStrip
+                                    existingUrls={editImageUrls}
+                                    onRemoveExisting={removeEditImageUrl}
+                                    files={editImageFiles}
+                                    onRemoveFile={(index) => removeImageFile(index, 'edit')}
+                                    compact
                                   />
                                   <div className="flex gap-1">
                                     <Button
                                       size="sm"
                                       onClick={() => handleEditComment(reply.id)}
-                                      disabled={!editText.trim() || isSubmittingEdit}
+                                      disabled={
+                                        (!editText.trim() &&
+                                          editImageUrls.length === 0 &&
+                                          editImageFiles.length === 0) ||
+                                        isSubmittingEdit
+                                      }
                                       className="h-7 text-xs"
                                     >
                                       {isSubmittingEdit ? (
@@ -783,14 +819,32 @@ export const CommentsPane = memo(function CommentsPane({
                                     <Button
                                       size="sm"
                                       variant="ghost"
-                                      onClick={() => {
-                                        setEditingCommentId(null);
-                                        setEditText('');
-                                      }}
+                                      onClick={cancelEditingComment}
                                       className="h-7 text-xs"
                                     >
                                       Cancel
                                     </Button>
+                                    <Button
+                                      size="icon"
+                                      variant="outline"
+                                      className="h-7 w-7"
+                                      onClick={() => editImageInputRef.current?.click()}
+                                      disabled={
+                                        editImageUrls.length + editImageFiles.length >=
+                                        MAX_COMMENT_IMAGES
+                                      }
+                                      title={`Attach images (up to ${MAX_COMMENT_IMAGES})`}
+                                    >
+                                      <ImageIcon className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      multiple
+                                      className="hidden"
+                                      ref={editImageInputRef}
+                                      onChange={(e) => handleImageSelect(e, 'edit')}
+                                    />
                                   </div>
                                 </div>
                               ) : (
@@ -804,19 +858,12 @@ export const CommentsPane = memo(function CommentsPane({
                                       />
                                     </p>
                                   )}
-                                  {reply.imageUrl && (
-                                    <div
-                                      className="rounded-md overflow-hidden bg-muted mt-2 max-h-40 flex items-center justify-center cursor-pointer hover:opacity-90 transition-opacity"
-                                      onClick={() => setPreviewImage(reply.imageUrl)}
-                                    >
-                                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                                      <img
-                                        src={reply.imageUrl}
-                                        alt="Attachment"
-                                        className="max-h-40 w-auto object-contain"
-                                      />
-                                    </div>
-                                  )}
+                                  <CommentImageGallery
+                                    images={reply.images}
+                                    onOpen={setPreviewImage}
+                                    compact
+                                    className="mt-2"
+                                  />
                                 </div>
                               )}
                               {reply.voiceUrl && (
@@ -943,30 +990,11 @@ export const CommentsPane = memo(function CommentsPane({
                               </Button>
                             </div>
 
-                            {replyImageBlob && (
-                              <div className="relative group rounded-md overflow-hidden bg-muted flex items-center justify-center h-20 mb-2">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={URL.createObjectURL(replyImageBlob)}
-                                  alt="Preview"
-                                  className="h-full object-contain"
-                                />
-                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                  <Button
-                                    size="icon"
-                                    variant="destructive"
-                                    className="h-6 w-6"
-                                    onClick={() => {
-                                      setReplyImageBlob(null);
-                                      if (replyImageInputRef.current)
-                                        replyImageInputRef.current.value = '';
-                                    }}
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                            )}
+                            <ImageAttachmentStrip
+                              files={replyImageFiles}
+                              onRemoveFile={(index) => removeImageFile(index, 'reply')}
+                              compact
+                            />
 
                             <MentionTextarea
                               value={replyText}
@@ -1026,30 +1054,11 @@ export const CommentsPane = memo(function CommentsPane({
                           </div>
                         ) : (
                           <>
-                            {replyImageBlob && (
-                              <div className="relative group rounded-md overflow-hidden bg-muted flex items-center justify-center h-20 mb-2">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={URL.createObjectURL(replyImageBlob)}
-                                  alt="Preview"
-                                  className="h-full object-contain"
-                                />
-                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                  <Button
-                                    size="icon"
-                                    variant="destructive"
-                                    className="h-6 w-6"
-                                    onClick={() => {
-                                      setReplyImageBlob(null);
-                                      if (replyImageInputRef.current)
-                                        replyImageInputRef.current.value = '';
-                                    }}
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                            )}
+                            <ImageAttachmentStrip
+                              files={replyImageFiles}
+                              onRemoveFile={(index) => removeImageFile(index, 'reply')}
+                              compact
+                            />
                             <div className="flex gap-1">
                               <MentionTextarea
                                 value={replyText}
@@ -1069,7 +1078,7 @@ export const CommentsPane = memo(function CommentsPane({
                                     setReplyText('');
                                   }
                                 }}
-                                onPaste={(e) => handlePaste(e, true)}
+                                onPaste={(e) => handlePaste(e, 'reply')}
                               />
                               <Button
                                 size="icon"
@@ -1084,7 +1093,8 @@ export const CommentsPane = memo(function CommentsPane({
                                 size="icon"
                                 variant="outline"
                                 onClick={() => replyImageInputRef.current?.click()}
-                                title="Attach Image"
+                                disabled={replyImageFiles.length >= MAX_COMMENT_IMAGES}
+                                title={`Attach images (up to ${MAX_COMMENT_IMAGES})`}
                                 className="h-8 w-8 shrink-0 self-end"
                               >
                                 <ImageIcon className="h-3 w-3" />
@@ -1092,9 +1102,10 @@ export const CommentsPane = memo(function CommentsPane({
                               <input
                                 type="file"
                                 accept="image/*"
+                                multiple
                                 className="hidden"
                                 ref={replyImageInputRef}
-                                onChange={(e) => handleImageSelect(e, true)}
+                                onChange={(e) => handleImageSelect(e, 'reply')}
                               />
                             </div>
                             <div className="mt-2 flex items-center gap-2 flex-wrap">
@@ -1127,7 +1138,7 @@ export const CommentsPane = memo(function CommentsPane({
                                 size="sm"
                                 onClick={() => handleReplyComment(comment.id)}
                                 disabled={
-                                  (!replyText.trim() && !replyImageBlob) ||
+                                  (!replyText.trim() && replyImageFiles.length === 0) ||
                                   isSubmittingReply ||
                                   isUploadingReplyImage
                                 }

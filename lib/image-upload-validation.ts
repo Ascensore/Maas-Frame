@@ -1,3 +1,7 @@
+/** The only shape an image URL may take once it has been through our upload API. */
+export const SAFE_IMAGE_PROXY_PATH =
+  /^\/api\/upload\/image\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
+
 export const ALLOWED_IMAGE_MIME_TYPES = [
   'image/jpeg',
   'image/png',
