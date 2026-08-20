@@ -31,6 +31,7 @@ import {
   type AnnotationCanvasHandle,
   type AnnotationStroke,
 } from '@/components/annotation-canvas';
+import { SILENT_ABOVE_SPEED } from '@/components/video-page/hooks/video-player-utils';
 import type { BunnyQualityOption, CommentMarker } from '@/components/video-page/types';
 
 interface PlayerCoreProps {
@@ -453,9 +454,17 @@ export const PlayerCore = memo(function PlayerCore({
                   <DropdownMenuItem
                     key={speed}
                     onClick={() => handleSpeedChange(speed)}
-                    className={cn(speed === playbackSpeed && 'font-bold text-primary')}
+                    className={cn(
+                      'flex items-center justify-between gap-2',
+                      speed === playbackSpeed && 'font-bold text-primary'
+                    )}
                   >
                     {speed}x
+                    {speed > SILENT_ABOVE_SPEED && (
+                      <span className="text-[10px] font-normal text-muted-foreground">
+                        no audio
+                      </span>
+                    )}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>

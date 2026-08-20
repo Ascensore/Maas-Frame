@@ -21,6 +21,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cn } from '@/lib/utils';
+import {
+  NATIVE_SPEED_OPTIONS,
+  SILENT_ABOVE_SPEED,
+} from '@/components/video-page/hooks/video-player-utils';
 import type { BunnyPlaybackState, BunnyQualityOption } from '@/components/video-page/types';
 
 interface BunnyPreviewPlayerProps {
@@ -34,8 +38,6 @@ export interface BunnyPreviewPlayerHandle {
   seekBy: (seconds: number) => void;
   toggleMute: () => void;
 }
-
-const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function formatTime(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '0:00';
@@ -635,9 +637,14 @@ export const BunnyPreviewPlayer = forwardRef<BunnyPreviewPlayerHandle, BunnyPrev
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {SPEED_OPTIONS.map((speed) => (
+                  {NATIVE_SPEED_OPTIONS.map((speed) => (
                     <DropdownMenuItem key={speed} onClick={() => handleSpeedChange(speed)}>
                       {speed}x {speed === playbackSpeed ? '(Current)' : ''}
+                      {speed > SILENT_ABOVE_SPEED && (
+                        <span className="ml-auto pl-2 text-[10px] text-muted-foreground">
+                          no audio
+                        </span>
+                      )}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>

@@ -6,11 +6,15 @@ import {
   getFrameStepLabel,
   getFrameStepSeconds,
   getPlayheadPercent,
+  getSpeedOptionsForProvider,
   isTypingTarget,
   normalizeFrameRate,
+  NATIVE_SPEED_OPTIONS,
   resolvePlayerShortcut,
   resolveSkipAmount,
+  SILENT_ABOVE_SPEED,
   timeFromClientX,
+  YOUTUBE_SPEED_OPTIONS,
 } from '@/components/video-page/hooks/video-player-utils';
 
 const SPEEDS = [0.25, 0.5, 1, 1.5, 2];
@@ -212,6 +216,34 @@ describe('getAdjacentPlaybackSpeed', () => {
   it('returns null for an empty ladder', () => {
     expect(getAdjacentPlaybackSpeed([], 1, 1)).toBeNull();
     expect(getAdjacentPlaybackSpeed([], 1, -1)).toBeNull();
+  });
+});
+
+describe('getSpeedOptionsForProvider', () => {
+  it('caps YouTube at 2x, since its iframe API ignores anything faster', () => {
+    expect(getSpeedOptionsForProvider('youtube')).toBe(YOUTUBE_SPEED_OPTIONS);
+    expect(Math.max(...YOUTUBE_SPEED_OPTIONS)).toBe(2);
+  });
+
+  it('lets the <video> providers run up to the browser ceiling', () => {
+    for (const provider of ['bunny', 'r2', undefined, null]) {
+      expect(getSpeedOptionsForProvider(provider)).toBe(NATIVE_SPEED_OPTIONS);
+    }
+    expect(NATIVE_SPEED_OPTIONS).toContain(3);
+    // 16 is where Chrome and Firefox clamp `playbackRate`; anything past it throws.
+    expect(Math.max(...NATIVE_SPEED_OPTIONS)).toBe(16);
+  });
+
+  it('marks the rates the browser plays without audio', () => {
+    expect(SILENT_ABOVE_SPEED).toBe(4);
+    expect(NATIVE_SPEED_OPTIONS.filter((speed) => speed > SILENT_ABOVE_SPEED)).toEqual([6, 8, 16]);
+    expect(YOUTUBE_SPEED_OPTIONS.every((speed) => speed <= SILENT_ABOVE_SPEED)).toBe(true);
+  });
+
+  it('keeps both ladders ascending so the arrow-key stepping stays monotonic', () => {
+    for (const ladder of [YOUTUBE_SPEED_OPTIONS, NATIVE_SPEED_OPTIONS]) {
+      expect([...ladder].sort((a, b) => a - b)).toEqual(ladder);
+    }
   });
 });
 
