@@ -32,7 +32,13 @@ import {
   type AnnotationStroke,
 } from '@/components/annotation-canvas';
 import { SILENT_ABOVE_SPEED } from '@/components/video-page/hooks/video-player-utils';
-import type { BunnyQualityOption, CommentMarker } from '@/components/video-page/types';
+import { SubtitleControls } from '@/components/video-page/subtitle-controls';
+import type {
+  BunnyQualityOption,
+  CommentMarker,
+  Subtitle,
+  SubtitleTrackOption,
+} from '@/components/video-page/types';
 
 interface PlayerCoreProps {
   activeVersionId: string | null;
@@ -85,6 +91,24 @@ interface PlayerCoreProps {
   selectedQualityLevel: number;
   qualityOptions: BunnyQualityOption[];
   handleQualityChange: (level: number) => void;
+  /** Uploaded tracks, rendered as <track> elements. Empty for a YouTube version. */
+  subtitles: Subtitle[];
+  /**
+   * What the CC menu offers, which is the list above for our own player and YouTube's
+   * own caption list for an embedded YouTube version.
+   */
+  subtitleTracks: SubtitleTrackOption[];
+  /**
+   * Changes when a track has to be re-fetched. It is part of each <track> key because
+   * remounting the element is the only way to make the browser parse the file again.
+   */
+  subtitleTrackKey: string;
+  activeSubtitleLanguage: string | null;
+  onSelectSubtitleLanguage: (language: string | null) => void;
+  canManageSubtitles: boolean;
+  onUploadSubtitle: (file: File, language: string, label: string) => Promise<string | null>;
+  onDeleteSubtitle: (subtitleId: string) => Promise<string | null>;
+  isUploadingSubtitle: boolean;
   playbackSpeed: number;
   speedOptions: number[];
   handleSpeedChange: (speed: number) => void;
@@ -153,6 +177,15 @@ export const PlayerCore = memo(function PlayerCore({
   selectedQualityLevel,
   qualityOptions,
   handleQualityChange,
+  subtitles,
+  subtitleTracks,
+  subtitleTrackKey,
+  activeSubtitleLanguage,
+  onSelectSubtitleLanguage,
+  canManageSubtitles,
+  onUploadSubtitle,
+  onDeleteSubtitle,
+  isUploadingSubtitle,
   playbackSpeed,
   speedOptions,
   handleSpeedChange,
@@ -208,7 +241,17 @@ export const PlayerCore = memo(function PlayerCore({
                   }}
                   preload="metadata"
                   playsInline
-                />
+                >
+                  {subtitles.map((subtitle) => (
+                    <track
+                      key={`${subtitle.id}:${subtitleTrackKey}`}
+                      kind="subtitles"
+                      src={subtitle.url}
+                      srcLang={subtitle.language}
+                      label={subtitle.label}
+                    />
+                  ))}
+                </video>
               </div>
             </div>
           ) : (
@@ -440,6 +483,18 @@ export const PlayerCore = memo(function PlayerCore({
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
+            )}
+
+            {activeProviderId && activeProviderId !== 'direct' && (
+              <SubtitleControls
+                subtitles={subtitleTracks}
+                activeSubtitleLanguage={activeSubtitleLanguage}
+                onSelectSubtitleLanguage={onSelectSubtitleLanguage}
+                canManageSubtitles={canManageSubtitles}
+                onUploadSubtitle={onUploadSubtitle}
+                onDeleteSubtitle={onDeleteSubtitle}
+                isUploadingSubtitle={isUploadingSubtitle}
+              />
             )}
 
             <DropdownMenu>

@@ -81,6 +81,10 @@ export function useVideoPlayer({
 }: UseVideoPlayerParams) {
   const [isApiLoaded, setIsApiLoaded] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  // Bumped every time the YouTube player loads or unloads a module. It is the only
+  // signal that `getOption('captions', ...)` will answer, so the captions hook waits
+  // on it rather than polling.
+  const [youtubeModuleRevision, setYoutubeModuleRevision] = useState(0);
   const [bunnyPlaybackState, setBunnyPlaybackState] = useState<BunnyPlaybackState>('none');
   const [currentTime, setCurrentTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -314,6 +318,9 @@ export function useVideoPlayer({
               setIsReady(true);
               const dur = event.target.getDuration();
               if (dur > 0) setVideoDuration(dur);
+            },
+            onApiChange: () => {
+              setYoutubeModuleRevision((revision) => revision + 1);
             },
             onStateChange: (event: YT.OnStateChangeEvent) => {
               setIsPlaying(event.data === YT.PlayerState.PLAYING);
@@ -1344,6 +1351,7 @@ export function useVideoPlayer({
 
   return {
     isReady,
+    youtubeModuleRevision,
     bunnyPlaybackState,
     currentTime,
     setCurrentTime,

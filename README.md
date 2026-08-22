@@ -14,7 +14,7 @@ OpenFrame is built for video teams that want one system for review, revision, ap
 
 - Timestamped comments directly on the video timeline
 - Voice notes, image attachments, and frame annotations
-- Version history with side-by-side compare
+- Version history with side-by-side compare and per-version subtitle tracks
 - Approval requests and sign-off tracking
 - Share links for client review with optional guest commenting
 - Workspaces, projects, member roles, and invitation flows
@@ -41,7 +41,7 @@ OpenFrame is built for video teams that want one system for review, revision, ap
 
 ### Versioning And Comparison
 
-- Videos support multiple versions inside the same review thread.
+- Videos support multiple versions inside the same review thread, each with its own subtitle tracks uploaded as SRT or WebVTT.
 - Teams can switch between versions without losing review context.
 - Compare mode lets reviewers inspect two versions side by side.
 

@@ -235,6 +235,12 @@ export type BuildProjectDownloadManifestOptions = {
   includeAssets?: boolean;
 };
 
+/**
+ * Subtitle tracks are deliberately not in the manifest. They belong to a version rather
+ * than to a video, and a zip that carried them would need a naming scheme that pairs each
+ * .vtt with the cut it was timed against. Add them the day that pairing is designed, not
+ * as a loose file next to the videos.
+ */
 export function buildProjectDownloadManifest(
   projectName: string,
   videos: VideoRow[],

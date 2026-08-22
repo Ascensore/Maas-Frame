@@ -38,6 +38,8 @@ import type {
 } from '@/components/video-page/types';
 import { useApprovals } from '@/components/video-page/hooks/use-approvals';
 import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
+import { useSubtitles } from '@/components/video-page/hooks/use-subtitles';
+import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { getSpeedOptionsForProvider } from '@/components/video-page/hooks/video-player-utils';
 
@@ -275,6 +277,24 @@ export function VideoPageContent({
   }, [video?.versions, activeVersionId]);
   const activeProviderId = activeVersion?.providerId;
   const speedOptions = getSpeedOptionsForProvider(activeProviderId);
+  // Only the providers that play through our own <video> element can carry a <track>.
+  // A YouTube version is an iframe we do not control, and it brings its own captions.
+  const supportsSubtitles = activeProviderId === 'bunny' || activeProviderId === 'r2';
+  const {
+    subtitles,
+    subtitleTrackKey,
+    canManageSubtitles,
+    activeSubtitleLanguage,
+    selectSubtitleLanguage,
+    uploadSubtitle,
+    deleteSubtitle,
+    isUploadingSubtitle,
+  } = useSubtitles({
+    videoId,
+    versionId: activeVersionId,
+    videoRef,
+    supportsSubtitles,
+  });
   const activeVersionDuration = activeVersion?.duration;
   const bunnyCdnHostname = useMemo(() => resolvePublicBunnyCdnHostname(), []);
   const embedUrl = useMemo(() => {
@@ -305,6 +325,7 @@ export function VideoPageContent({
 
   const {
     isReady,
+    youtubeModuleRevision,
     bunnyPlaybackState,
     currentTime,
     setCurrentTime,
@@ -358,6 +379,27 @@ export function VideoPageContent({
     scheduleWatchProgressSaveRef,
     setViewingAnnotation,
   });
+
+  const { youtubeCaptionTracks, activeYoutubeCaptionLanguage, selectYoutubeCaptionLanguage } =
+    useYoutubeCaptions({
+      videoId,
+      versionId: activeVersionId,
+      playerRef,
+      enabled: activeProviderId === 'youtube',
+      isReady,
+      moduleRevision: youtubeModuleRevision,
+    });
+
+  // One CC menu, two sources behind it. A YouTube version can only offer the captions the
+  // video already carries, so nothing there is ours to manage.
+  const isYoutubeVersion = activeProviderId === 'youtube';
+  const subtitleTracks = isYoutubeVersion ? youtubeCaptionTracks : subtitles;
+  const activeCaptionLanguage = isYoutubeVersion
+    ? activeYoutubeCaptionLanguage
+    : activeSubtitleLanguage;
+  const selectCaptionLanguage = isYoutubeVersion
+    ? selectYoutubeCaptionLanguage
+    : selectSubtitleLanguage;
 
   const {
     savedProgress,
@@ -823,6 +865,15 @@ export function VideoPageContent({
             selectedQualityLevel={selectedQualityLevel}
             qualityOptions={qualityOptions}
             handleQualityChange={handleQualityChange}
+            subtitles={subtitles}
+            subtitleTracks={subtitleTracks}
+            subtitleTrackKey={subtitleTrackKey}
+            activeSubtitleLanguage={activeCaptionLanguage}
+            onSelectSubtitleLanguage={selectCaptionLanguage}
+            canManageSubtitles={canManageSubtitles}
+            onUploadSubtitle={uploadSubtitle}
+            onDeleteSubtitle={deleteSubtitle}
+            isUploadingSubtitle={isUploadingSubtitle}
             playbackSpeed={playbackSpeed}
             speedOptions={speedOptions}
             handleSpeedChange={handleSpeedChange}

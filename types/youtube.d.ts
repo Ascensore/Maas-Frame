@@ -25,6 +25,16 @@ declare namespace YT {
     getPlaybackRate(): number;
     getAvailablePlaybackRates(): number[];
     destroy(): void;
+
+    // The module API is undocumented but is the only way to drive captions on a
+    // player embedded with controls=0, where YouTube's own CC button is hidden.
+    // `loadModule('captions')` turns them on, `unloadModule` turns them off, and
+    // `getOption('captions', 'tracklist')` answers only once the module has loaded
+    // and announced itself through onApiChange.
+    loadModule(moduleName: string): void;
+    unloadModule(moduleName: string): void;
+    setOption(module: string, option: string, value: unknown): void;
+    getOption<T = unknown>(module: string, option: string): T | undefined;
   }
 
   interface PlayerOptions {
