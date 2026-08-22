@@ -22,6 +22,7 @@ import {
   createDownloadProgressToast,
   type DownloadProgressToastHandle,
 } from '@/components/download-progress-toast';
+import { beginUnloadGuard } from '@/lib/client/unload-guard';
 
 function sanitizeDownloadFileName(value: string): string {
   return value
@@ -94,6 +95,7 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
       isDownloadingRef.current = true;
       setActiveDownloadTarget(target);
       let progressToast: DownloadProgressToastHandle | null = null;
+      let releaseUnloadGuard: (() => void) | null = null;
       try {
         let downloadUrl: string | null = null;
 
@@ -167,6 +169,9 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
             title: `Downloading “${baseName}”`,
             description: 'Starting…',
           });
+          // The bytes only exist in this tab until the blob is saved, so warn
+          // before the page goes away instead of losing the whole transfer.
+          releaseUnloadGuard = beginUnloadGuard();
           const saved = await downloadNamedFile(downloadUrl, `${baseName}.${fallbackExt}`, (p) => {
             progressToast?.update({
               description: downloadProgressLabel(p),
@@ -195,6 +200,7 @@ export function useDownloadActions({ activeVersion, video }: UseDownloadActionsP
           toast.error('Failed to start download');
         }
       } finally {
+        releaseUnloadGuard?.();
         isDownloadingRef.current = false;
         setActiveDownloadTarget(null);
       }

@@ -52,6 +52,7 @@ import {
   type ProjectDownloadManifest,
 } from '@/lib/client/project-download';
 import { downloadProgressPercent } from '@/lib/client/download-file';
+import { beginUnloadGuard } from '@/lib/client/unload-guard';
 import {
   createDownloadProgressToast,
   type DownloadProgressToastHandle,
@@ -209,6 +210,7 @@ export function ProjectContentClient({
 
       setIsDownloading(true);
       let progressToast: DownloadProgressToastHandle | null = null;
+      let releaseUnloadGuard: (() => void) | null = null;
       try {
         const response = await fetch(`/api/projects/${projectId}/download${query}`, {
           cache: 'no-store',
@@ -232,6 +234,9 @@ export function ProjectContentClient({
           title: `Downloading ${manifest.totalFiles} files`,
           description: 'Starting…',
         });
+        // The files are pulled one by one through this tab, so closing it drops
+        // everything that hasn't been saved yet. Warn before that happens.
+        releaseUnloadGuard = beginUnloadGuard();
         await runProjectDownloadManifest(manifest, (p) => {
           const percent = downloadProgressPercent({
             receivedBytes: p.receivedBytes,
@@ -250,6 +255,7 @@ export function ProjectContentClient({
         progressToast?.dismiss();
         toast.error('Failed to start project download');
       } finally {
+        releaseUnloadGuard?.();
         setIsDownloading(false);
       }
     },
