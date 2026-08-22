@@ -42,6 +42,8 @@ model User {
   comments           Comment[]
   uploadedVideoAssets VideoAsset[] @relation("VideoAssetUploadedBy")
   billedVideoAssets   VideoAsset[] @relation("VideoAssetBilledTo")
+  uploadedVideoSubtitles VideoSubtitle[] @relation("VideoSubtitleUploadedBy")
+  billedVideoSubtitles   VideoSubtitle[] @relation("VideoSubtitleBilledTo")
   projectMemberships ProjectMember[]
   notificationSetting NotificationSetting?
   watchProgress      WatchProgress[]
@@ -383,6 +385,7 @@ model VideoVersion {
   comments        Comment[]
   watchProgress   WatchProgress[]
   approvalRequests ApprovalRequest[]
+  subtitles       VideoSubtitle[]
   
   @@unique([videoParentId, versionNumber])
   @@index([videoParentId])
@@ -416,6 +419,34 @@ model VideoAsset {
   @@index([providerVideoId])
   @@index([videoId, createdAt(sort: Desc)])
   @@map("video_assets")
+}
+
+/// A subtitle track for one cut. Timings belong to a version rather than to the
+/// video: re-editing shifts every cue, so a track attached to the parent would be
+/// wrong for every version but the one it was written against.
+model VideoSubtitle {
+  id               String       @id @default(cuid())
+  versionId        String
+  version          VideoVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  /// BCP-47 tag, lowercased primary subtag, e.g. `tr`, `en-US`.
+  language         String
+  label            String
+  /// Always an /api/upload/subtitle/<uuid>.vtt path. The file itself lives in
+  /// S3-compatible storage whatever the video's own provider is, so a Bunny-hosted
+  /// video and an R2-hosted one take the same path through the player.
+  sourceUrl        String       @unique
+  sizeBytes        BigInt       @default(0) @map("size_bytes")
+  billedUserId     String
+  billedUser       User         @relation("VideoSubtitleBilledTo", fields: [billedUserId], references: [id], onDelete: Cascade)
+  uploadedByUserId String?
+  uploadedByUser   User?        @relation("VideoSubtitleUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([versionId, language])
+  @@index([versionId])
+  @@index([billedUserId])
+  @@map("video_subtitles")
 }
 
 model Comment {

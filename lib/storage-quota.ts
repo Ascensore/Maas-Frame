@@ -132,6 +132,8 @@ export const UPLOAD_RESERVATION_PURPOSES = {
   R2_VIDEO: 'R2_VIDEO',
   /** A direct upload to Bunny, where the bytes never pass through us. */
   BUNNY: 'BUNNY',
+  /** A subtitle track, which lands in our own S3-compatible storage whatever hosts the video. */
+  SUBTITLE: 'SUBTITLE',
 } as const;
 
 export type UploadReservationPurpose =
@@ -147,14 +149,15 @@ class QuotaExceededError extends Error {}
  * every upload.
  */
 export async function getUserTotalStorageBytes(userId: string): Promise<bigint> {
-  const [r2AssetRows, r2VideoRows, bunnyUserBytes, reservationRows] = await Promise.all([
-    db.$queryRaw<[{ total: bigint }]>`
+  const [r2AssetRows, r2VideoRows, subtitleRows, bunnyUserBytes, reservationRows] =
+    await Promise.all([
+      db.$queryRaw<[{ total: bigint }]>`
       SELECT COALESCE(SUM(size_bytes), 0)::bigint AS total
       FROM video_assets
       WHERE "billedUserId" = ${userId}
         AND provider IN ('R2_IMAGE', 'R2_AUDIO', 'R2_VIDEO')
     `,
-    db.$queryRaw<[{ total: bigint }]>`
+      db.$queryRaw<[{ total: bigint }]>`
       SELECT COALESCE(SUM(vv.size_bytes), 0)::bigint AS total
       FROM video_versions vv
       INNER JOIN videos v ON v.id = vv."videoParentId"
@@ -163,21 +166,27 @@ export async function getUserTotalStorageBytes(userId: string): Promise<bigint> 
       WHERE w."ownerId" = ${userId}
         AND vv."providerId" = 'r2'
     `,
-    getUserBunnyStorageBytes(userId),
-    db.$queryRaw<[{ total: bigint }]>`
+      db.$queryRaw<[{ total: bigint }]>`
+      SELECT COALESCE(SUM(size_bytes), 0)::bigint AS total
+      FROM video_subtitles
+      WHERE "billedUserId" = ${userId}
+    `,
+      getUserBunnyStorageBytes(userId),
+      db.$queryRaw<[{ total: bigint }]>`
       SELECT COALESCE(SUM("sizeBytes"), 0)::bigint AS total
       FROM upload_reservations
       WHERE "billedUserId" = ${userId}
         AND "expiresAt" > NOW()
     `,
-  ]);
+    ]);
 
   const r2AssetBytes = r2AssetRows[0]?.total ?? BigInt(0);
   const r2VideoBytes = r2VideoRows[0]?.total ?? BigInt(0);
+  const subtitleBytes = subtitleRows[0]?.total ?? BigInt(0);
   const bunnyBytes = BigInt(bunnyUserBytes);
   const reservedBytes = reservationRows[0]?.total ?? BigInt(0);
 
-  return r2AssetBytes + r2VideoBytes + bunnyBytes + reservedBytes;
+  return r2AssetBytes + r2VideoBytes + subtitleBytes + bunnyBytes + reservedBytes;
 }
 
 /**
@@ -291,7 +300,15 @@ export async function reserveStorageQuota(
         WHERE w."ownerId" = ${userId}
           AND vv."providerId" = 'r2'
       `;
-      const r2Bytes = (r2AssetRow?.total ?? BigInt(0)) + (r2VideoRow?.total ?? BigInt(0));
+      const [subtitleRow] = await tx.$queryRaw<[{ total: bigint }]>`
+        SELECT COALESCE(SUM(size_bytes), 0)::bigint AS total
+        FROM video_subtitles
+        WHERE "billedUserId" = ${userId}
+      `;
+      const r2Bytes =
+        (r2AssetRow?.total ?? BigInt(0)) +
+        (r2VideoRow?.total ?? BigInt(0)) +
+        (subtitleRow?.total ?? BigInt(0));
 
       // Read active (non-expired) reservations under the same lock
       const [resRow] = await tx.$queryRaw<[{ total: bigint }]>`

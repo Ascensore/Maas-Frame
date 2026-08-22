@@ -3,6 +3,7 @@ import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
 import { db } from '@/lib/db';
 import { runWithConcurrency } from '@/lib/async-pool';
 import { videoProxyPathToObjectKey } from '@/lib/video-upload-validation';
+import { subtitleProxyPathToObjectKey } from '@/lib/subtitle-validation';
 import { logError } from '@/lib/logger';
 
 /** The path prefix for images served by the upload API. */
@@ -34,7 +35,7 @@ export function mediaUrlToKey(url: string): string | null {
     return filename ? `images/${filename}` : null;
   }
 
-  return videoProxyPathToObjectKey(url);
+  return subtitleProxyPathToObjectKey(url) ?? videoProxyPathToObjectKey(url);
 }
 
 /**
@@ -82,7 +83,7 @@ export async function deleteMediaFilesBestEffort(mediaUrls: string[]): Promise<R
  * Collect all media URLs from comments under a given video (all versions).
  */
 export async function collectVideoMediaUrls(videoId: string): Promise<string[]> {
-  const [comments, assets, versions] = await Promise.all([
+  const [comments, assets, versions, subtitles] = await Promise.all([
     db.comment.findMany({
       where: {
         OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
@@ -101,6 +102,10 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
       where: { videoParentId: videoId, providerId: 'r2' },
       select: { originalUrl: true, thumbnailUrl: true },
     }),
+    db.videoSubtitle.findMany({
+      where: { version: { videoParentId: videoId } },
+      select: { sourceUrl: true },
+    }),
   ]);
   const urls: string[] = [];
   comments.forEach((c) => {
@@ -114,6 +119,9 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
   });
+  subtitles.forEach((subtitle) => {
+    if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);
+  });
   return urls;
 }
 
@@ -121,7 +129,7 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
  * Collect all media URLs from comments under all videos in a project.
  */
 export async function collectProjectMediaUrls(projectId: string): Promise<string[]> {
-  const [comments, assets, versions] = await Promise.all([
+  const [comments, assets, versions, subtitles] = await Promise.all([
     db.comment.findMany({
       where: {
         OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
@@ -140,6 +148,10 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
       where: { providerId: 'r2', video: { projectId } },
       select: { originalUrl: true, thumbnailUrl: true },
     }),
+    db.videoSubtitle.findMany({
+      where: { version: { video: { projectId } } },
+      select: { sourceUrl: true },
+    }),
   ]);
   const urls: string[] = [];
   comments.forEach((c) => {
@@ -153,6 +165,9 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
   });
+  subtitles.forEach((subtitle) => {
+    if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);
+  });
   return urls;
 }
 
@@ -160,7 +175,7 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
  * Collect all media URLs from comments under all projects in a workspace.
  */
 export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<string[]> {
-  const [comments, assets, versions] = await Promise.all([
+  const [comments, assets, versions, subtitles] = await Promise.all([
     db.comment.findMany({
       where: {
         OR: [{ voiceUrl: { not: null } }, { images: { some: {} } }],
@@ -179,6 +194,10 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
       where: { providerId: 'r2', video: { project: { workspaceId } } },
       select: { originalUrl: true, thumbnailUrl: true },
     }),
+    db.videoSubtitle.findMany({
+      where: { version: { video: { project: { workspaceId } } } },
+      select: { sourceUrl: true },
+    }),
   ]);
   const urls: string[] = [];
   comments.forEach((c) => {
@@ -191,6 +210,9 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
   versions.forEach((version) => {
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
+  });
+  subtitles.forEach((subtitle) => {
+    if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);
   });
   return urls;
 }

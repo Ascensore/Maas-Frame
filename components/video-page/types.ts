@@ -35,6 +35,27 @@ export interface VideoAsset {
   canDelete: boolean;
 }
 
+/**
+ * What the player's CC menu needs to know about one track. Our own uploaded tracks and
+ * the ones a YouTube video brings with it are different things underneath, and the menu
+ * is the one place that does not have to care.
+ */
+export interface SubtitleTrackOption {
+  id: string;
+  language: string;
+  label: string;
+  canDelete: boolean;
+}
+
+export interface Subtitle extends SubtitleTrackOption {
+  versionId: string;
+  url: string;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  uploadedByUser: { id: string; name: string | null; image: string | null } | null;
+}
+
 export interface ApprovalDecision {
   id: string;
   approverId: string;

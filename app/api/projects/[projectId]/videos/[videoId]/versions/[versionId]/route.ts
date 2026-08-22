@@ -130,6 +130,14 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       videoId: result.version.videoId,
     };
 
+    // Read before the delete: the rows cascade away with the version, and their stored
+    // objects would then have nothing pointing at them. Subtitles live in our own storage
+    // whatever hosts the video, so this runs for a Bunny-hosted cut too.
+    const subtitles = await db.videoSubtitle.findMany({
+      where: { versionId },
+      select: { sourceUrl: true },
+    });
+
     await db.$transaction(async (tx) => {
       // Delete the version (cascades to comments).
       await tx.videoVersion.delete({ where: { id: versionId } });
@@ -149,15 +157,16 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       }
     });
 
+    const versionMediaUrls = [
+      ...subtitles.map((subtitle) => subtitle.sourceUrl),
+      ...(result.version.providerId === 'r2'
+        ? [result.version.originalUrl, result.version.thumbnailUrl]
+        : []),
+    ].filter((url): url is string => Boolean(url));
+
     const [bunnyCleanupResult, r2CleanupResult] = await Promise.all([
       cleanupBunnyStreamVideosBestEffort([bunnyRef]),
-      result.version.providerId === 'r2'
-        ? deleteMediaFilesBestEffort(
-            [result.version.originalUrl, result.version.thumbnailUrl].filter((url): url is string =>
-              Boolean(url)
-            )
-          )
-        : Promise.resolve({ attempted: 0, failed: 0, failedKeys: [] }),
+      deleteMediaFilesBestEffort(versionMediaUrls),
     ]);
     const cleanupInput = { bunny: bunnyCleanupResult, r2: r2CleanupResult };
     const cleanupWarnings = buildCleanupWarnings(cleanupInput);

@@ -82,6 +82,7 @@ import * as uploadAudioFileRoute from '@/app/api/upload/audio/[filename]/route';
 import * as uploadAudioRoute from '@/app/api/upload/audio/route';
 import * as uploadImageFileRoute from '@/app/api/upload/image/[filename]/route';
 import * as uploadImageRoute from '@/app/api/upload/image/route';
+import * as uploadSubtitleFileRoute from '@/app/api/upload/subtitle/[filename]/route';
 import * as uploadVideoFileRoute from '@/app/api/upload/video/[filename]/route';
 import * as versionApprovalsRoute from '@/app/api/versions/[versionId]/approvals/route';
 import * as commentsExportRoute from '@/app/api/versions/[versionId]/comments/export/route';
@@ -92,6 +93,8 @@ import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
 import * as assetsBunnyInitRoute from '@/app/api/videos/[videoId]/assets/bunny-init/route';
 import * as assetsR2InitRoute from '@/app/api/videos/[videoId]/assets/r2-init/route';
 import * as assetsRoute from '@/app/api/videos/[videoId]/assets/route';
+import * as subtitleRoute from '@/app/api/videos/[videoId]/subtitles/[subtitleId]/route';
+import * as subtitlesRoute from '@/app/api/videos/[videoId]/subtitles/route';
 import * as watchProgressRoute from '@/app/api/watch/[videoId]/progress/route';
 import * as watchRoute from '@/app/api/watch/[videoId]/route';
 import * as watchUploadTokenRoute from '@/app/api/watch/[videoId]/upload-token/route';
@@ -145,7 +148,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 63;
+const EXPECTED_ROUTE_MODULE_COUNT = 66;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -203,6 +206,7 @@ const PUBLIC_ROUTES: ReadonlyMap<string, string> = new Map([
 const IMAGE_FILENAME = '11111111-1111-4111-8111-111111111111.png';
 const AUDIO_FILENAME = '22222222-2222-4222-8222-222222222222.webm';
 const VIDEO_FILENAME = '33333333-3333-4333-8333-333333333333.mp4';
+const SUBTITLE_FILENAME = '44444444-4444-4444-8444-444444444444.vtt';
 
 interface Fixtures {
   userId: string;
@@ -217,6 +221,7 @@ interface Fixtures {
   versionId: string;
   commentId: string;
   assetId: string;
+  subtitleId: string;
   approvalRequestId: string;
   feedbackId: string;
 }
@@ -280,6 +285,20 @@ async function seedFixtures(): Promise<Fixtures> {
     sourceUrl: `/api/upload/audio/${AUDIO_FILENAME}`,
   });
 
+  // A real track, so /api/upload/subtitle/[filename] resolves to a row and its
+  // refusal comes from the access check rather than from the reverse lookup.
+  const subtitle = await db.videoSubtitle.create({
+    data: {
+      versionId: version.id,
+      language: 'tr',
+      label: 'Türkçe',
+      sourceUrl: `/api/upload/subtitle/${SUBTITLE_FILENAME}`,
+      sizeBytes: BigInt(64),
+      billedUserId: owner.id,
+      uploadedByUserId: owner.id,
+    },
+  });
+
   await createShareLink({ projectId: project.id, videoId: video.id, permission: 'COMMENT' });
 
   const approvalRequest = await createApprovalRequest({
@@ -310,6 +329,7 @@ async function seedFixtures(): Promise<Fixtures> {
     versionId: version.id,
     commentId: comment.id,
     assetId: asset.id,
+    subtitleId: subtitle.id,
     approvalRequestId: approvalRequest.id,
     feedbackId: feedback.id,
   };
@@ -596,6 +616,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     headers: { 'content-length': '2048' },
   },
   {
+    file: 'upload/subtitle/[filename]/route.ts',
+    module: uploadSubtitleFileRoute,
+    url: () => `/api/upload/subtitle/${SUBTITLE_FILENAME}`,
+    params: () => ({ filename: SUBTITLE_FILENAME }),
+  },
+  {
     file: 'upload/video/[filename]/route.ts',
     module: uploadVideoFileRoute,
     url: () => `/api/upload/video/${VIDEO_FILENAME}`,
@@ -668,6 +694,27 @@ const ROUTE_CASES: readonly RouteCase[] = [
     // "Invalid provider" one line below if the guard were gone. The
     // exact-status coverage lives in tests/api/assets-authz.test.ts.
     body: { kind: 'IMAGE', sourceUrl: `/api/upload/image/${IMAGE_FILENAME}` },
+  },
+  {
+    file: 'videos/[videoId]/subtitles/[subtitleId]/route.ts',
+    module: subtitleRoute,
+    url: (f) => `/api/videos/${f.videoId}/subtitles/${f.subtitleId}`,
+    params: (f) => ({ videoId: f.videoId, subtitleId: f.subtitleId }),
+  },
+  {
+    file: 'videos/[videoId]/subtitles/route.ts',
+    module: subtitlesRoute,
+    url: (f) => `/api/videos/${f.videoId}/subtitles`,
+    params: (f) => ({ videoId: f.videoId }),
+    // POST sizes the body before it does anything else, and a Request built from
+    // a FormData carries no Content-Length, so without this the anonymous call
+    // would stop on a 400 above the guard rather than on the guard.
+    headers: { 'content-length': '4096' },
+    rawBody: () => {
+      const form = new FormData();
+      form.append('subtitle', new File(['WEBVTT'], 'anon.vtt', { type: 'text/vtt' }));
+      return form;
+    },
   },
   {
     file: 'watch/[videoId]/progress/route.ts',

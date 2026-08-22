@@ -24,7 +24,7 @@ type ProxyR2MediaOptions = {
 // call sites gate the file name on a strict pattern first, and a fourth that forgot would
 // otherwise hand a traversal straight to GetObject.
 const SAFE_MEDIA_OBJECT_KEY =
-  /^(?:images|voice|videos)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
+  /^(?:images|voice|videos|subtitles)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 
 export function isSafeR2MediaKey(key: string): boolean {
   return SAFE_MEDIA_OBJECT_KEY.test(key);
