@@ -144,6 +144,16 @@ describe('parseSubtitleCues', () => {
     expect(cues[0].text).toBe('<i>tilt</i>alert(1)');
   });
 
+  it('escapes the leftovers of a rejected tag so it cannot be reassembled', () => {
+    // Deleting `<b>` out of the middle would close the two halves into a `<script>` that
+    // was never written. Escaping what is left over is what stops that.
+    const cues = parseSubtitleCues(
+      ['00:00:01,000 --> 00:00:02,000', '<scr<b>ipt>alert(1)', ''].join('\n')
+    );
+    expect(cues[0].text).toBe('&lt;scr<b>ipt&gt;alert(1)');
+    expect(cues[0].text).not.toContain('<script');
+  });
+
   it('neutralises an arrow in cue text so the file cannot be re-split', () => {
     const cues = parseSubtitleCues(['00:00:01,000 --> 00:00:02,000', 'a --> b', ''].join('\n'));
     expect(cues[0].text).toBe('a --&gt; b');

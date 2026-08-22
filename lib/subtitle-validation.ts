@@ -145,19 +145,39 @@ function parseTimingLine(line: string): { start: number; end: number } | null {
   return { start, end };
 }
 
+const CUE_TAG = /<[^<>]*>/g;
+
+/**
+ * Angle brackets outside a recognised tag are escaped one character at a time rather than
+ * the offending tag being deleted whole. Deleting is what lets a filter like this be
+ * reassembled around: strip the `<b>` out of `<scr<b>ipt>` and the two halves close up
+ * into a tag that was never written. Nothing closes up when the leftovers are escaped
+ * instead, and the same escaping takes care of `-->`, which would otherwise be read back
+ * as a timing line and split the cue in two. `&` is left alone so a file that already
+ * spells its entities properly keeps them.
+ */
+function escapeCueText(text: string): string {
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function sanitizeCueLine(line: string): string {
-  return (
-    line
-      // ASS/SSA override blocks travel in SRT files ripped from other formats. The VTT
-      // parser renders them as literal text, which is never what the author meant.
-      .replace(/\{\\[^}]*\}/g, '')
-      .replace(/<[^<>]*>/g, (tag) => (ALLOWED_CUE_TAGS.some((re) => re.test(tag)) ? tag : ''))
-      // A cue text line containing an arrow would be read back as a timing line and split
-      // the cue in two. The entity is what the WebVTT parser expects for a literal `>`.
-      .replace(/-->/g, '--&gt;')
-      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-      .trimEnd()
-  );
+  // ASS/SSA override blocks travel in SRT files ripped from other formats. The VTT parser
+  // renders them as literal text, which is never what the author meant.
+  const withoutOverrides = line.replace(/\{\\[^}]*\}/g, '');
+
+  let sanitized = '';
+  let cursor = 0;
+  CUE_TAG.lastIndex = 0;
+  for (let match = CUE_TAG.exec(withoutOverrides); match; match = CUE_TAG.exec(withoutOverrides)) {
+    sanitized += escapeCueText(withoutOverrides.slice(cursor, match.index));
+    if (ALLOWED_CUE_TAGS.some((allowed) => allowed.test(match[0]))) {
+      sanitized += match[0];
+    }
+    cursor = match.index + match[0].length;
+  }
+  sanitized += escapeCueText(withoutOverrides.slice(cursor));
+
+  return sanitized.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trimEnd();
 }
 
 /**
@@ -212,7 +232,13 @@ export function parseSubtitleCues(input: string): SubtitleCue[] {
     }
 
     if (timing.end <= timing.start) continue;
-    const text = textLines.join('\n').slice(0, MAX_CUE_TEXT_LENGTH).trim();
+    // The cap can land inside an escape the sanitiser wrote, so a dangling `&lt` tail is
+    // trimmed rather than left for the parser to render as text.
+    const text = textLines
+      .join('\n')
+      .slice(0, MAX_CUE_TEXT_LENGTH)
+      .replace(/&[a-z]{0,5}$/i, '')
+      .trim();
     if (!text) continue;
 
     cues.push({ start: timing.start, end: timing.end, text });
