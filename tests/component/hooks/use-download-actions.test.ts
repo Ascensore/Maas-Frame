@@ -652,3 +652,69 @@ describe('useDownloadActions repeated clicks', () => {
     expect(clicked).toHaveLength(1);
   });
 });
+
+describe('useDownloadActions guarding the tab', () => {
+  function fireBeforeUnload(): BeforeUnloadEvent {
+    const event = new Event('beforeunload', { cancelable: true }) as BeforeUnloadEvent;
+    window.dispatchEvent(event);
+    return event;
+  }
+
+  // Closing the tab used to throw away a half-pulled file without a word,
+  // because the browser has no idea a fetch-driven download is running.
+  it('warns before the tab closes while the bytes are being pulled', async () => {
+    const pending = deferred<unknown>();
+    const harness = renderDownload();
+    fetchMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('prepare=1')) {
+        return Promise.resolve(prepareResponse(true, { data: {} }));
+      }
+      return pending.promise;
+    });
+
+    let started: Promise<void> | undefined;
+    await act(async () => {
+      started = harness.result.current.startDownload();
+      // Let the prepare call settle so the byte fetch is the pending one.
+      await Promise.resolve();
+    });
+
+    expect(fireBeforeUnload().defaultPrevented).toBe(true);
+
+    await act(async () => {
+      pending.resolve(fileResponse());
+      await started;
+    });
+
+    expect(fireBeforeUnload().defaultPrevented).toBe(false);
+  });
+
+  it('releases the guard when the download fails', async () => {
+    downloadResponse = fileResponse({ ok: false });
+    const harness = renderDownload();
+
+    await act(async () => {
+      await harness.result.current.startDownload();
+    });
+
+    expect(fireBeforeUnload().defaultPrevented).toBe(false);
+  });
+
+  // A same-origin proxy download is handed to the browser, which keeps going
+  // after the tab closes, so nothing should block the unload there.
+  it('does not warn for a browser-owned download', async () => {
+    const harness = renderDownload({
+      activeVersion: makeVersion({
+        providerId: 'r2',
+        originalUrl: '/api/upload/video/abc.mp4',
+      }),
+    });
+
+    await act(async () => {
+      await harness.result.current.startDownload();
+    });
+
+    expect(clicked).toHaveLength(1);
+    expect(fireBeforeUnload().defaultPrevented).toBe(false);
+  });
+});
