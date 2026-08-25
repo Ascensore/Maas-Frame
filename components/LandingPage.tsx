@@ -231,17 +231,6 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--tw-gradient-stops))] from-primary/5 via-background to-background" />
 
           <div className="relative z-10 mx-auto max-w-[1000px] space-y-8">
-            <div
-              data-hero-copy
-              className="inline-flex items-center gap-2 border border-border/50 bg-secondary/30 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-md"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75"></span>
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-primary"></span>
-              </span>
-              <span className="font-mono tracking-wide uppercase">Fair Source Video Review</span>
-            </div>
-
             <h1
               data-hero-copy
               className="text-4xl font-semibold leading-[0.95] tracking-[-0.03em] sm:text-5xl md:text-6xl lg:text-7xl"
