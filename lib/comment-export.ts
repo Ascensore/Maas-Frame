@@ -1,3 +1,6 @@
+import type { FrameRate } from '@/lib/timecode';
+import { framesToTimecode, secondsToFrames } from '@/lib/timecode';
+
 interface ExportAuthor {
   name: string | null;
 }
@@ -335,4 +338,128 @@ function buildSimplePdf(lines: string[]): Buffer {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
 
   return Buffer.from(pdf, 'utf8');
+}
+
+export type MarkerExportMeta = {
+  videoTitle: string;
+  versionNumber: number;
+  versionLabel: string | null;
+  frameRate: FrameRate | null;
+  startTimecode: string | null;
+  durationSeconds: number | null;
+};
+
+const FALLBACK_RATE: FrameRate = { num: 24, den: 1, dropFrame: false };
+
+function rateForExport(meta: MarkerExportMeta): FrameRate {
+  return meta.frameRate ?? FALLBACK_RATE;
+}
+
+function commentTimecode(seconds: number, meta: MarkerExportMeta): string {
+  const rate = rateForExport(meta);
+  return framesToTimecode(secondsToFrames(seconds, rate), rate);
+}
+
+function sanitizeEdlComment(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').slice(0, 80);
+}
+
+function padEvent(index: number): string {
+  return String(index).padStart(3, '0');
+}
+
+export function buildCommentsEdl(rows: ExportCommentRow[], meta: MarkerExportMeta): string {
+  const rate = rateForExport(meta);
+  const fcm = rate.dropFrame ? 'DROP FRAME' : 'NON-DROP FRAME';
+  const lines = [
+    `TITLE: ${sanitizeEdlComment(meta.videoTitle)} v${meta.versionNumber}`,
+    `FCM: ${fcm}`,
+    '',
+  ];
+
+  const tops = rows.filter((row) => row.level === 0);
+  tops.forEach((row, index) => {
+    const start = commentTimecode(row.timestamp, meta);
+    const endSeconds =
+      row.timestampEnd !== null && row.timestampEnd > row.timestamp
+        ? row.timestampEnd
+        : row.timestamp + 1 / (rate.num / rate.den);
+    const end = commentTimecode(endSeconds, meta);
+    const reel = 'AX';
+    lines.push(
+      `${padEvent(index + 1)}  ${reel.padEnd(8)}V     C        ${start} ${end} ${start} ${end}`
+    );
+    const author = sanitizeEdlComment(row.authorName);
+    const body = sanitizeEdlComment(row.content || '(no text)');
+    lines.push(`* FROM ${author}: ${body}`);
+    if (row.tag) lines.push(`* TAG: ${sanitizeEdlComment(row.tag)}`);
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function fcpxmlDuration(seconds: number, rate: FrameRate): string {
+  const frames = Math.max(1, secondsToFrames(seconds, rate));
+  return `${frames * rate.den}/${rate.num}s`;
+}
+
+function fcpxmlTime(seconds: number, rate: FrameRate): string {
+  const frames = secondsToFrames(seconds, rate);
+  if (frames === 0) return '0s';
+  return `${frames * rate.den}/${rate.num}s`;
+}
+
+export function buildCommentsFcpxml(rows: ExportCommentRow[], meta: MarkerExportMeta): string {
+  const rate = rateForExport(meta);
+  const durationSeconds =
+    meta.durationSeconds && meta.durationSeconds > 0 ? meta.durationSeconds : 60;
+  const tops = rows.filter((row) => row.level === 0);
+  const markers = tops
+    .map((row) => {
+      const start = fcpxmlTime(row.timestamp, rate);
+      const duration =
+        row.timestampEnd !== null && row.timestampEnd > row.timestamp
+          ? fcpxmlDuration(row.timestampEnd - row.timestamp, rate)
+          : fcpxmlDuration(1 / (rate.num / rate.den), rate);
+      const value = xmlEscape(
+        `${row.authorName}: ${row.content || '(no text)'}${row.tag ? ` [${row.tag}]` : ''}`
+      );
+      return `              <marker start="${start}" duration="${duration}" value="${value}"/>`;
+    })
+    .join('\n');
+
+  const tcFormat = rate.dropFrame ? 'DF' : 'NDF';
+  const title = xmlEscape(`${meta.videoTitle} v${meta.versionNumber}`);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r1" name="FFVideoFormat" frameDuration="${rate.den}/${rate.num}s" width="1920" height="1080"/>
+  </resources>
+  <library>
+    <event name="OpenFrame">
+      <project name="${title}">
+        <sequence format="r1" tcStart="0s" tcFormat="${tcFormat}">
+          <spine>
+            <gap name="Review" offset="0s" duration="${fcpxmlDuration(durationSeconds, rate)}">
+${markers || '              <!-- no comments -->'}
+            </gap>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
+`;
 }

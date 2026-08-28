@@ -54,6 +54,7 @@ model User {
   sentInvitations           Invitation[] @relation("InvitationsSentBy")
   acquisition               UserAcquisition?
   analyticsEvents           AnalyticsEvent[]
+  apiTokens                 ApiToken[]
 
   @@map("users")
 }
@@ -370,6 +371,12 @@ model VideoVersion {
   thumbnailUrl    String?
   duration        Int?     // Duration in seconds
   sizeBytes       BigInt   @default(0) @map("size_bytes") // R2-hosted video file size
+  // Rational frame rate as returned by ffprobe (e.g. 30000/1001). Null until probed.
+  frameRateNum    Int?     @map("frame_rate_num")
+  frameRateDen    Int?     @map("frame_rate_den")
+  dropFrame       Boolean  @default(false) @map("drop_frame")
+  startTimecode   String?  @map("start_timecode")
+  durationFrames  Int?     @map("duration_frames")
   
   // Status
   isActive        Boolean  @default(true) // Currently displayed version
@@ -386,6 +393,8 @@ model VideoVersion {
   watchProgress   WatchProgress[]
   approvalRequests ApprovalRequest[]
   subtitles       VideoSubtitle[]
+  transcripts     Transcript[]
+  mediaJobs       MediaJob[]
   
   @@unique([videoParentId, versionNumber])
   @@index([videoParentId])
@@ -458,6 +467,8 @@ model Comment {
   // Timestamp in video (in seconds, with decimal for precision)
   timestamp     Float       // e.g., 65.5 = 1:05.5
   timestampEnd  Float?      // Optional end timestamp for range comments
+  /// Frame index derived on write when the version has a known frame rate.
+  timestampFrame Int?
   
   // Voice recording (optional)
   voiceUrl      String?     // URL to voice recording file
@@ -902,6 +913,115 @@ model AnalyticsEvent {
   @@index([channel, name, occurredAt])
   @@index([anonymousId])
   @@map("analytics_events")
+}
+
+enum MediaJobKind {
+  PROBE_MEDIA
+  EXTRACT_AUDIO
+  TRANSCRIBE
+}
+
+enum MediaJobStatus {
+  PENDING
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum TranscriptStatus {
+  PENDING
+  RUNNING
+  READY
+  FAILED
+}
+
+model ApiToken {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  tokenHash   String    @unique @map("token_hash")
+  tokenPrefix String    @map("token_prefix")
+  lastUsedAt  DateTime? @map("last_used_at")
+  expiresAt   DateTime? @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("api_tokens")
+}
+
+model MediaJob {
+  id         String         @id @default(cuid())
+  kind       MediaJobKind
+  status     MediaJobStatus @default(PENDING)
+  versionId  String         @map("version_id")
+  version    VideoVersion   @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  payload    Json?
+  error      String?        @db.Text
+  attempts   Int            @default(0)
+  startedAt  DateTime?      @map("started_at")
+  finishedAt DateTime?      @map("finished_at")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([versionId, kind])
+  @@map("media_jobs")
+}
+
+model Transcript {
+  id           String            @id @default(cuid())
+  versionId    String            @map("version_id")
+  version      VideoVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  language     String            @default("en")
+  provider     String
+  status       TranscriptStatus  @default(PENDING)
+  searchText   String            @default("") @db.Text @map("search_text")
+  searchVector Unsupported("tsvector")? @map("search_vector")
+  error        String?           @db.Text
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  segments     TranscriptSegment[]
+
+  @@unique([versionId, language])
+  @@index([versionId])
+  @@map("transcripts")
+}
+
+model TranscriptSegment {
+  id           String     @id @default(cuid())
+  transcriptId String     @map("transcript_id")
+  transcript   Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  startSec     Float      @map("start_sec")
+  endSec       Float      @map("end_sec")
+  speaker      String?
+  text         String     @db.Text
+  words        Json
+  position     Int
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@index([transcriptId, position])
+  @@map("transcript_segments")
+}
+
+model SequenceLink {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  versionId     String   @map("version_id")
+  nle           String
+  sequenceName  String   @map("sequence_name")
+  startTimecode String   @map("start_timecode")
+  frameRateNum  Int      @map("frame_rate_num")
+  frameRateDen  Int      @map("frame_rate_den")
+  dropFrame     Boolean  @default(false) @map("drop_frame")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, versionId, nle])
+  @@index([versionId])
+  @@map("sequence_links")
 }
 
 // Rate limiting table (created as UNLOGGED via raw SQL migration)

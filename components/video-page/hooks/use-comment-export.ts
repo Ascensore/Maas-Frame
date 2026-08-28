@@ -13,7 +13,7 @@ export function useCommentExport({ activeVersionId, showResolved }: UseCommentEx
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const exportComments = useCallback(
-    async (format: 'csv' | 'pdf') => {
+    async (format: 'csv' | 'pdf' | 'edl' | 'fcpxml') => {
       if (!activeVersionId) return;
 
       if (format === 'csv') {

@@ -27,6 +27,7 @@ import {
   UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
 import { isValidEmailAddress, normalizeEmail } from '@/lib/email-validation';
+import { deriveTimestampFrame } from '@/lib/timecode';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 const SAFE_AUDIO_PATH =
@@ -429,6 +430,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           content: content?.trim() || null,
           timestamp: parsedTimestamp,
           timestampEnd: parsedTimestampEnd,
+          timestampFrame: deriveTimestampFrame(
+            parsedTimestamp,
+            version.frameRateNum,
+            version.frameRateDen
+          ),
           parentId: parentId || null,
           voiceUrl: voiceUrl || null,
           voiceDuration: voiceDuration || null,

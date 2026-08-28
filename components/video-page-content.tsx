@@ -28,6 +28,7 @@ import { CommentsPane } from '@/components/video-page/comments-pane';
 import { AssetsPane } from '@/components/video-page/assets-pane';
 import { ApprovalRequestDialog } from '@/components/video-page/approval-request-dialog';
 import { ApprovalRequestsPanel } from '@/components/video-page/approval-requests-panel';
+import { TranscriptPane } from '@/components/video-page/transcript-pane';
 import type {
   CommentMarker,
   PlayerAdapter,
@@ -108,7 +109,9 @@ export function VideoPageContent({
     toggleVoiceSpeed,
   } = useCommentMedia();
   const [showResolved, setShowResolved] = useState(false);
-  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets'>('comments');
+  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets' | 'transcript'>(
+    'comments'
+  );
   const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null);
 
   const editAnnotationCanvasRef = useRef<AnnotationCanvasHandle>(null);
@@ -483,6 +486,7 @@ export function VideoPageContent({
     commentRangeEnd,
     toggleCommentRangeSelection,
     clearCommentRangeSelection,
+    applyCommentRange,
     isUploadingImage,
     imageInputRef,
     removeImageFile,
@@ -982,6 +986,18 @@ export function VideoPageContent({
               highlightedAssetId={highlightedAssetId}
               onHighlightedAssetHandled={() => setHighlightedAssetId(null)}
               directUploadProvider={directUploadProvider}
+            />
+          }
+          transcriptPane={
+            <TranscriptPane
+              versionId={activeVersionId}
+              currentTime={currentTime}
+              canManage={canManageSubtitles}
+              onSeek={(seconds, options) => handleSeekToTimestamp(seconds, undefined, options)}
+              onCommentRange={(start, end, quote) => {
+                applyCommentRange(start, end, quote);
+                setActiveSidePane('comments');
+              }}
             />
           }
           composer={

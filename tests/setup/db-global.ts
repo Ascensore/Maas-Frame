@@ -70,14 +70,16 @@ const REVIEWED_MIGRATIONS = [
   '20260818120000_add_upload_reservation_purpose',
   '20260820120000_add_comment_images',
   '20260822120000_add_video_subtitles',
+  '20260828120000_internal_timecode_api_transcript', // replayed: tsvector GIN + trigger
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */
-const REQUIRED_FUNCTIONS = ['cleanup_rate_limits'];
+const REQUIRED_FUNCTIONS = ['cleanup_rate_limits', 'transcripts_search_vector_update'];
 const REQUIRED_INDEXES = [
   'video_versions_r2_videoid_unique',
   'video_versions_r2_originalurl_unique',
   'video_versions_r2_thumbnail_unique',
+  'transcripts_search_vector_idx',
 ];
 
 const POST_PUSH_SQL = `
@@ -118,6 +120,24 @@ WHERE "providerId" = 'r2' AND "originalUrl" LIKE '/api/upload/video/%';
 CREATE UNIQUE INDEX IF NOT EXISTS "video_versions_r2_thumbnail_unique"
 ON "video_versions" ("thumbnailUrl")
 WHERE "providerId" = 'r2' AND "thumbnailUrl" LIKE '/api/upload/image/%';
+
+-- Replayed from 20260828120000_internal_timecode_api_transcript. The GIN index
+-- and search_vector trigger are not expressible in schema.prisma.
+CREATE INDEX IF NOT EXISTS "transcripts_search_vector_idx"
+ON "transcripts" USING GIN ("search_vector");
+
+CREATE OR REPLACE FUNCTION transcripts_search_vector_update() RETURNS trigger AS $$
+BEGIN
+  NEW.search_vector := to_tsvector('simple', coalesce(NEW.search_text, ''));
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS transcripts_search_vector_trigger ON transcripts;
+CREATE TRIGGER transcripts_search_vector_trigger
+BEFORE INSERT OR UPDATE OF search_text ON transcripts
+FOR EACH ROW
+EXECUTE FUNCTION transcripts_search_vector_update();
 `;
 
 function assertMigrationsReviewed(): void {
