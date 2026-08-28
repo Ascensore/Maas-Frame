@@ -81,6 +81,7 @@ export async function uploadProjectVideo(
     title?: string;
     description?: string | null;
     bunnyCdnHostname?: string | null;
+    folderId?: string | null;
   } & ProjectVideoUploadProgress
 ): Promise<void> {
   const {
@@ -88,6 +89,7 @@ export async function uploadProjectVideo(
     title: titleOverride,
     description = null,
     bunnyCdnHostname = resolvePublicBunnyCdnHostname(),
+    folderId = null,
     onProgress,
     onStatus,
     onTusUploadReady,
@@ -136,6 +138,7 @@ export async function uploadProjectVideo(
           uploadToken: uploaded.uploadToken,
           objectKey: uploaded.objectKey,
           reservationId: uploaded.reservationId,
+          folderId,
         }),
       });
 
@@ -236,6 +239,7 @@ export async function uploadProjectVideo(
           : null,
         duration: null,
         uploadToken,
+        folderId,
       }),
     });
 

@@ -33,6 +33,7 @@ import {
   createApprovalRequest,
   createComment,
   createCommentTag,
+  createFolder,
   createProject,
   createShareLink,
   createUser,
@@ -58,6 +59,8 @@ import * as onboardingCompleteRoute from '@/app/api/onboarding/complete/route';
 import * as onboardingSourceRoute from '@/app/api/onboarding/source/route';
 import * as approvalCandidatesRoute from '@/app/api/projects/[projectId]/approval-candidates/route';
 import * as projectDownloadRoute from '@/app/api/projects/[projectId]/download/route';
+import * as projectFoldersRoute from '@/app/api/projects/[projectId]/folders/route';
+import * as projectFolderRoute from '@/app/api/projects/[projectId]/folders/[folderId]/route';
 import * as projectInvitationRoute from '@/app/api/projects/[projectId]/members/invitations/[invitationId]/route';
 import * as projectMemberRoute from '@/app/api/projects/[projectId]/members/[memberId]/route';
 import * as projectMembersRoute from '@/app/api/projects/[projectId]/members/route';
@@ -158,7 +161,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 76;
+const EXPECTED_ROUTE_MODULE_COUNT = 78;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -227,6 +230,7 @@ interface Fixtures {
   projectMemberId: string;
   projectInvitationId: string;
   tagId: string;
+  folderId: string;
   videoId: string;
   versionId: string;
   commentId: string;
@@ -270,6 +274,7 @@ async function seedFixtures(): Promise<Fixtures> {
     projectId: project.id,
   });
   const tag = await createCommentTag({ projectId: project.id });
+  const folder = await createFolder({ projectId: project.id, name: 'Dailies' });
 
   const video = await createVideo({ projectId: project.id });
   const version = await createVersion({
@@ -335,6 +340,7 @@ async function seedFixtures(): Promise<Fixtures> {
     projectMemberId: projectMember.id,
     projectInvitationId: projectInvitation.id,
     tagId: tag.id,
+    folderId: folder.id,
     videoId: video.id,
     versionId: version.id,
     commentId: comment.id,
@@ -468,6 +474,20 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: projectDownloadRoute,
     url: (f) => `/api/projects/${f.projectId}/download`,
     params: (f) => ({ projectId: f.projectId }),
+  },
+  {
+    file: 'projects/[projectId]/folders/route.ts',
+    module: projectFoldersRoute,
+    url: (f) => `/api/projects/${f.projectId}/folders`,
+    params: (f) => ({ projectId: f.projectId }),
+    body: { name: 'Dailies' },
+  },
+  {
+    file: 'projects/[projectId]/folders/[folderId]/route.ts',
+    module: projectFolderRoute,
+    url: (f) => `/api/projects/${f.projectId}/folders/${f.folderId}`,
+    params: (f) => ({ projectId: f.projectId, folderId: f.folderId }),
+    body: { name: 'Renamed by an anonymous caller' },
   },
   {
     file: 'projects/[projectId]/members/invitations/[invitationId]/route.ts',

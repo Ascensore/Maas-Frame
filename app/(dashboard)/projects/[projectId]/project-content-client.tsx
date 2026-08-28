@@ -20,6 +20,10 @@ import {
   Trash2,
   ChevronDown,
   FolderInput,
+  Folder,
+  FolderPlus,
+  MoreVertical,
+  Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -46,6 +50,18 @@ import {
 import { VideoCard } from '@/components/video-card';
 import { VideoDragDropUploader } from '@/components/video-drag-drop-uploader';
 import { MoveVideosDialog } from '@/components/move-videos-dialog';
+import { MoveToFolderDialog, type ProjectFolder } from '@/components/move-to-folder-dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { folderPath } from '@/lib/folders';
 import type { DirectUploadProvider } from '@/components/video-page/types';
 import {
   runProjectDownloadManifest,
@@ -80,6 +96,8 @@ interface ProjectContentClientProps {
   };
   projectId: string;
   videos: SerializedVideo[];
+  folders: ProjectFolder[];
+  currentFolderId: string | null;
   allVideoIds: string[];
   canEdit: boolean;
   canDownloadProject: boolean;
@@ -96,6 +114,8 @@ export function ProjectContentClient({
   project,
   projectId,
   videos,
+  folders,
+  currentFolderId,
   allVideoIds,
   canEdit,
   canDownloadProject,
@@ -117,6 +137,16 @@ export function ProjectContentClient({
   const [isDeletingSelected, setIsDeletingSelected] = useState(false);
   const [showDeleteSelectedDialog, setShowDeleteSelectedDialog] = useState(false);
   const [showMoveSelectedDialog, setShowMoveSelectedDialog] = useState(false);
+  const [showMoveToFolderDialog, setShowMoveToFolderDialog] = useState(false);
+  const [moveToFolderVideoIds, setMoveToFolderVideoIds] = useState<string[]>([]);
+  const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [folderPendingDelete, setFolderPendingDelete] = useState<ProjectFolder | null>(null);
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
+  const [folderPendingRename, setFolderPendingRename] = useState<ProjectFolder | null>(null);
+  const [renameFolderName, setRenameFolderName] = useState('');
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
 
   const canSelectVideos = canDownloadProject || canEdit;
 
@@ -145,6 +175,29 @@ export function ProjectContentClient({
     [searchParams]
   );
 
+  const folderQuery = useCallback(
+    (folderId: string | null) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (folderId) params.set('folder', folderId);
+      else params.delete('folder');
+      params.set('page', '1');
+      return params.toString();
+    },
+    [searchParams]
+  );
+
+  const childFolders = useMemo(
+    () => folders.filter((folder) => folder.parentId === currentFolderId),
+    [folders, currentFolderId]
+  );
+  const crumbs = useMemo(
+    () => (currentFolderId ? folderPath(currentFolderId, folders) : []),
+    [currentFolderId, folders]
+  );
+  const addVideoHref = currentFolderId
+    ? `/projects/${projectId}/videos/new?folder=${currentFolderId}`
+    : `/projects/${projectId}/videos/new`;
+
   const handleVideoDeleted = useCallback((videoId: string) => {
     setLocalVideos((prev) => prev.filter((video) => video.id !== videoId));
     setSelectedVideoIds((prev) => prev.filter((id) => id !== videoId));
@@ -156,6 +209,94 @@ export function ProjectContentClient({
     setSelectedVideoIds([]);
     setSelectionMode(false);
   }, []);
+
+  const handleVideosMovedToFolder = useCallback(
+    (movedIds: string[], folderId: string | null) => {
+      if (folderId === currentFolderId) return;
+      handleVideosMoved(movedIds);
+      router.refresh();
+    },
+    [currentFolderId, handleVideosMoved, router]
+  );
+
+  const openMoveToFolder = useCallback((videoIds: string[]) => {
+    setMoveToFolderVideoIds(videoIds);
+    setShowMoveToFolderDialog(true);
+  }, []);
+
+  const handleCreateFolder = useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name || isCreatingFolder) return;
+    setIsCreatingFolder(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, parentId: currentFolderId }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        toast.error(typeof body?.error === 'string' ? body.error : 'Failed to create folder');
+        return;
+      }
+      setShowNewFolderDialog(false);
+      setNewFolderName('');
+      toast.success('Folder created');
+      router.refresh();
+    } catch {
+      toast.error('Failed to create folder');
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  }, [currentFolderId, isCreatingFolder, newFolderName, projectId, router]);
+
+  const handleRenameFolder = useCallback(async () => {
+    if (!folderPendingRename || isRenamingFolder) return;
+    const name = renameFolderName.trim();
+    if (!name) return;
+    setIsRenamingFolder(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/folders/${folderPendingRename.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        toast.error(typeof body?.error === 'string' ? body.error : 'Failed to rename folder');
+        return;
+      }
+      setFolderPendingRename(null);
+      toast.success('Folder renamed');
+      router.refresh();
+    } catch {
+      toast.error('Failed to rename folder');
+    } finally {
+      setIsRenamingFolder(false);
+    }
+  }, [folderPendingRename, isRenamingFolder, projectId, renameFolderName, router]);
+
+  const handleDeleteFolder = useCallback(async () => {
+    if (!folderPendingDelete || isDeletingFolder) return;
+    setIsDeletingFolder(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/folders/${folderPendingDelete.id}`, {
+        method: 'DELETE',
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        toast.error(typeof body?.error === 'string' ? body.error : 'Failed to delete folder');
+        return;
+      }
+      setFolderPendingDelete(null);
+      toast.success('Folder deleted. Videos inside it moved to the project root.');
+      router.refresh();
+    } catch {
+      toast.error('Failed to delete folder');
+    } finally {
+      setIsDeletingFolder(false);
+    }
+  }, [folderPendingDelete, isDeletingFolder, projectId, router]);
 
   const toggleVideoSelection = useCallback((videoId: string, selected: boolean) => {
     setSelectedVideoIds((prev) => {
@@ -325,6 +466,7 @@ export function ProjectContentClient({
         fixedProjectName={project.name}
         canUpload={canEdit && directUploadsEnabled}
         directUploadProvider={directUploadProvider}
+        folderId={currentFolderId}
       />
 
       {/* Project Header */}
@@ -355,6 +497,25 @@ export function ProjectContentClient({
               <span className="text-muted-foreground">{project.description}</span>
             )}
           </div>
+          {crumbs.length > 0 && (
+            <nav className="mt-3 flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
+              <Link href={`?${folderQuery(null)}`} className="hover:text-foreground">
+                {project.name}
+              </Link>
+              {crumbs.map((crumb, index) => (
+                <span key={crumb.id} className="flex items-center gap-1">
+                  <span>/</span>
+                  {index === crumbs.length - 1 ? (
+                    <span className="text-foreground">{crumb.name}</span>
+                  ) : (
+                    <Link href={`?${folderQuery(crumb.id)}`} className="hover:text-foreground">
+                      {crumb.name}
+                    </Link>
+                  )}
+                </span>
+              ))}
+            </nav>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 mt-4 sm:mt-0">
@@ -446,8 +607,14 @@ export function ProjectContentClient({
             </>
           )}
           {canEdit && (
+            <Button variant="outline" size="sm" onClick={() => setShowNewFolderDialog(true)}>
+              <FolderPlus className="h-4 w-4 mr-2" />
+              New folder
+            </Button>
+          )}
+          {canEdit && (
             <Button size="sm" asChild>
-              <Link href={`/projects/${projectId}/videos/new`}>
+              <Link href={addVideoHref}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Video
               </Link>
@@ -531,6 +698,17 @@ export function ProjectContentClient({
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => openMoveToFolder(selectedVideoIds)}
+                disabled={selectedCount === 0 || isDeletingSelected}
+              >
+                <Folder className="h-4 w-4 mr-2" />
+                Move to folder
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setShowMoveSelectedDialog(true)}
                 disabled={selectedCount === 0 || isDeletingSelected}
               >
@@ -557,6 +735,57 @@ export function ProjectContentClient({
         </div>
       )}
 
+      {childFolders.length > 0 && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mb-6">
+          {childFolders.map((folder) => (
+            <Card key={folder.id} className="group relative">
+              <Link href={`?${folderQuery(folder.id)}`} className="block">
+                <CardContent className="flex items-center gap-3 py-6">
+                  <Folder className="h-8 w-8 text-muted-foreground shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="font-medium truncate">{folder.name}</h3>
+                    <p className="text-sm text-muted-foreground">Folder</p>
+                  </div>
+                </CardContent>
+              </Link>
+              {canEdit && (
+                <div className="absolute top-2 right-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Folder actions for ${folder.name}`}
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setFolderPendingRename(folder);
+                          setRenameFolderName(folder.name);
+                        }}
+                      >
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-destructive"
+                        onSelect={() => setFolderPendingDelete(folder)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
       {/* Videos Grid */}
       {localVideos.length > 0 ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -572,20 +801,25 @@ export function ProjectContentClient({
               onEnterSelectionMode={handleEnterSelectionMode}
               onSelectedChange={(selected) => toggleVideoSelection(video.id, selected)}
               onDeleted={handleVideoDeleted}
+              onMoveToFolder={() => openMoveToFolder([video.id])}
             />
           ))}
         </div>
-      ) : (
+      ) : childFolders.length === 0 ? (
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center py-16">
             <Play className="h-12 w-12 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-medium mb-2">No videos yet</h3>
+            <h3 className="text-lg font-medium mb-2">
+              {currentFolderId ? 'This folder is empty' : 'No videos yet'}
+            </h3>
             <p className="text-muted-foreground text-center mb-4">
-              Add your first video to start collecting feedback
+              {currentFolderId
+                ? 'Add a video or create another folder in here'
+                : 'Add your first video to start collecting feedback'}
             </p>
             {canEdit && (
               <Button asChild>
-                <Link href={`/projects/${projectId}/videos/new`}>
+                <Link href={addVideoHref}>
                   <Plus className="h-4 w-4 mr-2" />
                   Add Video
                 </Link>
@@ -593,7 +827,7 @@ export function ProjectContentClient({
             )}
           </CardContent>
         </Card>
-      )}
+      ) : null}
 
       {/* Pagination */}
       {totalPages > 1 && (
@@ -660,6 +894,129 @@ export function ProjectContentClient({
         videoIds={selectedVideoIds}
         onMoved={handleVideosMoved}
       />
+
+      <MoveToFolderDialog
+        open={showMoveToFolderDialog}
+        onOpenChange={setShowMoveToFolderDialog}
+        projectId={projectId}
+        videoIds={moveToFolderVideoIds}
+        folders={folders}
+        currentFolderId={currentFolderId}
+        onMoved={handleVideosMovedToFolder}
+      />
+
+      <Dialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New folder</DialogTitle>
+            <DialogDescription>
+              {currentFolderId
+                ? 'Created inside the folder you are viewing.'
+                : 'Created at the project root.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="new-folder-name">Name</Label>
+            <Input
+              id="new-folder-name"
+              value={newFolderName}
+              onChange={(event) => setNewFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void handleCreateFolder();
+                }
+              }}
+              maxLength={100}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowNewFolderDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleCreateFolder()}
+              disabled={isCreatingFolder || !newFolderName.trim()}
+            >
+              {isCreatingFolder && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={folderPendingRename !== null}
+        onOpenChange={(open) => {
+          if (!open) setFolderPendingRename(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename folder</DialogTitle>
+            <DialogDescription>The name is visible to everyone on this project.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Label htmlFor="rename-folder-name">Name</Label>
+            <Input
+              id="rename-folder-name"
+              value={renameFolderName}
+              onChange={(event) => setRenameFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void handleRenameFolder();
+                }
+              }}
+              maxLength={100}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setFolderPendingRename(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleRenameFolder()}
+              disabled={isRenamingFolder || !renameFolderName.trim()}
+            >
+              {isRenamingFolder && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={folderPendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setFolderPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {folderPendingDelete?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Nested folders are deleted too. Videos inside them move to the project root; they are
+              not deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingFolder}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteFolder();
+              }}
+              disabled={isDeletingFolder}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeletingFolder && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Delete folder
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

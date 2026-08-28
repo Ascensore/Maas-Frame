@@ -40,14 +40,19 @@ import type { DirectUploadProvider } from '@/components/video-page/types';
 
 export default function NewVideoPageClient({
   projectId,
+  folderId,
   directUploadsEnabled,
   directUploadProvider,
 }: {
   projectId: string;
+  folderId: string | null;
   directUploadsEnabled: boolean;
   directUploadProvider: DirectUploadProvider;
 }) {
   const router = useRouter();
+  const projectHref = folderId
+    ? `/projects/${projectId}?folder=${folderId}`
+    : `/projects/${projectId}`;
   const bunnyCdnHostname = resolvePublicBunnyCdnHostname();
 
   const [isLoading, setIsLoading] = useState(false);
@@ -315,6 +320,7 @@ export default function NewVideoPageClient({
       title,
       description,
       bunnyCdnHostname,
+      folderId,
       onProgress: (progress) => {
         setUploadProgress(progress);
         setUploadStatus(`Uploading... ${progress}%`);
@@ -350,6 +356,7 @@ export default function NewVideoPageClient({
         await uploadProjectVideo(projectId, file, {
           provider: directUploadProvider,
           bunnyCdnHostname,
+          folderId,
           onProgress: (progress) => {
             setUploadProgress(progress);
             setUploadStatus(
@@ -382,7 +389,7 @@ export default function NewVideoPageClient({
     }
 
     if (successCount > 0 && failCount === 0) {
-      router.push(`/projects/${projectId}`);
+      router.push(projectHref);
       return;
     }
 
@@ -429,6 +436,7 @@ export default function NewVideoPageClient({
             videoId: videoSource.videoId,
             thumbnailUrl: getThumbnailUrl(videoSource, 'large'),
             duration: videoSource.metadata?.duration || null,
+            folderId,
           }),
         });
 
@@ -438,7 +446,7 @@ export default function NewVideoPageClient({
           return;
         }
 
-        router.push(`/projects/${projectId}`);
+        router.push(projectHref);
         return;
       }
 
@@ -454,7 +462,7 @@ export default function NewVideoPageClient({
 
       if (selectedFiles.length === 1) {
         await uploadSingleFileWithForm(selectedFiles[0]);
-        router.push(`/projects/${projectId}`);
+        router.push(projectHref);
         return;
       }
 
