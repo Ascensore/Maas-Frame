@@ -165,6 +165,14 @@ export function useCommentActions({
     setCommentRangeEnd(Math.max(commentRangeStart, currentTime));
   }, [commentRangeEnd, commentRangeStart, currentTime]);
 
+  const applyCommentRange = useCallback((start: number, end: number, quote: string) => {
+    setCommentRangeStart(Math.min(start, end));
+    setCommentRangeEnd(Math.max(start, end));
+    if (quote.trim()) {
+      setCommentText((current) => (current.trim() ? current : `"${quote.trim()}"`));
+    }
+  }, []);
+
   const toggleReplyRangeSelection = useCallback(() => {
     if (replyRangeStart === null || replyRangeEnd !== null) {
       setReplyRangeStart(currentTime);
@@ -1309,6 +1317,7 @@ export function useCommentActions({
     commentRangeEnd,
     toggleCommentRangeSelection,
     clearCommentRangeSelection,
+    applyCommentRange,
     isUploadingImage,
     imageInputRef,
     removeImageFile,

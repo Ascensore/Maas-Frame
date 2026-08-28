@@ -7,6 +7,7 @@ import {
   Mail,
   CheckCircle2,
   AlertCircle,
+  Key,
   Loader2,
   Globe,
   CreditCard,
@@ -150,6 +151,18 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
   const [billingAction, setBillingAction] = useState<'checkout' | 'portal' | null>(null);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(true);
+  const [apiTokens, setApiTokens] = useState<
+    Array<{
+      id: string;
+      name: string;
+      tokenPrefix: string;
+      lastUsedAt: string | null;
+      createdAt: string;
+    }>
+  >([]);
+  const [newTokenName, setNewTokenName] = useState('NLE panel');
+  const [createdTokenSecret, setCreatedTokenSecret] = useState<string | null>(null);
+  const [tokenBusy, setTokenBusy] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Form state for Telegram chat ID (separate from saved settings for editing)
@@ -162,10 +175,11 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
   useEffect(() => {
     async function fetchSettings() {
       try {
-        const [settingsRes, billingRes, storageRes] = await Promise.all([
+        const [settingsRes, billingRes, storageRes, tokensRes] = await Promise.all([
           fetch('/api/settings/notifications'),
           fetch('/api/billing'),
           fetch('/api/settings/storage'),
+          fetch('/api/settings/api-tokens'),
         ]);
 
         if (settingsRes.ok) {
@@ -182,6 +196,11 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
         if (storageRes.ok) {
           const data = await storageRes.json();
           setStorageInfo(data.data);
+        }
+
+        if (tokensRes.ok) {
+          const data = await tokensRes.json();
+          setApiTokens(data.data.tokens ?? []);
         }
       } catch {
         console.error('Failed to fetch settings');
@@ -811,6 +830,100 @@ export default function SettingsPage({ billingOnly = false }: { billingOnly?: bo
                   </SelectGroup>
                 </SelectContent>
               </Select>
+            </CardContent>
+          </Card>
+
+          <Separator className="my-6" />
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Key className="h-5 w-5" />
+                API tokens
+              </CardTitle>
+              <CardDescription>
+                Paste a token into the Premiere or Resolve panel. The secret is shown once.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <Input
+                  value={newTokenName}
+                  onChange={(event) => setNewTokenName(event.target.value)}
+                  placeholder="Token name"
+                />
+                <Button
+                  disabled={tokenBusy || !newTokenName.trim()}
+                  onClick={async () => {
+                    setTokenBusy(true);
+                    try {
+                      const res = await fetch('/api/settings/api-tokens', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newTokenName.trim() }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) {
+                        showMessage('error', data.error || 'Failed to create token');
+                        return;
+                      }
+                      setCreatedTokenSecret(data.data.token.secret);
+                      setApiTokens((current) => [
+                        {
+                          id: data.data.token.id,
+                          name: data.data.token.name,
+                          tokenPrefix: data.data.token.tokenPrefix,
+                          lastUsedAt: null,
+                          createdAt: data.data.token.createdAt,
+                        },
+                        ...current,
+                      ]);
+                    } finally {
+                      setTokenBusy(false);
+                    }
+                  }}
+                >
+                  Create
+                </Button>
+              </div>
+              {createdTokenSecret && (
+                <div className="rounded-md border bg-muted/40 p-3 text-sm break-all">
+                  <p className="font-medium mb-1">Copy this now. It will not be shown again.</p>
+                  <code>{createdTokenSecret}</code>
+                </div>
+              )}
+              <ul className="space-y-2">
+                {apiTokens.map((token) => (
+                  <li key={token.id} className="flex items-center justify-between gap-2 text-sm">
+                    <span>
+                      {token.name}{' '}
+                      <span className="text-muted-foreground">{token.tokenPrefix}…</span>
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        setTokenBusy(true);
+                        try {
+                          const res = await fetch(`/api/settings/api-tokens/${token.id}`, {
+                            method: 'DELETE',
+                          });
+                          if (res.ok) {
+                            setApiTokens((current) => current.filter((row) => row.id !== token.id));
+                          }
+                        } finally {
+                          setTokenBusy(false);
+                        }
+                      }}
+                    >
+                      Revoke
+                    </Button>
+                  </li>
+                ))}
+                {apiTokens.length === 0 && (
+                  <li className="text-sm text-muted-foreground">No active tokens.</li>
+                )}
+              </ul>
             </CardContent>
           </Card>
 

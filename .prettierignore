@@ -1,5 +1,7 @@
 .next/
 node_modules/
+worker/
+nle/
 prisma/migrations/
 bun.lock
 coverage/

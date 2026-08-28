@@ -9,6 +9,7 @@ import { readBunnyUploadGrant } from '@/lib/bunny-upload-token';
 import { finalizeR2VideoUpload } from '@/lib/r2-video-finalize';
 import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
+import { enqueueJobsForNewVersion } from '@/lib/media-jobs';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
 
@@ -291,6 +292,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const response = successResponse(version, 201);
+    await enqueueJobsForNewVersion({
+      versionId: version.id,
+      providerId: version.providerId,
+    }).catch((err) => logError('Failed to enqueue media jobs:', err));
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
     logError('Error creating version:', error);

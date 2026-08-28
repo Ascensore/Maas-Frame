@@ -78,6 +78,8 @@ import * as projectsRoute from '@/app/api/projects/route';
 import * as searchRoute from '@/app/api/search/route';
 import * as settingsNotificationsRoute from '@/app/api/settings/notifications/route';
 import * as settingsStorageRoute from '@/app/api/settings/storage/route';
+import * as settingsApiTokensRoute from '@/app/api/settings/api-tokens/route';
+import * as settingsApiTokenRoute from '@/app/api/settings/api-tokens/[tokenId]/route';
 import * as uploadAudioFileRoute from '@/app/api/upload/audio/[filename]/route';
 import * as uploadAudioRoute from '@/app/api/upload/audio/route';
 import * as uploadImageFileRoute from '@/app/api/upload/image/[filename]/route';
@@ -88,6 +90,13 @@ import * as versionApprovalsRoute from '@/app/api/versions/[versionId]/approvals
 import * as commentsExportRoute from '@/app/api/versions/[versionId]/comments/export/route';
 import * as versionCommentsRoute from '@/app/api/versions/[versionId]/comments/route';
 import * as versionDownloadRoute from '@/app/api/versions/[versionId]/download/route';
+import * as versionTranscriptRoute from '@/app/api/versions/[versionId]/transcript/route';
+import * as v1ProjectsRoute from '@/app/api/v1/projects/route';
+import * as v1ProjectVideosRoute from '@/app/api/v1/projects/[projectId]/videos/route';
+import * as v1VersionRoute from '@/app/api/v1/versions/[versionId]/route';
+import * as v1VersionCommentsRoute from '@/app/api/v1/versions/[versionId]/comments/route';
+import * as v1VersionTranscriptRoute from '@/app/api/v1/versions/[versionId]/transcript/route';
+import * as v1CommentRoute from '@/app/api/v1/comments/[commentId]/route';
 import * as assetDownloadRoute from '@/app/api/videos/[videoId]/assets/[assetId]/download/route';
 import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
 import * as assetsBunnyInitRoute from '@/app/api/videos/[videoId]/assets/bunny-init/route';
@@ -148,7 +157,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 66;
+const EXPECTED_ROUTE_MODULE_COUNT = 75;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -587,6 +596,63 @@ const ROUTE_CASES: readonly RouteCase[] = [
     file: 'settings/storage/route.ts',
     module: settingsStorageRoute,
     url: () => '/api/settings/storage',
+  },
+  {
+    file: 'settings/api-tokens/route.ts',
+    module: settingsApiTokensRoute,
+    url: () => '/api/settings/api-tokens',
+    body: { name: 'panel' },
+  },
+  {
+    file: 'settings/api-tokens/[tokenId]/route.ts',
+    module: settingsApiTokenRoute,
+    url: (f) => `/api/settings/api-tokens/${f.userId}`,
+    params: (f) => ({ tokenId: f.userId }),
+  },
+  {
+    file: 'v1/projects/route.ts',
+    module: v1ProjectsRoute,
+    url: () => '/api/v1/projects',
+  },
+  {
+    file: 'v1/projects/[projectId]/videos/route.ts',
+    module: v1ProjectVideosRoute,
+    url: (f) => `/api/v1/projects/${f.projectId}/videos`,
+    params: (f) => ({ projectId: f.projectId }),
+  },
+  {
+    file: 'v1/versions/[versionId]/route.ts',
+    module: v1VersionRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}`,
+    params: (f) => ({ versionId: f.versionId }),
+  },
+  {
+    file: 'v1/versions/[versionId]/comments/route.ts',
+    module: v1VersionCommentsRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}/comments`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { content: 'anon note', timestamp: 1 },
+  },
+  {
+    file: 'v1/versions/[versionId]/transcript/route.ts',
+    module: v1VersionTranscriptRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}/transcript`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { language: 'en' },
+  },
+  {
+    file: 'v1/comments/[commentId]/route.ts',
+    module: v1CommentRoute,
+    url: (f) => `/api/v1/comments/${f.commentId}`,
+    params: (f) => ({ commentId: f.commentId }),
+    body: { isResolved: true },
+  },
+  {
+    file: 'versions/[versionId]/transcript/route.ts',
+    module: versionTranscriptRoute,
+    url: (f) => `/api/versions/${f.versionId}/transcript`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { language: 'en' },
   },
   {
     file: 'upload/audio/[filename]/route.ts',

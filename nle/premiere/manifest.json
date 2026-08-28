@@ -1,0 +1,28 @@
+{
+  "id": "com.internal.openframe.premiere",
+  "name": "Internal Review (Premiere)",
+  "version": "0.1.0",
+  "manifestVersion": 5,
+  "host": [
+    {
+      "app": "premierepro",
+      "minVersion": "25.6.0"
+    }
+  ],
+  "main": "index.html",
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "openframe.panel",
+      "label": {
+        "default": "Review markers"
+      }
+    }
+  ],
+  "requiredPermissions": {
+    "network": {
+      "domains": "all"
+    },
+    "localFileSystem": "plugin"
+  }
+}

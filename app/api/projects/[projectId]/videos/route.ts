@@ -10,6 +10,7 @@ import { finalizeR2VideoUpload } from '@/lib/r2-video-finalize';
 import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 import { eventKey, recordEvent } from '@/lib/analytics/record';
+import { enqueueJobsForNewVersion } from '@/lib/media-jobs';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -303,6 +304,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       dedupeKey: eventKey('VIDEO_ADDED', video.id),
       userId: project.ownerId,
     });
+
+    const firstVersion = video.versions[0];
+    if (firstVersion) {
+      await enqueueJobsForNewVersion({
+        versionId: firstVersion.id,
+        providerId: firstVersion.providerId,
+      }).catch((err) => logError('Failed to enqueue media jobs:', err));
+    }
 
     const response = successResponse(video, 201);
     return withCacheControl(response, 'private, no-store');

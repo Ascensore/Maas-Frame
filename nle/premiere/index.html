@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Review markers</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+      body { margin: 12px; background: #1b1b1b; color: #eee; }
+      label, input, button, select { font: inherit; }
+      input, select { width: 100%; box-sizing: border-box; margin: 4px 0 10px; padding: 6px; }
+      button { padding: 8px 12px; cursor: pointer; }
+      .row { display: flex; gap: 8px; }
+      .status { margin-top: 12px; white-space: pre-wrap; font-size: 12px; color: #bbb; }
+      .hint { font-size: 12px; color: #888; }
+    </style>
+  </head>
+  <body>
+    <p class="hint">Create an API token in Settings, then paste it here. Side-load this folder with the UXP Developer Tool.</p>
+    <label>App URL</label>
+    <input id="baseUrl" value="http://localhost:3000" />
+    <label>API token</label>
+    <input id="token" type="password" placeholder="of_live_…" />
+    <label>Project</label>
+    <select id="project"><option value="">Load projects…</option></select>
+    <label>Version</label>
+    <select id="version"><option value="">Select a project first</option></select>
+    <div class="row">
+      <button id="load">Load projects</button>
+      <button id="sync">Sync markers</button>
+    </div>
+    <div class="status" id="status"></div>
+    <script src="panel.js"></script>
+  </body>
+</html>

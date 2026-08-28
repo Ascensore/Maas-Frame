@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCommentsCsv,
+  buildCommentsEdl,
+  buildCommentsFcpxml,
   buildCommentsPdf,
   buildExportFileBaseName,
   flattenCommentsForExport,
@@ -438,5 +440,50 @@ describe('buildCommentsPdf', () => {
 
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.every((chunk) => chunk.length <= 96)).toBe(true);
+  });
+});
+
+const MARKER_META = {
+  videoTitle: 'My Video',
+  versionNumber: 2,
+  versionLabel: 'Rough cut',
+  frameRate: { num: 24, den: 1, dropFrame: false },
+  startTimecode: null,
+  durationSeconds: 120,
+};
+
+describe('buildCommentsEdl', () => {
+  it('writes a CMX-style event per top-level comment', () => {
+    const edl = buildCommentsEdl([row({ timestamp: 1, content: 'Fix this' })], MARKER_META);
+    expect(edl).toContain('TITLE: My Video v2');
+    expect(edl).toContain('FCM: NON-DROP FRAME');
+    expect(edl).toContain('001  AX      V     C        00:00:01:00');
+    expect(edl).toContain('* FROM Alice: Fix this');
+  });
+
+  it('skips replies as their own events', () => {
+    const edl = buildCommentsEdl(
+      [row({ level: 0 }), row({ commentId: 'r1', parentCommentId: 'comment-1', level: 1 })],
+      MARKER_META
+    );
+    expect(edl).toContain('001  AX');
+    expect(edl).not.toContain('002  AX');
+  });
+});
+
+describe('buildCommentsFcpxml', () => {
+  it('embeds a marker whose start is a rational time', () => {
+    const xml = buildCommentsFcpxml([row({ timestamp: 1, content: 'Fix this' })], MARKER_META);
+    expect(xml).toContain('<?xml version="1.0"');
+    expect(xml).toContain('fcpxml version="1.9"');
+    expect(xml).toContain('start="24/24s"');
+    expect(xml).toContain('Alice: Fix this');
+    expect(xml).toContain('tcFormat="NDF"');
+  });
+
+  it('escapes XML in comment text', () => {
+    const xml = buildCommentsFcpxml([row({ content: 'A <cut> & "quote"' })], MARKER_META);
+    expect(xml).toContain('A &lt;cut&gt; &amp; &quot;quote&quot;');
+    expect(xml).not.toContain('A <cut>');
   });
 });

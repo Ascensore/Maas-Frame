@@ -3,6 +3,8 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { db } from '@/lib/db';
 import {
   buildCommentsCsv,
+  buildCommentsEdl,
+  buildCommentsFcpxml,
   buildCommentsPdf,
   buildExportFileBaseName,
   flattenCommentsForExport,
@@ -29,8 +31,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { searchParams } = new URL(request.url);
 
     const format = (searchParams.get('format') || 'csv').toLowerCase();
-    if (format !== 'csv' && format !== 'pdf') {
-      return apiErrors.badRequest('Invalid format. Use "csv" or "pdf"');
+    if (format !== 'csv' && format !== 'pdf' && format !== 'edl' && format !== 'fcpxml') {
+      return apiErrors.badRequest('Invalid format. Use "csv", "pdf", "edl", or "fcpxml"');
     }
 
     const includeResolved = searchParams.get('includeResolved') !== 'false';
@@ -41,6 +43,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         id: true,
         versionNumber: true,
         versionLabel: true,
+        duration: true,
+        frameRateNum: true,
+        frameRateDen: true,
+        dropFrame: true,
+        startTimecode: true,
         video: {
           select: {
             title: true,
@@ -131,6 +138,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       versionNumber: version.versionNumber,
       versionLabel: version.versionLabel,
     };
+    const markerMeta = {
+      ...versionMeta,
+      frameRate:
+        version.frameRateNum && version.frameRateDen
+          ? {
+              num: version.frameRateNum,
+              den: version.frameRateDen,
+              dropFrame: version.dropFrame,
+            }
+          : null,
+      startTimecode: version.startTimecode,
+      durationSeconds: version.duration,
+    };
 
     if (format === 'csv') {
       const csv = buildCommentsCsv(rows, versionMeta);
@@ -142,6 +162,30 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         },
       });
 
+      return withCacheControl(response, 'private, no-store');
+    }
+
+    if (format === 'edl') {
+      const edl = buildCommentsEdl(rows, markerMeta);
+      const response = new Response(edl, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${fileBaseName}.edl"`,
+        },
+      });
+      return withCacheControl(response, 'private, no-store');
+    }
+
+    if (format === 'fcpxml') {
+      const xml = buildCommentsFcpxml(rows, markerMeta);
+      const response = new Response(xml, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${fileBaseName}.fcpxml"`,
+        },
+      });
       return withCacheControl(response, 'private, no-store');
     }
 

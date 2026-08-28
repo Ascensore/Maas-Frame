@@ -74,6 +74,7 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   'subtitle-list': { windowMs: 60 * 1000, maxRequests: 120 }, // 120 per minute
   'subtitle-create': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
   'subtitle-delete': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
+  'api-v1': { windowMs: 60 * 1000, maxRequests: 120 }, // 120 per minute
 
   // Search — debounced on client but protect against scripted callers
   search: { windowMs: 60 * 1000, maxRequests: 60 }, // 60 per minute

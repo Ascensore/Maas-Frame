@@ -20,7 +20,8 @@ const eslintConfig = defineConfig([
     'playwright-report/**',
     'test-results/**',
     'reports/**',
-    '.stryker-tmp/**',
+    'worker/**',
+    'nle/**',
   ]),
   prettier,
   {

@@ -119,6 +119,18 @@ export function isProductAnalyticsEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_ANALYTICS', false);
 }
 
+export function isTranscriptionFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_TRANSCRIPTION', true);
+}
+
+export type TranscriptionProviderName = 'whisper-local' | 'deepgram' | 'openai';
+
+export function getTranscriptionProviderName(): TranscriptionProviderName {
+  const raw = process.env.OPENFRAME_TRANSCRIPTION_PROVIDER?.trim().toLowerCase();
+  if (raw === 'deepgram' || raw === 'openai' || raw === 'whisper-local') return raw;
+  return 'whisper-local';
+}
+
 function parseBigIntEnv(name: string, defaultValue: bigint, minValue?: bigint): bigint {
   const raw = process.env[name]?.trim();
   if (!raw) return defaultValue;

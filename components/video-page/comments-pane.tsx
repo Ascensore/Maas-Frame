@@ -3,6 +3,7 @@
 import { memo, useState, type ReactNode, type RefObject } from 'react';
 import {
   ArrowUpRight,
+  Captions,
   CheckCircle2,
   ChevronDown,
   Circle,
@@ -64,7 +65,7 @@ interface CommentsPaneProps {
   isGuest: boolean;
   isExportingCsv: boolean;
   isExportingPdf: boolean;
-  handleExportComments: (format: 'csv' | 'pdf') => void;
+  handleExportComments: (format: 'csv' | 'pdf' | 'edl' | 'fcpxml') => void;
   canResolveComments: boolean;
   handleResolveComment: (commentId: string, currentlyResolved: boolean) => void;
   handleSeekToTimestamp: (
@@ -131,9 +132,10 @@ interface CommentsPaneProps {
   composer: ReactNode;
   assets: VideoAsset[];
   onAssetMentionClick: (assetId: string) => void;
-  activePane: 'comments' | 'assets';
-  setActivePane: (pane: 'comments' | 'assets') => void;
+  activePane: 'comments' | 'assets' | 'transcript';
+  setActivePane: (pane: 'comments' | 'assets' | 'transcript') => void;
   assetsPane: ReactNode;
+  transcriptPane: ReactNode;
 }
 
 export const CommentsPane = memo(function CommentsPane({
@@ -212,6 +214,7 @@ export const CommentsPane = memo(function CommentsPane({
   activePane,
   setActivePane,
   assetsPane,
+  transcriptPane,
 }: CommentsPaneProps) {
   const [isPaneDraggingOver, setIsPaneDraggingOver] = useState(false);
   const formatCommentRange = (timestamp: number, timestampEnd: number | null) => {
@@ -299,6 +302,15 @@ export const CommentsPane = memo(function CommentsPane({
                   {assets.length}
                 </Badge>
               </Button>
+              <Button
+                variant={activePane === 'transcript' ? 'default' : 'ghost'}
+                size="sm"
+                className="h-8 shrink-0"
+                onClick={() => setActivePane('transcript')}
+              >
+                <Captions className="h-4 w-4 mr-1" />
+                Transcript
+              </Button>
             </div>
             <Button
               variant="ghost"
@@ -368,6 +380,36 @@ export const CommentsPane = memo(function CommentsPane({
                     <FileText className="h-4 w-4 mr-2" />
                     Download PDF
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!activeVersion || isGuest || isExportingCsv || isExportingPdf}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleExportComments('edl');
+                    }}
+                    title={
+                      isGuest
+                        ? 'EDL export requires an authenticated account'
+                        : 'Download comments as an EDL for Premiere, Resolve, and Avid'
+                    }
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download EDL
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!activeVersion || isGuest || isExportingCsv || isExportingPdf}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleExportComments('fcpxml');
+                    }}
+                    title={
+                      isGuest
+                        ? 'FCPXML export requires an authenticated account'
+                        : 'Download comments as FCPXML markers'
+                    }
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download FCPXML
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -380,6 +422,13 @@ export const CommentsPane = memo(function CommentsPane({
             aria-hidden={activePane !== 'assets'}
           >
             {assetsPane}
+          </div>
+
+          <div
+            className={cn(activePane === 'transcript' ? 'block p-4 h-full' : 'hidden')}
+            aria-hidden={activePane !== 'transcript'}
+          >
+            {transcriptPane}
           </div>
 
           <div
