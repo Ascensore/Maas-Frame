@@ -4,6 +4,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { logError } from '@/lib/logger';
+import { notifyCommentChanged } from '@/lib/comment-live';
 
 type RouteParams = { params: Promise<{ commentId: string }> };
 
@@ -59,6 +60,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       },
     });
 
+    await notifyCommentChanged(comment.versionId);
     return withCacheControl(successResponse({ comment: updated }), 'private, no-store');
   } catch (error) {
     logError('Error updating v1 comment:', error);
