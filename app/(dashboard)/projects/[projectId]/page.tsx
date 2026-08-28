@@ -36,7 +36,7 @@ function formatRelativeTime(date: Date): string {
 
 interface ProjectPageProps {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ page?: string; sort?: string }>;
+  searchParams: Promise<{ page?: string; sort?: string; folder?: string }>;
 }
 
 export default async function ProjectPage({ params, searchParams }: ProjectPageProps) {
@@ -46,6 +46,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
 
   const page = Number(resolvedSearchParams?.page) || 1;
   const sortOrder = resolvedSearchParams?.sort === 'asc' ? 'asc' : 'desc';
+  const requestedFolderId = resolvedSearchParams?.folder || null;
   const pageSize = 21;
   const skip = (page - 1) * pageSize;
 
@@ -102,10 +103,21 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
     redirect('/dashboard');
   }
 
+  const folders = await db.folder.findMany({
+    where: { projectId: project.id },
+    orderBy: [{ position: 'asc' }, { name: 'asc' }],
+    select: { id: true, name: true, parentId: true, position: true },
+  });
+  const currentFolder = requestedFolderId
+    ? (folders.find((folder) => folder.id === requestedFolderId) ?? null)
+    : null;
+  const currentFolderId = currentFolder?.id ?? null;
+  const videoWhere = { projectId: project.id, folderId: currentFolderId };
+
   // Fetch videos separately utilizing bounds
   const [paginatedVideos, totalVideos, allVideoIds] = await Promise.all([
     db.video.findMany({
-      where: { projectId: project.id },
+      where: videoWhere,
       skip,
       take: pageSize,
       orderBy: [{ updatedAt: sortOrder }, { id: sortOrder }],
@@ -121,14 +133,21 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
       },
     }),
     db.video.count({
-      where: { projectId: project.id },
+      where: videoWhere,
     }),
     db.video.findMany({
-      where: { projectId: project.id },
+      where: videoWhere,
       select: { id: true },
       orderBy: [{ position: 'asc' }, { id: 'asc' }],
     }),
   ]);
+
+  const serializedFolders = folders.map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+    parentId: folder.parentId,
+    position: folder.position,
+  }));
 
   const totalPages = Math.ceil(totalVideos / pageSize);
 
@@ -189,6 +208,8 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
             project={projectData}
             projectId={projectId}
             videos={videos}
+            folders={serializedFolders}
+            currentFolderId={currentFolderId}
             allVideoIds={allVideoIds.map((video) => video.id)}
             canEdit={false}
             canDownloadProject={canDownloadProject}
@@ -221,6 +242,8 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
         project={projectData}
         projectId={projectId}
         videos={videos}
+        folders={serializedFolders}
+        currentFolderId={currentFolderId}
         allVideoIds={allVideoIds.map((video) => video.id)}
         canEdit={canEdit}
         canDownloadProject={canDownloadProject}

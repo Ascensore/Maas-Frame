@@ -19,6 +19,7 @@ import {
   CheckSquare,
   Check,
   FolderInput,
+  Folder,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -77,6 +78,7 @@ interface VideoCardProps {
   onEnterSelectionMode?: () => void;
   onSelectedChange?: (selected: boolean) => void;
   onDeleted?: (videoId: string) => void;
+  onMoveToFolder?: () => void;
 }
 
 export function VideoCard({
@@ -89,6 +91,7 @@ export function VideoCard({
   onEnterSelectionMode,
   onSelectedChange,
   onDeleted,
+  onMoveToFolder,
 }: VideoCardProps) {
   const router = useRouter();
   const [imgError, setImgError] = useState(false);
@@ -414,6 +417,12 @@ export function VideoCard({
                       <Plus className="mr-2 h-4 w-4" />
                       Add Version
                     </DropdownMenuItem>
+                    {onMoveToFolder && (
+                      <DropdownMenuItem onSelect={() => onMoveToFolder()}>
+                        <Folder className="mr-2 h-4 w-4" />
+                        Move to folder
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem onSelect={() => setShowMoveDialog(true)}>
                       <FolderInput className="mr-2 h-4 w-4" />
                       Move to project

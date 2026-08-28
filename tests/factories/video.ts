@@ -16,6 +16,7 @@ export interface CreateVideoInput {
   title?: string;
   description?: string | null;
   position?: number;
+  folderId?: string | null;
 }
 
 export async function createVideo(input: CreateVideoInput): Promise<Video> {
@@ -26,6 +27,7 @@ export async function createVideo(input: CreateVideoInput): Promise<Video> {
       title: input.title ?? `Video ${seq}`,
       description: input.description ?? null,
       position: input.position ?? 0,
+      folderId: input.folderId ?? null,
     },
   });
 }

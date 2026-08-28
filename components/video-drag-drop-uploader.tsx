@@ -59,6 +59,7 @@ interface VideoDragDropUploaderProps {
   projectOptions?: ProjectOption[];
   canUpload?: boolean;
   directUploadProvider?: DirectUploadProvider;
+  folderId?: string | null;
 }
 
 function hasFileData(dataTransfer: DataTransfer | null): boolean {
@@ -82,6 +83,7 @@ export function VideoDragDropUploader({
   projectOptions,
   canUpload = false,
   directUploadProvider = 'bunny',
+  folderId = null,
 }: VideoDragDropUploaderProps) {
   const router = useRouter();
 
@@ -273,6 +275,7 @@ export function VideoDragDropUploader({
           await uploadProjectVideo(projectId, item.file, {
             provider: directUploadProvider,
             bunnyCdnHostname,
+            folderId,
             onProgress: (progress) => {
               setUploadProgress(progress);
               setQueue((prev) =>
@@ -350,7 +353,15 @@ export function VideoDragDropUploader({
         toast.error('All uploads failed');
       }
     },
-    [bunnyCdnHostname, directUploadProvider, fixedProjectId, projectsById, resetUploadState, router]
+    [
+      bunnyCdnHostname,
+      directUploadProvider,
+      fixedProjectId,
+      folderId,
+      projectsById,
+      resetUploadState,
+      router,
+    ]
   );
 
   const handleDropFiles = useCallback(

@@ -181,7 +181,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { title, description, position } = body;
+    const { title, description, position, folderId } = body;
 
     // Validate types before using string methods to prevent type confusion attacks
     if (
@@ -195,6 +195,19 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (typeof title === 'string') updateData.title = title.trim();
     if (typeof description === 'string') updateData.description = description.trim() || null;
     if (position !== undefined) updateData.position = position;
+    if (Object.prototype.hasOwnProperty.call(body, 'folderId')) {
+      if (folderId !== null && typeof folderId !== 'string') {
+        return apiErrors.badRequest('folderId must be a folder id or null');
+      }
+      if (typeof folderId === 'string') {
+        const folder = await db.folder.findFirst({
+          where: { id: folderId, projectId },
+          select: { id: true },
+        });
+        if (!folder) return apiErrors.badRequest('folder was not found in this project');
+      }
+      updateData.folderId = folderId;
+    }
 
     // Keep the response to scalar video fields: including versions would pull
     // in BigInt columns (sizeBytes) that JSON.stringify cannot serialize, and
@@ -207,6 +220,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         title: true,
         description: true,
         position: true,
+        folderId: true,
         projectId: true,
         updatedAt: true,
       },

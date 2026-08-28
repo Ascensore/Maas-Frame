@@ -35,8 +35,16 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return apiErrors.forbidden('Access denied');
     }
 
+    const folderParam = request.nextUrl.searchParams.get('folder');
+    const where: { projectId: string; folderId?: string | null } = { projectId };
+    if (folderParam === 'root' || folderParam === '') {
+      where.folderId = null;
+    } else if (folderParam) {
+      where.folderId = folderParam;
+    }
+
     const videos = await db.video.findMany({
-      where: { projectId },
+      where,
       orderBy: { position: 'asc' },
       include: {
         versions: {
@@ -110,10 +118,24 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       duration,
       uploadToken,
       objectKey,
+      folderId,
     } = body;
 
     if (!title || !videoUrl) {
       return apiErrors.badRequest('Title and video URL are required');
+    }
+
+    let resolvedFolderId: string | null = null;
+    if (folderId !== undefined && folderId !== null) {
+      if (typeof folderId !== 'string') {
+        return apiErrors.badRequest('folderId must be a folder id or null');
+      }
+      const folder = await db.folder.findFirst({
+        where: { id: folderId, projectId },
+        select: { id: true },
+      });
+      if (!folder) return apiErrors.badRequest('folder was not found in this project');
+      resolvedFolderId = folder.id;
     }
 
     const normalizedProviderIdEarly =
@@ -263,6 +285,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           description: description?.trim() || null,
           position: nextPosition,
           projectId,
+          folderId: resolvedFolderId,
           versions: {
             create: {
               versionNumber: 1,

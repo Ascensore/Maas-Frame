@@ -21,6 +21,9 @@ export type {
 export { createProject, addProjectMember, createCommentTag } from './project';
 export type { CreateProjectInput, AddProjectMemberInput, CreateCommentTagInput } from './project';
 
+export { createFolder } from './folder';
+export type { CreateFolderInput } from './folder';
+
 export { createVideo, createVersion, createVideoAsset, createUploadReservation } from './video';
 export type {
   CreateVideoInput,
