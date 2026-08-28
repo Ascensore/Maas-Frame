@@ -145,7 +145,7 @@ describe('POST /api/projects/[projectId]/folders', () => {
     const parent = await createFolder({ projectId: scenario.project.id, name: 'Dailies' });
     signedInAs(scenario.owner);
 
-    const payload = await readData<{ folder: { parentId: string | null } }>(
+    const payload = await readData<{ folder: { id: string; parentId: string | null } }>(
       await callRoute(
         createFolderRoute,
         apiRequest(foldersUrl(scenario.project.id), {
