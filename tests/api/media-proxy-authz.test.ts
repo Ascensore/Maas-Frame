@@ -811,6 +811,45 @@ describe('GET /api/upload/video/[filename]', () => {
     expect(response.status).toBe(200);
   });
 
+  it('streams a review proxy that is not the originalUrl', async () => {
+    const fixture = await seedMedia();
+    const proxyFilename = uniqueFilename('mp4');
+    await createVersion({
+      videoParentId: fixture.video.id,
+      versionNumber: 2,
+      providerId: 'r2',
+      originalUrl: `/api/upload/video/${uniqueFilename('mov')}`,
+      proxyUrl: `/api/upload/video/${proxyFilename}`,
+      proxyStatus: 'READY',
+    });
+    signedInAs(fixture.owner);
+
+    const response = await serve(proxyFilename);
+
+    expect(response.status).toBe(200);
+    expect(sentKey()).toBe(`videos/${proxyFilename}`);
+  });
+
+  it('refuses a stranger asking for the review proxy', async () => {
+    const fixture = await seedMedia();
+    const proxyFilename = uniqueFilename('mp4');
+    await createVersion({
+      videoParentId: fixture.video.id,
+      versionNumber: 2,
+      providerId: 'r2',
+      originalUrl: `/api/upload/video/${uniqueFilename('mov')}`,
+      proxyUrl: `/api/upload/video/${proxyFilename}`,
+      proxyStatus: 'READY',
+    });
+    const stranger = await createUser();
+    signedInAs(stranger);
+
+    const response = await serve(proxyFilename);
+
+    expect(response.status).toBe(403);
+    expect(r2Send).not.toHaveBeenCalled();
+  });
+
   it('serves a guest holding a VIEW share link', async () => {
     const fixture = await seedMedia();
     const link = await createShareLink({

@@ -96,6 +96,7 @@ import * as v1ProjectVideosRoute from '@/app/api/v1/projects/[projectId]/videos/
 import * as v1VersionRoute from '@/app/api/v1/versions/[versionId]/route';
 import * as v1VersionCommentsRoute from '@/app/api/v1/versions/[versionId]/comments/route';
 import * as v1VersionTranscriptRoute from '@/app/api/v1/versions/[versionId]/transcript/route';
+import * as v1SequenceLinkRoute from '@/app/api/v1/versions/[versionId]/sequence-link/route';
 import * as v1CommentRoute from '@/app/api/v1/comments/[commentId]/route';
 import * as assetDownloadRoute from '@/app/api/videos/[videoId]/assets/[assetId]/download/route';
 import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
@@ -157,7 +158,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 75;
+const EXPECTED_ROUTE_MODULE_COUNT = 76;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -639,6 +640,20 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/v1/versions/${f.versionId}/transcript`,
     params: (f) => ({ versionId: f.versionId }),
     body: { language: 'en' },
+  },
+  {
+    file: 'v1/versions/[versionId]/sequence-link/route.ts',
+    module: v1SequenceLinkRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}/sequence-link?nle=premiere`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: {
+      nle: 'premiere',
+      sequenceName: 'Timeline',
+      startTimecode: '01:00:00:00',
+      frameRateNum: 24,
+      frameRateDen: 1,
+      dropFrame: false,
+    },
   },
   {
     file: 'v1/comments/[commentId]/route.ts',

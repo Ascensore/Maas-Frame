@@ -92,6 +92,7 @@ const OWN_ASSET_IMAGE = '/api/upload/image/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3.
 const OWN_ASSET_IMAGE_KEY = 'images/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3.png';
 const OWN_VERSION_VIDEO = '/api/upload/video/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4.mp4';
 const OWN_VERSION_VIDEO_KEY = 'videos/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4.mp4';
+const OWN_VERSION_PROXY = '/api/upload/video/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6.mp4';
 const OWN_VERSION_THUMB = '/api/upload/image/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5.jpg';
 
 // Media belonging to a live neighbour. None of these keys may ever appear in
@@ -319,6 +320,22 @@ describe('collectVideoMediaUrls', () => {
     const urls = await collectVideoMediaUrls(video.id);
 
     expect(urls).toEqual([OWN_VERSION_VIDEO]);
+  });
+
+  it('collects a review proxy as well as the camera master', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id });
+    await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: OWN_VERSION_VIDEO,
+      proxyUrl: OWN_VERSION_PROXY,
+      proxyStatus: 'READY',
+    });
+
+    expect(new Set(await collectVideoMediaUrls(video.id))).toEqual(
+      new Set([OWN_VERSION_VIDEO, OWN_VERSION_PROXY])
+    );
   });
 
   it('returns nothing for a video whose only version is hosted elsewhere', async () => {

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import PgBoss from 'pg-boss';
 import pg from 'pg';
+import { needsReviewProxy, reviewProxyFfmpegArgs } from './review-proxy';
 
 const { Pool } = pg;
 
@@ -110,21 +111,32 @@ async function probeMedia(versionId: string): Promise<void> {
     const probed = await run('ffprobe', [
       '-v',
       'error',
-      '-select_streams',
-      'v:0',
-      '-show_entries',
-      'stream=r_frame_rate,nb_frames,duration,avg_frame_rate',
+      '-show_format',
+      '-show_streams',
       '-of',
       'json',
       filePath,
     ]);
     if (probed.code !== 0) throw new Error(probed.stderr || 'ffprobe failed');
     const parsed = JSON.parse(probed.stdout) as {
-      streams?: Array<{ r_frame_rate?: string; avg_frame_rate?: string; duration?: string; nb_frames?: string }>;
+      format?: { format_name?: string; duration?: string };
+      streams?: Array<{
+        codec_type?: string;
+        codec_name?: string;
+        r_frame_rate?: string;
+        avg_frame_rate?: string;
+        duration?: string;
+        nb_frames?: string;
+      }>;
     };
-    const stream = parsed.streams?.[0];
-    const rate = parseFrameRateString(stream?.r_frame_rate || stream?.avg_frame_rate || '');
-    const duration = stream?.duration ? Number(stream.duration) : null;
+    const videoStream = parsed.streams?.find((stream) => stream.codec_type === 'video');
+    const audioStream = parsed.streams?.find((stream) => stream.codec_type === 'audio');
+    const rate = parseFrameRateString(videoStream?.r_frame_rate || videoStream?.avg_frame_rate || '');
+    const duration = videoStream?.duration
+      ? Number(videoStream.duration)
+      : parsed.format?.duration
+        ? Number(parsed.format.duration)
+        : null;
     const durationFrames = rate && duration ? Math.round((duration * rate.num) / rate.den) : null;
     const dropFrame = Boolean(rate && ((rate.num === 30000 && rate.den === 1001) || (rate.num === 60000 && rate.den === 1001)));
 
@@ -135,6 +147,83 @@ async function probeMedia(versionId: string): Promise<void> {
        WHERE id = $1`,
       [versionId, rate?.num ?? null, rate?.den ?? null, dropFrame, durationFrames, duration ? Math.round(duration) : null]
     );
+
+    await maybeEnqueueReviewProxy(versionId, {
+      videoCodec: videoStream?.codec_name ?? null,
+      audioCodec: audioStream?.codec_name ?? null,
+      formatName: parsed.format?.format_name ?? null,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function isProxyTranscodeEnabled(): boolean {
+  const raw = (process.env.OPENFRAME_ENABLE_PROXY_TRANSCODE || 'true').trim().toLowerCase();
+  return raw !== 'false';
+}
+
+async function maybeEnqueueReviewProxy(
+  versionId: string,
+  probe: { videoCodec: string | null; audioCodec: string | null; formatName: string | null }
+): Promise<void> {
+  if (!isProxyTranscodeEnabled()) return;
+  if (!needsReviewProxy(probe)) {
+    await pool.query(
+      `UPDATE video_versions SET proxy_status = 'SKIPPED' WHERE id = $1 AND proxy_status = 'NONE'`,
+      [versionId]
+    );
+    return;
+  }
+
+  const existing = await pool.query(
+    `SELECT id FROM media_jobs
+     WHERE version_id = $1 AND kind = 'TRANSCODE_PROXY' AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+     LIMIT 1`,
+    [versionId]
+  );
+  if (existing.rows[0]) return;
+
+  await pool.query(
+    `UPDATE video_versions SET proxy_status = 'PENDING' WHERE id = $1`,
+    [versionId]
+  );
+  await pool.query(
+    `INSERT INTO media_jobs (id, kind, status, version_id, attempts, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, 'TRANSCODE_PROXY', 'PENDING', $1, 0, NOW(), NOW())`,
+    [versionId]
+  );
+}
+
+async function transcodeProxy(versionId: string): Promise<void> {
+  const versionRes = await pool.query(
+    `SELECT id, "providerId", "videoId", "originalUrl" FROM video_versions WHERE id = $1`,
+    [versionId]
+  );
+  const version = versionRes.rows[0];
+  if (!version) throw new Error('Version not found');
+  const key = objectKeyFromProvider(version);
+  if (!key) throw new Error('Version has no transcodable file');
+
+  const dir = await mkdtemp(join(tmpdir(), 'of-proxy-'));
+  const source = join(dir, 'source.bin');
+  const output = join(dir, 'proxy.mp4');
+  try {
+    await pool.query(`UPDATE video_versions SET proxy_status = 'RUNNING' WHERE id = $1`, [versionId]);
+    await downloadObject(key, source);
+    const encoded = await run('ffmpeg', reviewProxyFfmpegArgs(source, output));
+    if (encoded.code !== 0) throw new Error(encoded.stderr || 'ffmpeg proxy encode failed');
+    const body = await readFile(output);
+    const filename = `${randomUUID()}.mp4`;
+    await uploadObject(`videos/${filename}`, body, 'video/mp4');
+    const proxyUrl = `/api/upload/video/${filename}`;
+    await pool.query(
+      `UPDATE video_versions SET proxy_status = 'READY', proxy_url = $2 WHERE id = $1`,
+      [versionId, proxyUrl]
+    );
+  } catch (error) {
+    await pool.query(`UPDATE video_versions SET proxy_status = 'FAILED' WHERE id = $1`, [versionId]);
+    throw error;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -284,6 +373,7 @@ const QUEUE = {
   PROBE_MEDIA: 'probe-media',
   EXTRACT_AUDIO: 'extract-audio',
   TRANSCRIBE: 'transcribe',
+  TRANSCODE_PROXY: 'transcode-proxy',
 } as const;
 
 type MediaJobData = {
@@ -296,6 +386,7 @@ function queueForKind(kind: string): string {
   if (kind === 'PROBE_MEDIA') return QUEUE.PROBE_MEDIA;
   if (kind === 'EXTRACT_AUDIO') return QUEUE.EXTRACT_AUDIO;
   if (kind === 'TRANSCRIBE') return QUEUE.TRANSCRIBE;
+  if (kind === 'TRANSCODE_PROXY') return QUEUE.TRANSCODE_PROXY;
   throw new Error(`Unknown job kind ${kind}`);
 }
 
@@ -330,6 +421,8 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
       await extractAudio(data.versionId);
     } else if (kind === 'TRANSCRIBE') {
       await transcribe(data.versionId, (data.payload as { language?: string; transcriptId?: string } | null) ?? null);
+    } else if (kind === 'TRANSCODE_PROXY') {
+      await transcodeProxy(data.versionId);
     } else {
       throw new Error(`Unknown job kind ${kind}`);
     }
@@ -415,6 +508,11 @@ async function start(): Promise<void> {
   await boss.work(QUEUE.TRANSCRIBE, async (jobs) => {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'TRANSCRIBE');
+    }
+  });
+  await boss.work(QUEUE.TRANSCODE_PROXY, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'TRANSCODE_PROXY');
     }
   });
 

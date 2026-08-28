@@ -177,6 +177,12 @@ export function secondsToTimecode(seconds: number, rate: FrameRate): string {
   return framesToTimecode(secondsToFrames(seconds, rate), rate);
 }
 
+export function startTimecodeToSeconds(startTimecode: string, rate: FrameRate): number | null {
+  const frames = timecodeToFrames(startTimecode, rate);
+  if (frames === null) return null;
+  return framesToSeconds(frames, rate);
+}
+
 export type SequenceOffset = {
   startTimecode: string;
   rate: FrameRate;

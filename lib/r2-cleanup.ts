@@ -100,7 +100,7 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
     }),
     db.videoVersion.findMany({
       where: { videoParentId: videoId, providerId: 'r2' },
-      select: { originalUrl: true, thumbnailUrl: true },
+      select: { originalUrl: true, thumbnailUrl: true, proxyUrl: true },
     }),
     db.videoSubtitle.findMany({
       where: { version: { videoParentId: videoId } },
@@ -118,6 +118,7 @@ export async function collectVideoMediaUrls(videoId: string): Promise<string[]> 
   versions.forEach((version) => {
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
+    if (version.proxyUrl) urls.push(version.proxyUrl);
   });
   subtitles.forEach((subtitle) => {
     if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);
@@ -146,7 +147,7 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
     }),
     db.videoVersion.findMany({
       where: { providerId: 'r2', video: { projectId } },
-      select: { originalUrl: true, thumbnailUrl: true },
+      select: { originalUrl: true, thumbnailUrl: true, proxyUrl: true },
     }),
     db.videoSubtitle.findMany({
       where: { version: { video: { projectId } } },
@@ -164,6 +165,7 @@ export async function collectProjectMediaUrls(projectId: string): Promise<string
   versions.forEach((version) => {
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
+    if (version.proxyUrl) urls.push(version.proxyUrl);
   });
   subtitles.forEach((subtitle) => {
     if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);
@@ -192,7 +194,7 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
     }),
     db.videoVersion.findMany({
       where: { providerId: 'r2', video: { project: { workspaceId } } },
-      select: { originalUrl: true, thumbnailUrl: true },
+      select: { originalUrl: true, thumbnailUrl: true, proxyUrl: true },
     }),
     db.videoSubtitle.findMany({
       where: { version: { video: { project: { workspaceId } } } },
@@ -210,6 +212,7 @@ export async function collectWorkspaceMediaUrls(workspaceId: string): Promise<st
   versions.forEach((version) => {
     if (version.originalUrl) urls.push(version.originalUrl);
     if (version.thumbnailUrl) urls.push(version.thumbnailUrl);
+    if (version.proxyUrl) urls.push(version.proxyUrl);
   });
   subtitles.forEach((subtitle) => {
     if (subtitle.sourceUrl) urls.push(subtitle.sourceUrl);

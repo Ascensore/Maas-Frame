@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import { Captions, Loader2, Search } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { applyTranscriptHighlight } from '@/lib/transcript-active';
 import { cn } from '@/lib/utils';
 
 export type TranscriptWord = {
@@ -62,7 +63,7 @@ function toVttTime(seconds: number): string {
 
 interface TranscriptPaneProps {
   versionId: string | null;
-  currentTime: number;
+  getCurrentTime: () => number;
   canManage: boolean;
   onSeek: (
     seconds: number,
@@ -73,7 +74,6 @@ interface TranscriptPaneProps {
 
 type TranscriptRowProps = {
   segments: TranscriptSegment[];
-  currentTime: number;
   onSeek: TranscriptPaneProps['onSeek'];
   onCommentRange: TranscriptPaneProps['onCommentRange'];
 };
@@ -82,13 +82,11 @@ function TranscriptRow({
   index,
   style,
   segments,
-  currentTime,
   onSeek,
   onCommentRange,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
   const words = asWords(segment.words);
-  const isActive = currentTime >= segment.startSec && currentTime < segment.endSec;
 
   const handleMouseUp = () => {
     const selection = window.getSelection();
@@ -105,10 +103,11 @@ function TranscriptRow({
   return (
     <div style={style} className="px-1">
       <div
-        className={cn(
-          'rounded-md px-2 py-1.5 text-sm h-full',
-          isActive ? 'bg-primary/10' : 'hover:bg-accent/50'
-        )}
+        data-transcript-range=""
+        data-start={String(segment.startSec)}
+        data-end={String(segment.endSec)}
+        data-active="false"
+        className="rounded-md px-2 py-1.5 text-sm h-full hover:bg-accent/50 data-[active=true]:bg-primary/10"
         onMouseUp={handleMouseUp}
       >
         <button
@@ -122,14 +121,17 @@ function TranscriptRow({
         <p className="leading-relaxed line-clamp-2">
           {words.length > 0 ? (
             words.map((word, wordIndex) => {
-              const wordActive = currentTime >= word.start && currentTime < word.end;
               return (
                 <button
                   key={`${segment.id}-${wordIndex}`}
                   type="button"
+                  data-transcript-range=""
+                  data-start={String(word.start)}
+                  data-end={String(word.end)}
+                  data-active="false"
                   className={cn(
-                    'mr-1 rounded-sm px-0.5',
-                    wordActive ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+                    'mr-1 rounded-sm px-0.5 hover:bg-accent',
+                    'data-[active=true]:bg-primary data-[active=true]:text-primary-foreground'
                   )}
                   onClick={() => onSeek(word.start, { pauseAfterSeek: false })}
                 >
@@ -152,9 +154,9 @@ function TranscriptRow({
   );
 }
 
-export function TranscriptPane({
+export const TranscriptPane = memo(function TranscriptPane({
   versionId,
-  currentTime,
+  getCurrentTime,
   canManage,
   onSeek,
   onCommentRange,
@@ -207,6 +209,32 @@ export function TranscriptPane({
     return segments.filter((segment) => segment.text.toLowerCase().includes(needle));
   }, [transcript, query]);
 
+  const showList = transcript?.status === 'READY' && filtered.length > 0;
+  const rowProps = useMemo(
+    () => ({
+      segments: filtered,
+      onSeek,
+      onCommentRange,
+    }),
+    [filtered, onSeek, onCommentRange]
+  );
+
+  useEffect(() => {
+    if (!showList) return;
+    const root = listRef.current;
+    if (!root) return;
+    let raf = 0;
+    const tick = () => {
+      applyTranscriptHighlight(
+        root.querySelectorAll<HTMLElement>('[data-transcript-range]'),
+        getCurrentTime()
+      );
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [showList, getCurrentTime, filtered]);
+
   const handleDownloadVtt = () => {
     if (!transcript || transcript.segments.length === 0) return;
     const body = transcript.segments
@@ -252,8 +280,6 @@ export function TranscriptPane({
   if (!versionId) {
     return <p className="text-sm text-muted-foreground">Select a version to see its transcript.</p>;
   }
-
-  const showList = transcript?.status === 'READY' && filtered.length > 0;
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
@@ -309,16 +335,11 @@ export function TranscriptPane({
             rowComponent={TranscriptRow}
             rowCount={filtered.length}
             rowHeight={72}
-            rowProps={{
-              segments: filtered,
-              currentTime,
-              onSeek,
-              onCommentRange,
-            }}
+            rowProps={rowProps}
             style={{ height: '100%' }}
           />
         </div>
       )}
     </div>
   );
-}
+});

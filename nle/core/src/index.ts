@@ -56,7 +56,11 @@ export function markerCommentBody(comment: RemoteComment): string {
   return lines.filter(Boolean).join('\n');
 }
 
-export function reconcile(remote: RemoteComment[], local: LocalMarker[]): SyncPlan {
+export function reconcile(
+  remote: RemoteComment[],
+  local: LocalMarker[],
+  offsetSeconds = 0
+): SyncPlan {
   const tops = remote.filter((comment) => comment.parentId === null && !comment.isResolved);
   const byId = new Map(tops.map((comment) => [comment.id, comment]));
   const localByComment = new Map<string, LocalMarker>();
@@ -81,7 +85,8 @@ export function reconcile(remote: RemoteComment[], local: LocalMarker[]): SyncPl
       add.push(comment);
       continue;
     }
-    const drift = Math.abs(existing.startSeconds - comment.timestamp);
+    const expected = comment.timestamp + offsetSeconds;
+    const drift = Math.abs(existing.startSeconds - expected);
     if (drift > 0.02) {
       move.push({ comment, marker: existing });
     }
@@ -116,6 +121,55 @@ export function nearestResolveColor(hex: string | null | undefined): string {
     }
   }
   return best.name;
+}
+
+export function sequenceOffsetSeconds(startTimecode: string, fps: number): number {
+  const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(startTimecode.trim());
+  if (!match) return 0;
+  const rate = Math.max(1, fps);
+  return (
+    Number(match[1]) * 3600 +
+    Number(match[2]) * 60 +
+    Number(match[3]) +
+    Number(match[4]) / rate
+  );
+}
+
+const KNOWN_RATES: ReadonlyArray<readonly [number, number, number]> = [
+  [24000 / 1001, 24000, 1001],
+  [24, 24, 1],
+  [25, 25, 1],
+  [30000 / 1001, 30000, 1001],
+  [30, 30, 1],
+  [50, 50, 1],
+  [60000 / 1001, 60000, 1001],
+  [60, 60, 1],
+];
+
+export function fpsToRational(fps: number): { num: number; den: number } {
+  if (!Number.isFinite(fps) || fps <= 0) return { num: 24, den: 1 };
+  for (const [value, num, den] of KNOWN_RATES) {
+    if (Math.abs(fps - value) < 0.02) return { num, den };
+  }
+  const rounded = Math.round(fps);
+  if (Math.abs(fps - rounded) < 0.02) return { num: rounded, den: 1 };
+  return { num: Math.round(fps * 1000), den: 1000 };
+}
+
+export function secondsToSmpte(seconds: number, fps: number, dropFrame = false): string {
+  const rate = Math.max(1, Math.round(fps));
+  const totalFrames = Math.max(0, Math.round(seconds * (Number.isFinite(fps) && fps > 0 ? fps : rate)));
+  const hours = Math.floor(totalFrames / (rate * 3600));
+  const minutes = Math.floor((totalFrames % (rate * 3600)) / (rate * 60));
+  const secs = Math.floor((totalFrames % (rate * 60)) / rate);
+  const frames = totalFrames % rate;
+  const sep = dropFrame ? ';' : ':';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(hours)}:${pad(minutes)}:${pad(secs)}${sep}${pad(frames)}`;
+}
+
+export function resolveCustomData(commentId: string, versionId: string): string {
+  return JSON.stringify({ ofId: commentId, versionId });
 }
 
 export class OpenFrameClient {
@@ -189,6 +243,37 @@ export class OpenFrameClient {
     return this.request(`/api/v1/comments/${commentId}`, {
       method: 'PATCH',
       body: JSON.stringify({ isResolved }),
+    });
+  }
+
+  getSequenceLink(versionId: string, nle: string) {
+    return this.request<{
+      sequenceLink: {
+        nle: string;
+        sequenceName: string;
+        startTimecode: string;
+        frameRateNum: number;
+        frameRateDen: number;
+        dropFrame: boolean;
+        offsetSeconds: number | null;
+      } | null;
+    }>(`/api/v1/versions/${versionId}/sequence-link?nle=${encodeURIComponent(nle)}`);
+  }
+
+  putSequenceLink(
+    versionId: string,
+    body: {
+      nle: string;
+      sequenceName: string;
+      startTimecode: string;
+      frameRateNum: number;
+      frameRateDen: number;
+      dropFrame: boolean;
+    }
+  ) {
+    return this.request(`/api/v1/versions/${versionId}/sequence-link`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
     });
   }
 }

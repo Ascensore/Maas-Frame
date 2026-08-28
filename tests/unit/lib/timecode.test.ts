@@ -9,6 +9,7 @@ import {
   reduceFrameRate,
   secondsToFrames,
   secondsToTimecode,
+  startTimecodeToSeconds,
   timecodeToFrames,
 } from '@/lib/timecode';
 
@@ -92,5 +93,9 @@ describe('commentSecondsToSequenceFrames', () => {
     const offset = { startTimecode: '01:00:00:00', rate: F24 };
     const frames = commentSecondsToSequenceFrames(2, offset);
     expect(frames).toBe(timecodeToFrames('01:00:00:00', F24)! + 48);
+  });
+
+  it('converts a one-hour start timecode to seconds', () => {
+    expect(startTimecodeToSeconds('01:00:00:00', F24)).toBe(3600);
   });
 });
