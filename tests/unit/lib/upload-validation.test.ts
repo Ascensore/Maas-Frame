@@ -207,6 +207,31 @@ describe('resolveR2PlaybackUrl', () => {
       resolveR2PlaybackUrl({ videoId: `videos/${UUID}.webm`, originalUrl: `videos/${UUID}.mp4` })
     ).toBe(`${VIDEO_PROXY_PREFIX}${UUID}.mp4`);
   });
+
+  it('prefers a READY review proxy over the camera master', () => {
+    const master = `${VIDEO_PROXY_PREFIX}${UUID}.mov`;
+    const proxy = `${VIDEO_PROXY_PREFIX}aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.mp4`;
+    expect(
+      resolveR2PlaybackUrl({
+        videoId: 'ignored',
+        originalUrl: master,
+        proxyUrl: proxy,
+        proxyStatus: 'READY',
+      })
+    ).toBe(proxy);
+  });
+
+  it('keeps the master while the review proxy is still cooking', () => {
+    const master = `${VIDEO_PROXY_PREFIX}${UUID}.mov`;
+    expect(
+      resolveR2PlaybackUrl({
+        videoId: 'ignored',
+        originalUrl: master,
+        proxyUrl: `${VIDEO_PROXY_PREFIX}aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.mp4`,
+        proxyStatus: 'PENDING',
+      })
+    ).toBe(master);
+  });
 });
 
 describe('isPlayableVideoUrl', () => {

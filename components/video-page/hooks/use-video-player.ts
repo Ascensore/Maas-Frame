@@ -87,6 +87,7 @@ export function useVideoPlayer({
   const [youtubeModuleRevision, setYoutubeModuleRevision] = useState(0);
   const [bunnyPlaybackState, setBunnyPlaybackState] = useState<BunnyPlaybackState>('none');
   const [currentTime, setCurrentTime] = useState(0);
+  const currentTimeRef = useRef(0);
   const [videoDuration, setVideoDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -958,6 +959,7 @@ export function useVideoPlayer({
   // display's refresh rate instead of stepping ~4x/sec.
   const applyPlayhead = useCallback(
     (time: number) => {
+      currentTimeRef.current = time;
       const d = durationRef.current;
       const percent = getPlayheadPercent(time, d);
       if (progressRef.current) progressRef.current.style.width = `${percent}%`;
@@ -978,6 +980,8 @@ export function useVideoPlayer({
     },
     [progressRef, playheadRef, scrubReadoutRef, formatTime]
   );
+
+  const getCurrentTime = useCallback(() => currentTimeRef.current, []);
 
   // Live-preview seek for the HTML5 video element (Bunny/R2/direct). Coalesced:
   // only one seek is in flight at a time; the newest target is chased on
@@ -1354,6 +1358,7 @@ export function useVideoPlayer({
     youtubeModuleRevision,
     bunnyPlaybackState,
     currentTime,
+    getCurrentTime,
     setCurrentTime,
     videoDuration,
     setVideoDuration,

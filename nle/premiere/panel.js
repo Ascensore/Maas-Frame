@@ -1,26 +1,25 @@
 /* global require */
-const SENTINEL_RE = /\[of:([a-z0-9]+)\]/i;
 
-function commentSentinel(id) {
-  return `[of:${id}]`;
-}
-
-function parseSentinel(text) {
-  const match = SENTINEL_RE.exec(text || '');
-  return match ? match[1] : null;
+function nle() {
+  return window.OpenFrameNle;
 }
 
 function setStatus(message) {
   document.getElementById('status').textContent = message;
 }
 
-async function api(baseUrl, token, path) {
+async function api(baseUrl, token, path, init) {
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(init && init.headers),
+    },
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error || `HTTP ${response.status}`);
+    throw new Error((body && body.error) || `HTTP ${response.status}`);
   }
   const json = await response.json();
   return json.data;
@@ -36,17 +35,53 @@ function secondsFromTick(tick) {
   return 0;
 }
 
-async function sequenceStartOffsetSeconds(ppro, sequence) {
+async function sequenceMeta(sequence) {
+  let offsetSeconds = 0;
+  let fps = 24;
+  let dropFrame = false;
+  let sequenceName = sequence.name || 'Untitled';
   try {
     const settings = await sequence.getSettings?.();
-    const start = settings?.startTime ?? settings?.zeroPoint ?? null;
-    return secondsFromTick(start);
+    offsetSeconds = secondsFromTick(settings?.startTime ?? settings?.zeroPoint ?? null);
+    const rate = settings?.videoFrameRate;
+    if (rate) {
+      const frameDur = secondsFromTick(rate);
+      if (frameDur > 0) fps = 1 / frameDur;
+    }
+    dropFrame = Boolean(
+      settings?.dropFrame || String(settings?.videoDisplayFormat || '').toLowerCase().includes('drop')
+    );
+    if (typeof settings?.name === 'string' && settings.name.trim()) {
+      sequenceName = settings.name.trim();
+    }
   } catch {
-    return 0;
+    // Keep the defaults and still persist a link so the next sync has an offset.
+  }
+  return { offsetSeconds, fps, dropFrame, sequenceName };
+}
+
+async function persistSequenceLink(baseUrl, token, versionId, meta) {
+  const core = nle();
+  const rational = core.fpsToRational(meta.fps);
+  try {
+    await api(baseUrl, token, `/api/v1/versions/${versionId}/sequence-link`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        nle: 'premiere',
+        sequenceName: String(meta.sequenceName || 'Untitled').slice(0, 200),
+        startTimecode: core.secondsToSmpte(meta.offsetSeconds, meta.fps, meta.dropFrame),
+        frameRateNum: rational.num,
+        frameRateDen: rational.den,
+        dropFrame: meta.dropFrame,
+      }),
+    });
+  } catch (error) {
+    setStatus(`Markers will still sync. Sequence link was not saved: ${error.message}`);
   }
 }
 
 async function syncMarkers() {
+  const core = nle();
   const baseUrl = document.getElementById('baseUrl').value.trim();
   const token = document.getElementById('token').value.trim();
   const versionId = document.getElementById('version').value;
@@ -62,17 +97,25 @@ async function syncMarkers() {
   if (!sequence) throw new Error('No active sequence');
   const sequenceMarkers = await ppro.Markers.getMarkers(sequence);
   const existing = await sequenceMarkers.getMarkers();
-  const offsetSeconds = await sequenceStartOffsetSeconds(ppro, sequence);
+  const meta = await sequenceMeta(sequence);
+  await persistSequenceLink(baseUrl, token, versionId, meta);
 
   const { comments } = await api(baseUrl, token, `/api/v1/versions/${versionId}/comments`);
-  const remote = comments.filter((comment) => !comment.parentId && !comment.isResolved);
-
-  const localByComment = new Map();
+  const local = [];
   for (const marker of existing) {
     const commentsText = marker.comments || marker.getComments?.() || '';
-    const commentId = parseSentinel(commentsText);
-    if (commentId) localByComment.set(commentId, marker);
+    local.push({
+      id: String(local.length),
+      commentId: core.parseSentinel(commentsText),
+      startSeconds: secondsFromTick(marker.start),
+      durationSeconds: secondsFromTick(marker.duration),
+      name: marker.name || '',
+      comments: commentsText,
+      _marker: marker,
+    });
   }
+
+  const plan = core.reconcile(comments, local, meta.offsetSeconds);
 
   let added = 0;
   let moved = 0;
@@ -80,8 +123,8 @@ async function syncMarkers() {
 
   project.lockedAccess(() => {
     project.executeTransaction((compound) => {
-      for (const comment of remote) {
-        const start = ppro.TickTime.createWithSeconds(comment.timestamp + offsetSeconds);
+      for (const comment of plan.add) {
+        const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
         const durationSeconds =
           comment.timestampEnd && comment.timestampEnd > comment.timestamp
             ? comment.timestampEnd - comment.timestamp
@@ -90,39 +133,34 @@ async function syncMarkers() {
           durationSeconds > 0
             ? ppro.TickTime.createWithSeconds(durationSeconds)
             : ppro.TickTime.TIME_ZERO;
-        const name = (comment.content || 'Note').slice(0, 40);
-        const body = `${comment.content || ''}\n${commentSentinel(comment.id)}`.trim();
-        const existingMarker = localByComment.get(comment.id);
-        if (!existingMarker) {
-          compound.addAction(
-            sequenceMarkers.createAddMarkerAction(
-              name,
-              ppro.Marker.MARKER_TYPE_COMMENT,
-              start,
-              duration,
-              body
-            )
-          );
-          added += 1;
-        } else {
-          const current = secondsFromTick(existingMarker.start);
-          if (Math.abs(current - (comment.timestamp + offsetSeconds)) > 0.02) {
-            compound.addAction(sequenceMarkers.createMoveMarkerAction(existingMarker, start));
-            moved += 1;
-          }
-        }
+        compound.addAction(
+          sequenceMarkers.createAddMarkerAction(
+            core.commentLabel(comment).slice(0, 40),
+            ppro.Marker.MARKER_TYPE_COMMENT,
+            start,
+            duration,
+            core.markerCommentBody(comment)
+          )
+        );
+        added += 1;
       }
 
-      for (const [commentId, marker] of localByComment) {
-        if (!remote.some((comment) => comment.id === commentId)) {
-          compound.addAction(sequenceMarkers.createRemoveMarkerAction(marker));
-          removed += 1;
-        }
+      for (const { comment, marker } of plan.move) {
+        const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
+        compound.addAction(sequenceMarkers.createMoveMarkerAction(marker._marker, start));
+        moved += 1;
+      }
+
+      for (const marker of plan.remove) {
+        compound.addAction(sequenceMarkers.createRemoveMarkerAction(marker._marker));
+        removed += 1;
       }
     }, 'Sync review comments');
   });
 
-  setStatus(`Synced. Added ${added}, moved ${moved}, removed ${removed}. Offset ${offsetSeconds.toFixed(2)}s.`);
+  setStatus(
+    `Synced. Added ${added}, moved ${moved}, removed ${removed}. Offset ${meta.offsetSeconds.toFixed(2)}s.`
+  );
 }
 
 async function loadProjects() {

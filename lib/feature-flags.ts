@@ -123,6 +123,10 @@ export function isTranscriptionFeatureEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_TRANSCRIPTION', true);
 }
 
+export function isProxyTranscodeEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_PROXY_TRANSCODE', true);
+}
+
 export type TranscriptionProviderName = 'whisper-local' | 'deepgram' | 'openai';
 
 export function getTranscriptionProviderName(): TranscriptionProviderName {

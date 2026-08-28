@@ -4,6 +4,7 @@ import {
   type UploadReservation,
   type Video,
   type VideoAsset,
+  type VideoProxyStatus,
   type VideoVersion,
 } from '@prisma/client';
 import { db } from '@/lib/db';
@@ -43,6 +44,8 @@ export interface CreateVersionInput {
   thumbnailUrl?: string | null;
   duration?: number | null;
   sizeBytes?: bigint;
+  proxyUrl?: string | null;
+  proxyStatus?: VideoProxyStatus;
   isActive?: boolean;
 }
 
@@ -62,6 +65,8 @@ export async function createVersion(input: CreateVersionInput): Promise<VideoVer
       duration: input.duration ?? 120,
       sizeBytes: input.sizeBytes ?? BigInt(0),
       isActive: input.isActive ?? true,
+      proxyUrl: input.proxyUrl ?? null,
+      proxyStatus: input.proxyStatus ?? undefined,
     },
   });
 }

@@ -8,6 +8,8 @@ export interface Version {
   title: string | null;
   thumbnailUrl: string | null;
   duration: number | null;
+  proxyUrl?: string | null;
+  proxyStatus?: 'NONE' | 'PENDING' | 'RUNNING' | 'READY' | 'SKIPPED' | 'FAILED';
   isActive: boolean;
   _count: { comments: number };
 }

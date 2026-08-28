@@ -14,6 +14,7 @@ import {
   isS3VideoUploadsFeatureEnabled,
   isStripeBillingEnabled,
   isStripeFeatureEnabled,
+  isProxyTranscodeEnabled,
 } from '@/lib/feature-flags';
 
 const MIB = BigInt(1024) * BigInt(1024);
@@ -23,6 +24,7 @@ const MANAGED_ENV = [
   'OPENFRAME_ENABLE_STRIPE',
   'OPENFRAME_ENABLE_BUNNY_UPLOADS',
   'OPENFRAME_ENABLE_S3_VIDEO_UPLOADS',
+  'OPENFRAME_ENABLE_PROXY_TRANSCODE',
   'OPENFRAME_REQUIRE_INVITE_CODE',
   'OPENFRAME_MAX_VIDEO_UPLOAD_BYTES',
   'OPENFRAME_R2_MULTIPART_THRESHOLD_BYTES',
@@ -100,6 +102,15 @@ describe('boolean feature flags', () => {
 
   it('defaults S3 video uploads to off when unset', () => {
     expect(isS3VideoUploadsFeatureEnabled()).toBe(false);
+  });
+
+  it('defaults review-proxy transcode to on when unset', () => {
+    expect(isProxyTranscodeEnabled()).toBe(true);
+  });
+
+  it('turns review-proxy transcode off when the env is false', () => {
+    vi.stubEnv('OPENFRAME_ENABLE_PROXY_TRANSCODE', 'false');
+    expect(isProxyTranscodeEnabled()).toBe(false);
   });
 
   it('lets OPENFRAME_REQUIRE_INVITE_CODE=false open registration', () => {

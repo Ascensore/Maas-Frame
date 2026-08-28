@@ -71,6 +71,7 @@ const REVIEWED_MIGRATIONS = [
   '20260820120000_add_comment_images',
   '20260822120000_add_video_subtitles',
   '20260828120000_internal_timecode_api_transcript', // replayed: tsvector GIN + trigger
+  '20260828160000_review_proxy',
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */

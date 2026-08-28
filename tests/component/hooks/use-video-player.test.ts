@@ -248,6 +248,7 @@ describe('useVideoPlayer seeking', () => {
     act(() => result.current.handleSeekToTimestamp(20));
     act(() => result.current.handleSkip(5));
     expect(result.current.currentTime).toBe(25);
+    expect(result.current.getCurrentTime()).toBe(25);
 
     act(() => result.current.handleSkip(-5));
     expect(result.current.currentTime).toBe(20);

@@ -377,6 +377,9 @@ model VideoVersion {
   dropFrame       Boolean  @default(false) @map("drop_frame")
   startTimecode   String?  @map("start_timecode")
   durationFrames  Int?     @map("duration_frames")
+  // H.264 AAC MP4 derived from a camera master so the browser player can play it.
+  proxyStatus     VideoProxyStatus @default(NONE) @map("proxy_status")
+  proxyUrl        String?  @map("proxy_url")
   
   // Status
   isActive        Boolean  @default(true) // Currently displayed version
@@ -919,6 +922,7 @@ enum MediaJobKind {
   PROBE_MEDIA
   EXTRACT_AUDIO
   TRANSCRIBE
+  TRANSCODE_PROXY
 }
 
 enum MediaJobStatus {
@@ -933,6 +937,15 @@ enum TranscriptStatus {
   PENDING
   RUNNING
   READY
+  FAILED
+}
+
+enum VideoProxyStatus {
+  NONE
+  PENDING
+  RUNNING
+  READY
+  SKIPPED
   FAILED
 }
 

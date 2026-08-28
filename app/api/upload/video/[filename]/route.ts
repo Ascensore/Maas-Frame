@@ -49,7 +49,7 @@ export async function GET(
 
     const [versions, assets, session] = await Promise.all([
       db.videoVersion.findMany({
-        where: { originalUrl },
+        where: { OR: [{ originalUrl }, { proxyUrl: originalUrl }] },
         take: 2,
         select: {
           id: true,

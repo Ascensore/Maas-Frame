@@ -6,6 +6,10 @@ import {
   GET as listV1Comments,
   POST as createV1Comment,
 } from '@/app/api/v1/versions/[versionId]/comments/route';
+import {
+  GET as getSequenceLink,
+  PUT as putSequenceLink,
+} from '@/app/api/v1/versions/[versionId]/sequence-link/route';
 import { db } from '@/lib/db';
 import { hashApiToken } from '@/lib/api-token';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
@@ -121,5 +125,87 @@ describe('API tokens', () => {
     );
     expect(response.status).toBe(400);
     expect(await readError(response)).toMatch(/name/i);
+  });
+});
+
+describe('sequence links', () => {
+  const body = {
+    nle: 'premiere',
+    sequenceName: 'Ep 12',
+    startTimecode: '01:00:00:00',
+    frameRateNum: 24,
+    frameRateDen: 1,
+    dropFrame: false,
+  };
+
+  it('refuses an anonymous caller', async () => {
+    signedOut();
+    const response = await callRoute(
+      putSequenceLink,
+      apiRequest('/api/v1/versions/x/sequence-link', { method: 'PUT', body }),
+      { versionId: 'x' }
+    );
+    expect(response.status).toBe(401);
+    expect(await db.sequenceLink.count()).toBe(0);
+  });
+
+  it('hides a version the caller cannot access and does not write a row', async () => {
+    const { version } = await seedOwnedVersion();
+    const outsider = await createUser();
+    signedInAs(outsider);
+
+    const response = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${version.id}/sequence-link`, { method: 'PUT', body }),
+      { versionId: version.id }
+    );
+    expect(response.status).toBe(404);
+    expect(await db.sequenceLink.count({ where: { versionId: version.id } })).toBe(0);
+  });
+
+  it('upserts a sequence start offset for the caller', async () => {
+    const { user, version } = await seedOwnedVersion();
+    signedInAs(user);
+
+    const created = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${version.id}/sequence-link`, { method: 'PUT', body }),
+      { versionId: version.id }
+    );
+    expect(created.status).toBe(200);
+    const createdData = await readData<{
+      sequenceLink: { startTimecode: string; offsetSeconds: number | null };
+    }>(created);
+    expect(createdData.sequenceLink.startTimecode).toBe('01:00:00:00');
+    expect(createdData.sequenceLink.offsetSeconds).toBe(3600);
+
+    const updated = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${version.id}/sequence-link`, {
+        method: 'PUT',
+        body: { ...body, sequenceName: 'Ep 12 v2', startTimecode: '01:00:00:00' },
+      }),
+      { versionId: version.id }
+    );
+    expect(updated.status).toBe(200);
+
+    const fetched = await callRoute(
+      getSequenceLink,
+      apiRequest(`/api/v1/versions/${version.id}/sequence-link`, {
+        searchParams: { nle: 'premiere' },
+      }),
+      { versionId: version.id }
+    );
+    expect(fetched.status).toBe(200);
+    const fetchedData = await readData<{
+      sequenceLink: { sequenceName: string } | null;
+    }>(fetched);
+    expect(fetchedData.sequenceLink?.sequenceName).toBe('Ep 12 v2');
+
+    const row = await db.sequenceLink.findFirst({
+      where: { versionId: version.id, userId: user.id },
+    });
+    expect(row?.sequenceName).toBe('Ep 12 v2');
+    expect(row?.startTimecode).toBe('01:00:00:00');
   });
 });

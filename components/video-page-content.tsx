@@ -331,6 +331,7 @@ export function VideoPageContent({
     youtubeModuleRevision,
     bunnyPlaybackState,
     currentTime,
+    getCurrentTime,
     setCurrentTime,
     videoDuration,
     isPlaying,
@@ -732,6 +733,21 @@ export function VideoPageContent({
     [toggleCompareVersion, handleCompareConfirm]
   );
 
+  const handleTranscriptSeek = useCallback(
+    (seconds: number, options?: { pauseAfterSeek?: boolean; timestampEnd?: number | null }) => {
+      handleSeekToTimestamp(seconds, undefined, options);
+    },
+    [handleSeekToTimestamp]
+  );
+
+  const handleTranscriptCommentRange = useCallback(
+    (start: number, end: number, quote: string) => {
+      applyCommentRange(start, end, quote);
+      setActiveSidePane('comments');
+    },
+    [applyCommentRange]
+  );
+
   if (loading) {
     return (
       <VideoPageLoading
@@ -817,6 +833,12 @@ export function VideoPageContent({
             onOpenApprovalRequest={handleOpenApprovalRequestDialog}
             onOpenApprovalsPanel={handleOpenApprovalsPanel}
           />
+
+          {(activeVersion.proxyStatus === 'PENDING' || activeVersion.proxyStatus === 'RUNNING') && (
+            <p className="text-sm text-muted-foreground px-4 pt-2">
+              Preparing a review proxy so this file can play in the browser…
+            </p>
+          )}
 
           <PlayerCore
             activeVersionId={activeVersionId}
@@ -991,13 +1013,10 @@ export function VideoPageContent({
           transcriptPane={
             <TranscriptPane
               versionId={activeVersionId}
-              currentTime={currentTime}
+              getCurrentTime={getCurrentTime}
               canManage={canManageSubtitles}
-              onSeek={(seconds, options) => handleSeekToTimestamp(seconds, undefined, options)}
-              onCommentRange={(start, end, quote) => {
-                applyCommentRange(start, end, quote);
-                setActiveSidePane('comments');
-              }}
+              onSeek={handleTranscriptSeek}
+              onCommentRange={handleTranscriptCommentRange}
             />
           }
           composer={

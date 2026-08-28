@@ -86,7 +86,20 @@ export function videoProxyPathToObjectKey(proxyPath: string): string | null {
  * the app's own upload route. Shared by the video page and the compare view so
  * the two cannot drift.
  */
-export function resolveR2PlaybackUrl(version: { videoId: string; originalUrl: string }): string {
+export function resolveR2PlaybackUrl(version: {
+  videoId: string;
+  originalUrl: string;
+  proxyUrl?: string | null;
+  proxyStatus?: string | null;
+}): string {
+  if (version.proxyStatus === 'READY' && version.proxyUrl) {
+    if (version.proxyUrl.startsWith(VIDEO_PROXY_PREFIX)) {
+      return version.proxyUrl;
+    }
+    if (version.proxyUrl.startsWith(VIDEO_OBJECT_KEY_PREFIX)) {
+      return videoProxyPathFromFilename(version.proxyUrl.slice(VIDEO_OBJECT_KEY_PREFIX.length));
+    }
+  }
   if (version.originalUrl.startsWith(VIDEO_PROXY_PREFIX)) {
     return version.originalUrl;
   }

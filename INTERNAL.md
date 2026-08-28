@@ -40,6 +40,7 @@ that matter for this fork:
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | your Workspace OAuth app                           | SSO for the company domain. Restrict the OAuth client to your domain in Google Cloud.                      |
 | `OPENFRAME_ENABLE_TRANSCRIPTION`            | `true`                                             | Enqueue transcription after a version lands.                                                               |
 | `OPENFRAME_TRANSCRIPTION_PROVIDER`          | `whisper-local` (default), `deepgram`, or `openai` | Pluggable. Cloud providers need their API keys.                                                            |
+| `OPENFRAME_ENABLE_PROXY_TRANSCODE`          | `true`                                             | After probe, transcode ProRes/DNx/HEVC/etc. to an H.264 AAC MP4 the browser can play.                      |
 
 ## Services
 
@@ -50,5 +51,6 @@ that matter for this fork:
 - MinIO
 - the media worker (ffmpeg + job poller)
 
-The worker probes uploaded files for a rational frame rate and, when
+The worker probes uploaded files for a rational frame rate, transcodes a
+review proxy when the master will not play in a browser, and, when
 transcription is enabled, extracts audio and transcribes it.
