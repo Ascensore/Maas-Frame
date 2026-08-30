@@ -32,6 +32,7 @@
     "db:seed": "prisma db seed",
     "db:setup": "bun run db:generate && bun run db:migrate",
     "self-host:bootstrap": "bun run scripts/self-host-bootstrap.ts",
+    "c2c:ingest": "bun run scripts/c2c-ingest.ts",
     "r2:configure-cors": "bun run scripts/configure-r2-cors.ts",
     "r2:cleanup-orphans:dry": "bun run scripts/r2-orphan-cleanup.ts --dry-run",
     "r2:cleanup-orphans": "bun run scripts/r2-orphan-cleanup.ts",

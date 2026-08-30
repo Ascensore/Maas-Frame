@@ -28,6 +28,7 @@ export interface ProjectScenario {
 export interface SeedProjectInput {
   visibility?: ProjectVisibility;
   allowDownloads?: boolean;
+  watermarkReviews?: boolean;
   projectName?: string;
   owner?: CreateUserInput;
   /** Reuse an existing user as the workspace and project owner. */
@@ -42,6 +43,7 @@ export async function seedProject(input: SeedProjectInput = {}): Promise<Project
     workspaceId: workspace.id,
     visibility: input.visibility,
     allowDownloads: input.allowDownloads,
+    watermarkReviews: input.watermarkReviews,
     name: input.projectName,
   });
 

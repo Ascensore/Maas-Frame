@@ -27,7 +27,7 @@ import { isTrialStorageError, toastApiError } from '@/lib/client/api-error';
 import {
   cleanupPendingProjectUpload,
   getDefaultTitleFromFile,
-  isVideoFile,
+  isReviewFile,
   uploadProjectVideo,
   type ActiveTusUpload,
   type PendingProjectUploadCleanup,
@@ -371,16 +371,18 @@ export function VideoDragDropUploader({
         return;
       }
 
-      const videoFiles = files.filter(isVideoFile);
+      const videoFiles = files.filter(isReviewFile);
       const invalidCount = files.length - videoFiles.length;
 
       if (videoFiles.length === 0) {
-        toast.error('Please drop valid video files');
+        toast.error('Please drop a video, still, PDF, or audio file');
         return;
       }
 
       if (invalidCount > 0) {
-        toast.error(`${invalidCount} file${invalidCount === 1 ? '' : 's'} skipped (not a video)`);
+        toast.error(
+          `${invalidCount} file${invalidCount === 1 ? '' : 's'} skipped (not a supported review file)`
+        );
       }
 
       if (fixedProjectId) {

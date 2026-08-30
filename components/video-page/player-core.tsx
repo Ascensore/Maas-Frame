@@ -39,10 +39,13 @@ import type {
   Subtitle,
   SubtitleTrackOption,
 } from '@/components/video-page/types';
+import { reviewPlayerMode, type ReviewKind } from '@/lib/review-kind';
+import { ReviewWatermarkOverlay } from '@/components/video-page/review-watermark-overlay';
 
 interface PlayerCoreProps {
   activeVersionId: string | null;
   activeProviderId: string | undefined;
+  reviewKind?: ReviewKind;
   embedUrl: string;
   videoRef: RefObject<HTMLVideoElement | null>;
   iframeRef: RefObject<HTMLIFrameElement | null>;
@@ -124,11 +127,13 @@ interface PlayerCoreProps {
     options?: { pauseAfterSeek?: boolean; timestampEnd?: number | null }
   ) => void;
   commentMarkers: CommentMarker[];
+  reviewWatermark?: string | null;
 }
 
 export const PlayerCore = memo(function PlayerCore({
   activeVersionId,
   activeProviderId,
+  reviewKind = 'VIDEO',
   embedUrl,
   videoRef,
   iframeRef,
@@ -197,22 +202,47 @@ export const PlayerCore = memo(function PlayerCore({
   handleTimelineMouseMove,
   handleSeekToTimestamp,
   commentMarkers,
+  reviewWatermark,
 }: PlayerCoreProps) {
+  const playerMode = reviewPlayerMode(reviewKind, activeProviderId);
+  const isStillPlayer = playerMode === 'image' || playerMode === 'pdf';
+
   return (
     <>
       <div
         ref={videoContainerRef}
         className={cn(
-          'flex-1 bg-black flex items-center justify-center relative cursor-pointer group min-h-0',
+          'flex-1 bg-black flex items-center justify-center relative group min-h-0',
+          !isStillPlayer && 'cursor-pointer',
           isFullscreenMode && 'absolute inset-0',
           cursorIdle && isPlaying && 'cursor-none'
         )}
-        onClick={handlePlayPause}
+        onClick={isStillPlayer ? undefined : handlePlayPause}
         onMouseMove={handleVideoMouseMove}
         onMouseLeave={handleVideoMouseLeave}
       >
         <div className={cn('relative w-full h-full', isFullscreenMode && 'absolute inset-0')}>
-          {activeProviderId === 'bunny' || activeProviderId === 'r2' ? (
+          {playerMode === 'image' ? (
+            <div
+              ref={bunnyViewportRef}
+              className="absolute inset-0 flex items-center justify-center bg-black"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                key={activeVersionId}
+                src={embedUrl}
+                alt=""
+                className="max-w-full max-h-full object-contain"
+              />
+            </div>
+          ) : playerMode === 'pdf' ? (
+            <iframe
+              key={activeVersionId}
+              src={embedUrl}
+              title="PDF"
+              className="absolute inset-0 w-full h-full border-0 bg-white"
+            />
+          ) : playerMode === 'native-video' ? (
             <div
               ref={bunnyViewportRef}
               className="absolute inset-0 flex items-center justify-center bg-black"
@@ -268,26 +298,30 @@ export const PlayerCore = memo(function PlayerCore({
             />
           )}
 
-          <div
-            className={cn(
-              'absolute inset-0 flex items-center justify-center bg-black/20 transition-opacity duration-300',
-              (showBunnyProcessingOverlay || showBunnyErrorOverlay) &&
-                'opacity-0 pointer-events-none',
-              isPlaying
-                ? cursorIdle
-                  ? 'opacity-0'
-                  : 'opacity-0 group-hover:opacity-100'
-                : 'opacity-100'
-            )}
-          >
-            <div className="w-16 h-16 rounded-full bg-black/60 flex items-center justify-center relative z-10">
-              {isPlaying ? (
-                <Pause className="h-8 w-8 text-white relative right-[-1px]" />
-              ) : (
-                <Play className="h-8 w-8 text-white relative left-[2px]" />
+          <ReviewWatermarkOverlay label={reviewWatermark} />
+
+          {!isStillPlayer && (
+            <div
+              className={cn(
+                'absolute inset-0 flex items-center justify-center bg-black/20 transition-opacity duration-300',
+                (showBunnyProcessingOverlay || showBunnyErrorOverlay) &&
+                  'opacity-0 pointer-events-none',
+                isPlaying
+                  ? cursorIdle
+                    ? 'opacity-0'
+                    : 'opacity-0 group-hover:opacity-100'
+                  : 'opacity-100'
               )}
+            >
+              <div className="w-16 h-16 rounded-full bg-black/60 flex items-center justify-center relative z-10">
+                {isPlaying ? (
+                  <Pause className="h-8 w-8 text-white relative right-[-1px]" />
+                ) : (
+                  <Play className="h-8 w-8 text-white relative left-[2px]" />
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
           {showBunnyProcessingOverlay && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/65">
@@ -406,124 +440,132 @@ export const PlayerCore = memo(function PlayerCore({
         )}
       >
         <div className="flex items-center gap-1 mb-2">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handlePlayPause}>
-            {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
-          </Button>
+          {!isStillPlayer && (
+            <>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handlePlayPause}>
+                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+              </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => handleSkip(-10)}
-            title={isFrameMode ? `Back ${frameStepLabel}` : 'Back 10s'}
-          >
-            <SkipBack className="h-4 w-4" />
-          </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => handleSkip(-10)}
+                title={isFrameMode ? `Back ${frameStepLabel}` : 'Back 10s'}
+              >
+                <SkipBack className="h-4 w-4" />
+              </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => handleSkip(10)}
-            title={isFrameMode ? `Forward ${frameStepLabel}` : 'Forward 10s'}
-          >
-            <SkipForward className="h-4 w-4" />
-          </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => handleSkip(10)}
+                title={isFrameMode ? `Forward ${frameStepLabel}` : 'Forward 10s'}
+              >
+                <SkipForward className="h-4 w-4" />
+              </Button>
 
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleMuteToggle}>
-            {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-          </Button>
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleMuteToggle}>
+                {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </Button>
 
-          <span className="text-xs text-muted-foreground ml-1 tabular-nums">
-            {formatTime(currentTime)} / {formatTime(duration)}
-          </span>
+              <span className="text-xs text-muted-foreground ml-1 tabular-nums">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </span>
+            </>
+          )}
 
           <div className="ml-auto flex items-center">
-            <Button
-              variant={isFrameMode ? 'default' : 'ghost'}
-              size="sm"
-              className="h-8 gap-1 text-xs"
-              onClick={handleFrameModeToggle}
-              title="Toggle frame step mode"
-            >
-              Frame {frameStepLabel}
-            </Button>
-
-            {activeProviderId === 'bunny' && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                    Quality {selectedQualityLabel}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[120px]">
-                  <DropdownMenuItem
-                    onClick={() => handleQualityChange(-1)}
-                    className={cn(selectedQualityLevel === -1 && 'font-bold text-primary')}
-                  >
-                    Auto
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => handleQualityChange(-2)}
-                    className={cn(selectedQualityLevel === -2 && 'font-bold text-primary')}
-                  >
-                    Original
-                  </DropdownMenuItem>
-                  {qualityOptions.length > 0 && <DropdownMenuSeparator />}
-                  {qualityOptions.map((option) => (
-                    <DropdownMenuItem
-                      key={option.level}
-                      onClick={() => handleQualityChange(option.level)}
-                      className={cn(
-                        option.level === selectedQualityLevel && 'font-bold text-primary'
-                      )}
-                    >
-                      {option.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-
-            {activeProviderId && activeProviderId !== 'direct' && (
-              <SubtitleControls
-                subtitles={subtitleTracks}
-                activeSubtitleLanguage={activeSubtitleLanguage}
-                onSelectSubtitleLanguage={onSelectSubtitleLanguage}
-                canManageSubtitles={canManageSubtitles}
-                onUploadSubtitle={onUploadSubtitle}
-                onDeleteSubtitle={onDeleteSubtitle}
-                isUploadingSubtitle={isUploadingSubtitle}
-              />
-            )}
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                  <Gauge className="h-3.5 w-3.5" />
-                  {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+            {!isStillPlayer && (
+              <>
+                <Button
+                  variant={isFrameMode ? 'default' : 'ghost'}
+                  size="sm"
+                  className="h-8 gap-1 text-xs"
+                  onClick={handleFrameModeToggle}
+                  title="Toggle frame step mode"
+                >
+                  Frame {frameStepLabel}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[80px]">
-                {speedOptions.map((speed) => (
-                  <DropdownMenuItem
-                    key={speed}
-                    onClick={() => handleSpeedChange(speed)}
-                    className={cn(
-                      'flex items-center justify-between gap-2',
-                      speed === playbackSpeed && 'font-bold text-primary'
-                    )}
-                  >
-                    {speed}x
-                    {speed > SILENT_ABOVE_SPEED && (
-                      <span className="text-[10px] font-normal text-muted-foreground">
-                        no audio
-                      </span>
-                    )}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+
+                {activeProviderId === 'bunny' && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
+                        Quality {selectedQualityLabel}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[120px]">
+                      <DropdownMenuItem
+                        onClick={() => handleQualityChange(-1)}
+                        className={cn(selectedQualityLevel === -1 && 'font-bold text-primary')}
+                      >
+                        Auto
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => handleQualityChange(-2)}
+                        className={cn(selectedQualityLevel === -2 && 'font-bold text-primary')}
+                      >
+                        Original
+                      </DropdownMenuItem>
+                      {qualityOptions.length > 0 && <DropdownMenuSeparator />}
+                      {qualityOptions.map((option) => (
+                        <DropdownMenuItem
+                          key={option.level}
+                          onClick={() => handleQualityChange(option.level)}
+                          className={cn(
+                            option.level === selectedQualityLevel && 'font-bold text-primary'
+                          )}
+                        >
+                          {option.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+
+                {activeProviderId && activeProviderId !== 'direct' && (
+                  <SubtitleControls
+                    subtitles={subtitleTracks}
+                    activeSubtitleLanguage={activeSubtitleLanguage}
+                    onSelectSubtitleLanguage={onSelectSubtitleLanguage}
+                    canManageSubtitles={canManageSubtitles}
+                    onUploadSubtitle={onUploadSubtitle}
+                    onDeleteSubtitle={onDeleteSubtitle}
+                    isUploadingSubtitle={isUploadingSubtitle}
+                  />
+                )}
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
+                      <Gauge className="h-3.5 w-3.5" />
+                      {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[80px]">
+                    {speedOptions.map((speed) => (
+                      <DropdownMenuItem
+                        key={speed}
+                        onClick={() => handleSpeedChange(speed)}
+                        className={cn(
+                          'flex items-center justify-between gap-2',
+                          speed === playbackSpeed && 'font-bold text-primary'
+                        )}
+                      >
+                        {speed}x
+                        {speed > SILENT_ABOVE_SPEED && (
+                          <span className="text-[10px] font-normal text-muted-foreground">
+                            no audio
+                          </span>
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            )}
 
             <Button
               variant="ghost"
@@ -569,7 +611,10 @@ export const PlayerCore = memo(function PlayerCore({
 
         <div
           ref={timelineRef}
-          className="relative h-8 bg-muted rounded cursor-pointer select-none"
+          className={cn(
+            'relative h-8 bg-muted rounded cursor-pointer select-none',
+            isStillPlayer && 'hidden'
+          )}
           onMouseDown={handleTimelineMouseDown}
           onMouseMove={handleTimelineMouseMove}
         >

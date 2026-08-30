@@ -7,6 +7,7 @@ import { validateShareLinkAccess } from '@/lib/share-links';
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { canDownloadProjectMedia } from '@/lib/project-download';
 import { getGuestIdentityFromRequest } from '@/lib/guest-identity';
+import { reviewWatermarkForProject } from '@/lib/review-watermark';
 import { logError } from '@/lib/logger';
 
 type RouteParams = { params: Promise<{ videoId: string }> };
@@ -212,6 +213,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       isAuthenticated: !!session?.user?.id,
       currentUserId: session?.user?.id || null,
       currentUserName: session?.user?.name || null,
+      reviewWatermark: reviewWatermarkForProject(project.watermarkReviews, {
+        name: session?.user?.name,
+        email: session?.user?.email,
+        guestIdentityId: viewerGuestIdentityId,
+      }),
       canComment: canCommentWithMembership || canCommentWithShareLink,
       canDownload: canDownloadWithMembership || canDownloadWithShareLink,
       canManageTags: access.canEdit,

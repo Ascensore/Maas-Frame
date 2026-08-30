@@ -110,7 +110,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { name, description, visibility, allowDownloads } = body;
+    const { name, description, visibility, allowDownloads, watermarkReviews } = body;
 
     if (name !== undefined) {
       if (typeof name !== 'string' || name.trim().length === 0) {
@@ -136,12 +136,16 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (allowDownloads !== undefined && typeof allowDownloads !== 'boolean') {
       return apiErrors.badRequest('allowDownloads must be a boolean');
     }
+    if (watermarkReviews !== undefined && typeof watermarkReviews !== 'boolean') {
+      return apiErrors.badRequest('watermarkReviews must be a boolean');
+    }
 
     const updateData: Record<string, unknown> = {};
     if (name !== undefined) updateData.name = name.trim();
     if (description !== undefined) updateData.description = description?.trim() || null;
     if (visibility !== undefined) updateData.visibility = visibility;
     if (allowDownloads !== undefined) updateData.allowDownloads = allowDownloads;
+    if (watermarkReviews !== undefined) updateData.watermarkReviews = watermarkReviews;
 
     const project = await db.project.update({
       where: { id: projectId },

@@ -9,6 +9,8 @@ import { buildCleanupWarnings, logCleanupWarnings } from '@/lib/cleanup-warnings
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
 import { canDownloadProjectMedia } from '@/lib/project-download';
+import { parseVideoMetadata } from '@/lib/video-metadata';
+import { reviewWatermarkForProject } from '@/lib/review-watermark';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
 
@@ -135,6 +137,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       isAuthenticated: !!session?.user?.id,
       currentUserId: session?.user?.id || null,
       currentUserName: session?.user?.name || null,
+      reviewWatermark: reviewWatermarkForProject(video.project.watermarkReviews, {
+        name: session?.user?.name,
+        email: session?.user?.email,
+      }),
       canDownload,
       canManageTags: access.canEdit,
       canResolveComments: access.canEdit,
@@ -181,7 +187,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { title, description, position, folderId } = body;
+    const { title, description, position, folderId, metadata } = body;
 
     // Validate types before using string methods to prevent type confusion attacks
     if (
@@ -208,6 +214,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
       updateData.folderId = folderId;
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'metadata')) {
+      const parsed = parseVideoMetadata(metadata);
+      if (!parsed.ok) {
+        return apiErrors.badRequest(parsed.error);
+      }
+      updateData.metadata = parsed.value;
+    }
 
     // Keep the response to scalar video fields: including versions would pull
     // in BigInt columns (sizeBytes) that JSON.stringify cannot serialize, and
@@ -221,6 +234,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         description: true,
         position: true,
         folderId: true,
+        metadata: true,
         projectId: true,
         updatedAt: true,
       },

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
+import { readVideoObjectBytes } from '@/lib/r2';
 import { GET as listVideos, POST as addVideo } from '@/app/api/projects/[projectId]/videos/route';
+import { POST as addVersion } from '@/app/api/projects/[projectId]/videos/[videoId]/versions/route';
 import { POST as bulkDelete } from '@/app/api/projects/[projectId]/videos/bulk-delete/route';
 import {
   GET as listMoveTargets,
@@ -244,6 +246,254 @@ describe('POST /api/projects/[projectId]/videos', () => {
     expect(created.versions[0].duration).toBe(212);
     expect(created.versions[0].isActive).toBe(true);
     expect(created.versions[0].sizeBytes).toBe(BigInt(0));
+    expect(created.kind).toBe('VIDEO');
+  });
+
+  it('creates an IMAGE review from a jpeg r2 upload and skips media jobs', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'hero.jpg', sizeBytes: '2048', contentType: 'image/jpeg' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+      contentType: string;
+    }>(initResponse);
+
+    expect(initResponse.status).toBe(200);
+    expect(init.contentType).toBe('image/jpeg');
+    expect(init.objectKey).toMatch(/^videos\/[0-9a-f-]{36}\.jpg$/);
+
+    vi.mocked(readVideoObjectBytes).mockImplementationOnce(
+      async (key: string, byteLength: number) => {
+        if (!key.startsWith('videos/') || byteLength <= 0) return null;
+        const header = new Uint8Array(64);
+        header[0] = 0xff;
+        header[1] = 0xd8;
+        return header.slice(0, Math.min(header.length, byteLength));
+      }
+    );
+
+    const response = await callRoute(
+      addVideo,
+      apiRequest(videosUrl(scenario.project.id), {
+        body: {
+          title: 'Hero still',
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await db.video.findFirstOrThrow({
+      where: { title: 'Hero still' },
+      include: { versions: true },
+    });
+    expect(created.kind).toBe('IMAGE');
+    expect(created.versions).toHaveLength(1);
+    expect(created.versions[0].proxyStatus).toBe('SKIPPED');
+    expect(created.versions[0].thumbnailUrl).toBe(init.proxyUrl);
+    expect(await db.mediaJob.count()).toBe(0);
+  });
+
+  it('adds a still version to an IMAGE review without enqueueing media jobs', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id, kind: 'IMAGE' });
+    await createVersion({ videoParentId: video.id, versionNumber: 1, isActive: true });
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'frame.png', sizeBytes: '2048', contentType: 'image/png' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+    }>(initResponse);
+
+    vi.mocked(readVideoObjectBytes).mockImplementationOnce(
+      async (key: string, byteLength: number) => {
+        if (!key.startsWith('videos/') || byteLength <= 0) return null;
+        const header = new Uint8Array(64);
+        header.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+        return header.slice(0, Math.min(header.length, byteLength));
+      }
+    );
+
+    const response = await callRoute(
+      addVersion,
+      apiRequest(`/api/projects/${scenario.project.id}/videos/${video.id}/versions`, {
+        body: {
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+          setActive: true,
+        },
+      }),
+      { projectId: scenario.project.id, videoId: video.id }
+    );
+
+    expect(response.status).toBe(201);
+    const version = await db.videoVersion.findFirstOrThrow({
+      where: { videoParentId: video.id, versionNumber: 2 },
+    });
+    expect(version.proxyStatus).toBe('SKIPPED');
+    expect(version.thumbnailUrl).toBe(init.proxyUrl);
+    expect(await db.mediaJob.count()).toBe(0);
+  });
+
+  it('creates a PDF review from an r2 upload', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'deck.pdf', sizeBytes: '2048', contentType: 'application/pdf' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+      contentType: string;
+    }>(initResponse);
+
+    expect(initResponse.status).toBe(200);
+    expect(init.contentType).toBe('application/pdf');
+
+    vi.mocked(readVideoObjectBytes).mockImplementationOnce(
+      async (key: string, byteLength: number) => {
+        if (!key.startsWith('videos/') || byteLength <= 0) return null;
+        const header = new Uint8Array(64);
+        header.set([0x25, 0x50, 0x44, 0x46], 0);
+        return header.slice(0, Math.min(header.length, byteLength));
+      }
+    );
+
+    const response = await callRoute(
+      addVideo,
+      apiRequest(videosUrl(scenario.project.id), {
+        body: {
+          title: 'Deck',
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await db.video.findFirstOrThrow({
+      where: { title: 'Deck' },
+      include: { versions: true },
+    });
+    expect(created.kind).toBe('PDF');
+    expect(init.objectKey).toMatch(/\.pdf$/);
+    expect(created.versions).toHaveLength(1);
+    expect(created.versions[0].proxyStatus).toBe('SKIPPED');
+    expect(created.versions[0].originalUrl).toBe(init.proxyUrl);
+    expect(await db.mediaJob.count()).toBe(0);
+  });
+
+  it('creates an AUDIO review from a wav r2 upload', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'mix.wav', sizeBytes: '2048', contentType: 'audio/wav' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+      contentType: string;
+    }>(initResponse);
+
+    expect(initResponse.status).toBe(200);
+    expect(init.contentType).toBe('audio/wav');
+
+    vi.mocked(readVideoObjectBytes).mockImplementationOnce(
+      async (key: string, byteLength: number) => {
+        if (!key.startsWith('videos/') || byteLength <= 0) return null;
+        const header = new Uint8Array(64);
+        header.set([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45], 0);
+        return header.slice(0, Math.min(header.length, byteLength));
+      }
+    );
+
+    const response = await callRoute(
+      addVideo,
+      apiRequest(videosUrl(scenario.project.id), {
+        body: {
+          title: 'Mix',
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await db.video.findFirstOrThrow({
+      where: { title: 'Mix' },
+      include: { versions: true },
+    });
+    expect(created.kind).toBe('AUDIO');
+    expect(created.versions[0].proxyStatus).toBe('NONE');
+    const jobs = await db.mediaJob.findMany();
+    expect(jobs.map((job) => job.kind).sort()).toEqual(['PROBE_MEDIA']);
+  });
+
+  it('refuses a still whose r2 session never existed and inserts nothing', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      addVideo,
+      apiRequest(videosUrl(scenario.project.id), {
+        body: {
+          title: 'Ghost still',
+          providerId: 'r2',
+          videoUrl: '/api/upload/video/00000000-0000-0000-0000-000000000000.jpg',
+          objectKey: 'videos/00000000-0000-0000-0000-000000000000.jpg',
+          uploadToken: 'forged.token',
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(403);
+    expect(await db.video.count()).toBe(0);
   });
 
   it('lets a project ADMIN add a video, lowercasing the provider id', async () => {

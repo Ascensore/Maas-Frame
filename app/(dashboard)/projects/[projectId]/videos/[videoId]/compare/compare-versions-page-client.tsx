@@ -31,6 +31,7 @@ import {
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { isPlayableVideoUrl, resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
 import { cn } from '@/lib/utils';
+import { ReviewWatermarkOverlay } from '@/components/video-page/review-watermark-overlay';
 
 interface Version {
   id: string;
@@ -84,6 +85,7 @@ interface VideoData {
     name: string;
   };
   versions: Version[];
+  reviewWatermark?: string | null;
 }
 
 function formatTime(seconds: number): string {
@@ -777,6 +779,8 @@ export default function CompareVersionsPageClient({
                     allowFullScreen
                   />
                 ) : null}
+
+                <ReviewWatermarkOverlay label={video?.reviewWatermark} />
 
                 {/* Play/pause overlay */}
                 <div

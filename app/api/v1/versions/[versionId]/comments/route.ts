@@ -5,6 +5,7 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { deriveTimestampFrame } from '@/lib/timecode';
 import { logError } from '@/lib/logger';
+import { notifyCommentChanged } from '@/lib/comment-live';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
@@ -115,6 +116,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       select: COMMENT_SELECT,
     });
 
+    await notifyCommentChanged(versionId);
     return withCacheControl(successResponse({ comment }, 201), 'private, no-store');
   } catch (error) {
     logError('Error creating v1 comment:', error);

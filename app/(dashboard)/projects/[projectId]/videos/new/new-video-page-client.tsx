@@ -31,7 +31,8 @@ import { isTrialStorageError } from '@/lib/client/api-error';
 import {
   cleanupPendingProjectUpload,
   getDefaultTitleFromFile,
-  isVideoFile,
+  isReviewFile,
+  REVIEW_FILE_ACCEPT,
   uploadProjectVideo,
   type ActiveTusUpload,
   type PendingProjectUploadCleanup,
@@ -204,7 +205,7 @@ export default function NewVideoPageClient({
       let invalidCount = 0;
 
       for (const file of incoming) {
-        if (!isVideoFile(file)) {
+        if (!isReviewFile(file)) {
           invalidCount += 1;
           continue;
         }
@@ -212,13 +213,13 @@ export default function NewVideoPageClient({
       }
 
       if (validFiles.length === 0) {
-        setSubmitError('Please select valid video files.');
+        setSubmitError('Please select a video, still, PDF, or audio file.');
         return;
       }
 
       if (invalidCount > 0) {
         setSubmitError(
-          `${invalidCount} file${invalidCount === 1 ? '' : 's'} skipped (not a video).`
+          `${invalidCount} file${invalidCount === 1 ? '' : 's'} skipped (not a supported review file).`
         );
       } else {
         setSubmitError('');
@@ -595,7 +596,7 @@ export default function NewVideoPageClient({
                             <span className="font-semibold">Click to upload</span> or drag and drop
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            Multiple videos supported · MP4, WebM, MOV, and more
+                            Multiple files supported · video, stills, PDF, and audio
                           </p>
                         </>
                       ) : selectedFiles.length === 1 ? (
@@ -624,7 +625,7 @@ export default function NewVideoPageClient({
                       ref={fileInputRef}
                       id="file"
                       type="file"
-                      accept="video/*"
+                      accept={REVIEW_FILE_ACCEPT}
                       multiple
                       className="hidden"
                       onChange={handleFileChange}

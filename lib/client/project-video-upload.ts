@@ -4,8 +4,12 @@ import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { cleanupPendingR2VideoUpload, uploadVideoToR2 } from '@/lib/client/r2-video-upload';
 import type { DirectUploadProvider } from '@/components/video-page/types';
 import { apiRequestError } from '@/lib/client/api-error';
+import { reviewKindFromFileName } from '@/lib/review-kind';
 
 export const VIDEO_FILE_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv'];
+
+export const REVIEW_FILE_ACCEPT =
+  'video/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,audio/*';
 
 export type ActiveTusUpload = { abort: (shouldTerminate?: boolean) => Promise<unknown> | void };
 
@@ -33,9 +37,13 @@ export function isVideoFile(file: File): boolean {
   return !!ext && VIDEO_FILE_EXTENSIONS.includes(ext);
 }
 
+export function isReviewFile(file: File): boolean {
+  return reviewKindFromFileName(file.name) !== null;
+}
+
 export function extractVideoFiles(dataTransfer: DataTransfer | null): File[] {
   if (!dataTransfer?.files?.length) return [];
-  return Array.from(dataTransfer.files).filter(isVideoFile);
+  return Array.from(dataTransfer.files).filter(isReviewFile);
 }
 
 export function getDefaultTitleFromFile(file: File): string {

@@ -28,6 +28,7 @@ import {
 } from '@/lib/storage-quota';
 import { isValidEmailAddress, normalizeEmail } from '@/lib/email-validation';
 import { deriveTimestampFrame } from '@/lib/timecode';
+import { notifyCommentChanged } from '@/lib/comment-live';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 const SAFE_AUDIO_PATH =
@@ -589,6 +590,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (isGuest && guestIdentity?.shouldSetCookie) {
       setGuestIdentityCookie(response, guestIdentity.identityId);
     }
+    await notifyCommentChanged(versionId);
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
     await releaseStorageReservation(

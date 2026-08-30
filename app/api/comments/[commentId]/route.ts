@@ -19,6 +19,7 @@ import {
   UPLOAD_RESERVATION_PURPOSES,
 } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
+import { notifyCommentChanged } from '@/lib/comment-live';
 
 const CLEANUP_DELETE_CONCURRENCY = 5;
 
@@ -383,6 +384,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         };
       }),
     });
+    await notifyCommentChanged(comment.versionId);
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
     await releaseStorageReservation(
@@ -520,6 +522,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     });
 
     const response = successResponse({ message: 'Comment deleted' });
+    await notifyCommentChanged(comment.versionId);
     return withCacheControl(response, 'private, no-store');
   } catch (error) {
     logError('Error deleting comment:', error);

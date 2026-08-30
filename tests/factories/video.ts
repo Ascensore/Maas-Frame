@@ -1,6 +1,7 @@
 import {
   VideoAssetKind,
   VideoAssetProvider,
+  type ReviewKind,
   type UploadReservation,
   type Video,
   type VideoAsset,
@@ -17,6 +18,8 @@ export interface CreateVideoInput {
   description?: string | null;
   position?: number;
   folderId?: string | null;
+  kind?: ReviewKind;
+  metadata?: Record<string, string>;
 }
 
 export async function createVideo(input: CreateVideoInput): Promise<Video> {
@@ -28,6 +31,8 @@ export async function createVideo(input: CreateVideoInput): Promise<Video> {
       description: input.description ?? null,
       position: input.position ?? 0,
       folderId: input.folderId ?? null,
+      kind: input.kind ?? undefined,
+      metadata: input.metadata ?? undefined,
     },
   });
 }

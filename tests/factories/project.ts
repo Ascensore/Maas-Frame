@@ -16,6 +16,7 @@ export interface CreateProjectInput {
   description?: string | null;
   visibility?: ProjectVisibility;
   allowDownloads?: boolean;
+  watermarkReviews?: boolean;
 }
 
 export async function createProject(input: CreateProjectInput): Promise<Project> {
@@ -27,6 +28,7 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
       description: input.description ?? null,
       visibility: input.visibility ?? ProjectVisibility.PRIVATE,
       allowDownloads: input.allowDownloads ?? false,
+      watermarkReviews: input.watermarkReviews ?? false,
       ownerId: input.ownerId,
       workspaceId: input.workspaceId,
     },

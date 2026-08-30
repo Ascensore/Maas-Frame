@@ -86,6 +86,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
     description: '',
     visibility: 'PRIVATE' as Visibility,
     allowDownloads: false,
+    watermarkReviews: false,
   });
 
   // Tag management state
@@ -96,6 +97,12 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [editTagName, setEditTagName] = useState('');
   const [editTagColor, setEditTagColor] = useState('');
+  const [c2cConnections, setC2cConnections] = useState<
+    Array<{ id: string; name: string; tokenPrefix: string }>
+  >([]);
+  const [newConnectionName, setNewConnectionName] = useState('');
+  const [createdConnectionSecret, setCreatedConnectionSecret] = useState('');
+  const [connectionBusy, setConnectionBusy] = useState(false);
 
   useEffect(() => {
     // Fetch project data
@@ -111,6 +118,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
             description: project.description || '',
             visibility: project.visibility || 'PRIVATE',
             allowDownloads: project.allowDownloads ?? false,
+            watermarkReviews: project.watermarkReviews ?? false,
           });
         }
       })
@@ -127,6 +135,17 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
       })
       .catch(() => {
         /* Silent fail - tags are optional */
+      });
+
+    fetch(`/api/projects/${projectId}/c2c-connections`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.data?.connections)) {
+          setC2cConnections(data.data.connections);
+        }
+      })
+      .catch(() => {
+        /* Silent fail - ingest connections are optional */
       });
   }, [projectId]);
 
@@ -156,6 +175,52 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
       setError('Something went wrong. Please try again.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleCreateConnection = async () => {
+    if (!newConnectionName.trim()) return;
+    setConnectionBusy(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/c2c-connections`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newConnectionName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Failed to create ingest connection');
+        return;
+      }
+      setCreatedConnectionSecret(data.data.connection.secret);
+      setC2cConnections((current) => [
+        {
+          id: data.data.connection.id,
+          name: data.data.connection.name,
+          tokenPrefix: data.data.connection.tokenPrefix,
+        },
+        ...current,
+      ]);
+      setNewConnectionName('');
+    } catch {
+      setError('Failed to create ingest connection');
+    } finally {
+      setConnectionBusy(false);
+    }
+  };
+
+  const handleRevokeConnection = async (connectionId: string) => {
+    setConnectionBusy(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/c2c-connections/${connectionId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setC2cConnections((current) => current.filter((row) => row.id !== connectionId));
+      }
+    } finally {
+      setConnectionBusy(false);
     }
   };
 
@@ -393,6 +458,115 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                       )}
                     </div>
                   </button>
+                </div>
+
+                <div className="space-y-3 rounded-xl border p-4">
+                  <div>
+                    <Label className="text-sm font-medium">Review watermark</Label>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Overlay each viewer&apos;s name or email on the review player. Review proxies
+                      also get a burned-in CONFIDENTIAL mark so a downloaded proxy still shows it.
+                      This is not a forensic watermark.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        watermarkReviews: !prev.watermarkReviews,
+                      }))
+                    }
+                    disabled={isSaving}
+                    className={`w-full flex items-center justify-between gap-4 p-4 rounded-xl border-2 text-left transition-all ${
+                      formData.watermarkReviews
+                        ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
+                        : 'border-border hover:border-border/80 hover:bg-accent/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-medium">Show a viewer watermark</div>
+                      <div className="text-sm text-muted-foreground">
+                        Repeats the viewer&apos;s identity over video, stills, and PDFs in this
+                        project.
+                      </div>
+                    </div>
+                    <div
+                      className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        formData.watermarkReviews
+                          ? 'border-primary bg-primary'
+                          : 'border-muted-foreground/30'
+                      }`}
+                    >
+                      {formData.watermarkReviews && (
+                        <div className="w-2 h-2 rounded-full bg-primary-foreground" />
+                      )}
+                    </div>
+                  </button>
+                </div>
+
+                <div className="space-y-3 rounded-xl border p-4">
+                  <div>
+                    <Label className="text-sm font-medium">Camera ingest</Label>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Project-scoped tokens for field uploaders and watch-folder scripts. This is
+                      not a vendor Camera-to-Cloud protocol. Files land at the project root unless
+                      the connection was created with a folder id.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={newConnectionName}
+                      onChange={(event) => setNewConnectionName(event.target.value)}
+                      placeholder="Connection name"
+                      disabled={isSaving || connectionBusy}
+                    />
+                    <Button
+                      type="button"
+                      disabled={isSaving || connectionBusy || !newConnectionName.trim()}
+                      onClick={handleCreateConnection}
+                    >
+                      Create
+                    </Button>
+                  </div>
+                  {createdConnectionSecret && (
+                    <div className="rounded-md border bg-muted/40 p-3 text-sm break-all">
+                      <p className="font-medium mb-1">Copy this now. It will not be shown again.</p>
+                      <code>{createdConnectionSecret}</code>
+                      <p className="text-muted-foreground mt-2">
+                        <span className="font-mono">
+                          bun run c2c:ingest -- --base-url … --token this-value --file clip.mov
+                        </span>
+                      </p>
+                    </div>
+                  )}
+                  <ul className="space-y-2">
+                    {c2cConnections.map((connection) => (
+                      <li
+                        key={connection.id}
+                        className="flex items-center justify-between gap-2 text-sm"
+                      >
+                        <span>
+                          {connection.name}{' '}
+                          <span className="text-muted-foreground">{connection.tokenPrefix}…</span>
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={isSaving || connectionBusy}
+                          onClick={() => handleRevokeConnection(connection.id)}
+                        >
+                          Revoke
+                        </Button>
+                      </li>
+                    ))}
+                    {c2cConnections.length === 0 && (
+                      <li className="text-sm text-muted-foreground">
+                        No active ingest connections.
+                      </li>
+                    )}
+                  </ul>
                 </div>
 
                 {error && (

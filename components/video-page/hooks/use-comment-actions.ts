@@ -1293,6 +1293,23 @@ export function useCommentActions({
   }, [activeVersionId, fetchVersionComments]);
 
   useEffect(() => {
+    if (!activeVersionId) return;
+    if (typeof EventSource === 'undefined') return;
+
+    const source = new EventSource(`/api/versions/${activeVersionId}/comments/live`);
+    const onComments = () => {
+      if (isMutatingRef.current) return;
+      void fetchVersionComments(activeVersionId, true);
+    };
+    source.addEventListener('comments', onComments);
+
+    return () => {
+      source.removeEventListener('comments', onComments);
+      source.close();
+    };
+  }, [activeVersionId, fetchVersionComments]);
+
+  useEffect(() => {
     return () => {
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);

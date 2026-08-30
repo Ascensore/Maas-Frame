@@ -115,7 +115,22 @@ async function syncMarkers() {
     });
   }
 
-  const plan = core.reconcile(comments, local, meta.offsetSeconds);
+  const storageKey = core.syncedMarkerStorageKey(versionId);
+  const previousIds = core.parseSyncedMarkerIds(
+    typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
+  );
+  const toResolve = core.commentsRemovedFromTimeline(comments, local, previousIds);
+  const resolvedIds = [];
+  for (const commentId of toResolve) {
+    await api(baseUrl, token, `/api/v1/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isResolved: true }),
+    });
+    resolvedIds.push(commentId);
+  }
+  const remaining = core.remainingCommentsAfterTimelineResolves(comments, resolvedIds);
+
+  const plan = core.reconcile(remaining, local, meta.offsetSeconds);
 
   let added = 0;
   let moved = 0;
@@ -158,8 +173,25 @@ async function syncMarkers() {
     }, 'Sync review comments');
   });
 
+  const after = await sequenceMarkers.getMarkers();
+  const afterLocal = [];
+  for (const marker of after) {
+    const commentsText = marker.comments || marker.getComments?.() || '';
+    afterLocal.push({
+      id: String(afterLocal.length),
+      commentId: core.parseSentinel(commentsText),
+      startSeconds: 0,
+      durationSeconds: 0,
+      name: marker.name || '',
+      comments: commentsText,
+    });
+  }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(storageKey, JSON.stringify(core.collectSyncedMarkerIds(afterLocal)));
+  }
+
   setStatus(
-    `Synced. Added ${added}, moved ${moved}, removed ${removed}. Offset ${meta.offsetSeconds.toFixed(2)}s.`
+    `Synced. Added ${added}, moved ${moved}, removed ${removed}, resolved ${resolvedIds.length}. Offset ${meta.offsetSeconds.toFixed(2)}s.`
   );
 }
 

@@ -6,6 +6,7 @@ import {
   objectKeyToVideoProxyPath,
   videoProxyPathToObjectKey,
 } from '@/lib/video-upload-validation';
+import { hasKnownReviewMagicBytes } from '@/lib/review-kind';
 
 export type R2VideoFinalizeInput = {
   userId: string;
@@ -28,45 +29,6 @@ export type R2VideoFinalizeResult =
       thumbnailProxyUrl: string;
     }
   | { ok: false; error: string; status: 400 | 403 };
-
-function hasKnownVideoMagicBytes(bytes: Uint8Array): boolean {
-  if (bytes.length >= 12) {
-    const box = String.fromCharCode(bytes[4] ?? 0, bytes[5] ?? 0, bytes[6] ?? 0, bytes[7] ?? 0);
-    if (box === 'ftyp') return true;
-  }
-  if (
-    bytes.length >= 4 &&
-    bytes[0] === 0x1a &&
-    bytes[1] === 0x45 &&
-    bytes[2] === 0xdf &&
-    bytes[3] === 0xa3
-  ) {
-    return true;
-  }
-  if (
-    bytes.length >= 4 &&
-    bytes[0] === 0x4f &&
-    bytes[1] === 0x67 &&
-    bytes[2] === 0x67 &&
-    bytes[3] === 0x53
-  ) {
-    return true;
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x41 &&
-    bytes[9] === 0x56 &&
-    bytes[10] === 0x49 &&
-    bytes[11] === 0x20
-  ) {
-    return true;
-  }
-  return false;
-}
 
 export async function finalizeR2VideoUpload(
   input: R2VideoFinalizeInput
@@ -168,7 +130,8 @@ export async function finalizeR2VideoUpload(
   }
 
   const headerBytes = await readVideoObjectBytes(objectKey, 64);
-  if (!headerBytes || !hasKnownVideoMagicBytes(headerBytes)) {
+  const fileName = objectKey.split('/').pop() ?? '';
+  if (!headerBytes || !hasKnownReviewMagicBytes(fileName, headerBytes)) {
     return cancelPendingUpload('Uploaded file is not a valid video');
   }
 

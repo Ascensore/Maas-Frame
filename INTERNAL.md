@@ -52,5 +52,45 @@ that matter for this fork:
 - the media worker (ffmpeg + job poller)
 
 The worker probes uploaded files for a rational frame rate, transcodes a
-review proxy when the master will not play in a browser, and, when
-transcription is enabled, extracts audio and transcribes it.
+review proxy when the master will not play in a browser (and burns a
+`CONFIDENTIAL · {project}` label into **new** proxies when the project
+watermark is on), and, when transcription is enabled, extracts audio and
+transcribes it.
+
+## After pulling this branch
+
+Apply the review-kind / metadata / watermark / camera-ingest schema to the
+**app** database (the test database is separate):
+
+```bash
+bun run db:migrate
+```
+
+Then, in the running app:
+
+1. Create a personal **API token** in Settings for NLE panels (`of_live_…`).
+2. Project settings: optionally turn on **Show a viewer watermark**, and
+   create a **Camera ingest** token (`of_c2c_…`) if field uploaders need one.
+3. Upload a still, PDF, or audio file the same way as a video.
+
+Camera ingest from a card or watch folder (not Atomos/RED/ARRI protocol):
+
+```bash
+bun run c2c:ingest -- --base-url https://review.example --token of_c2c_… --file clip.mov
+bun run c2c:ingest -- --base-url https://review.example --token of_c2c_… --watch ./card
+```
+
+`OPENFRAME_BASE_URL` and `C2C_TOKEN` can replace the flags. The watch
+command records ingested names in `.c2c-ingested.json` inside that folder.
+
+## NLE panels
+
+See `nle/premiere/README.md` and `nle/resolve/README.md`. After the first
+**Sync markers**, deleting a review marker and syncing again resolves that
+comment on the web. Free Resolve still uses EDL import from the review page.
+
+## What this fork will not do
+
+Per-viewer forensic watermarking (NexGuard-class, invisible, unique per
+recipient) is not implemented. The CSS overlay plus optional proxy burn-in
+are leak deterrents, not forensic marks.

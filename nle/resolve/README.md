@@ -13,3 +13,6 @@ Studio install (macOS example):
 
 The plugin writes timeline markers with `customData` JSON `{"ofId":"<commentId>"}`
 so a second sync is idempotent.
+
+After the first successful sync, **delete a review marker and Sync again** to
+resolve that comment on the web. The plugin will not put that marker back.
