@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { VideoSource } from '@/lib/video-providers';
+import { isReviewFile, REVIEW_FILE_ACCEPT } from '@/lib/client/project-video-upload';
 
 interface VersionActionsDialogProps {
   open: boolean;
@@ -149,21 +150,23 @@ export const VersionActionsDialog = memo(function VersionActionsDialog({
                         <p className="mb-1 text-sm text-muted-foreground">
                           <span className="font-semibold">Click to upload</span> or drag and drop
                         </p>
-                        <p className="text-xs text-muted-foreground">MP4, WebM, or OGG</p>
+                        <p className="text-xs text-muted-foreground">
+                          Video, stills, PDF, or audio
+                        </p>
                       </>
                     )}
                   </div>
                   <input
                     id="versionFile"
                     type="file"
-                    accept="video/*"
+                    accept={REVIEW_FILE_ACCEPT}
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
-                      if (file && file.type.startsWith('video/')) {
+                      if (file && isReviewFile(file)) {
                         onNewVersionFileChange(file);
                       } else {
-                        toast.error('Please select a valid video file');
+                        toast.error('Please select a video, still, PDF, or audio file');
                       }
                     }}
                     disabled={isCreatingVersion}

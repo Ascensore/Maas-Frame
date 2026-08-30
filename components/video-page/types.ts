@@ -151,6 +151,8 @@ export interface VideoData {
     visibility?: string;
   };
   versions: (Version & { comments: Comment[] })[];
+  kind?: 'VIDEO' | 'IMAGE' | 'PDF' | 'AUDIO';
+  metadata?: Record<string, string>;
   isAuthenticated: boolean;
   currentUserId: string | null;
   currentUserName: string | null;
@@ -162,6 +164,7 @@ export interface VideoData {
   canShareVideo?: boolean;
   canUploadAssets?: boolean;
   canDownloadAssets?: boolean;
+  reviewWatermark?: string | null;
 }
 
 export interface BunnyQualityOption {

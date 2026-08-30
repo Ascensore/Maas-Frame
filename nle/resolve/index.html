@@ -12,7 +12,7 @@
     </style>
   </head>
   <body>
-    <p>Studio only. Free Resolve: import the EDL from the review page.</p>
+    <p>Studio only. Free Resolve: import the EDL from the review page. Delete a review marker and Sync to resolve that comment on the web.</p>
     <label>App URL</label>
     <input id="baseUrl" value="http://localhost:3000" />
     <label>API token</label>
@@ -25,12 +25,26 @@
       const { ipcRenderer } = require('electron');
       document.getElementById('sync').addEventListener('click', async () => {
         try {
-          const message = await ipcRenderer.invoke('sync', {
+          const versionId = document.getElementById('versionId').value.trim();
+          const storageKey = 'of-synced-markers:' + versionId;
+          const previousIds = (() => {
+            try {
+              const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
+              return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+            } catch {
+              return [];
+            }
+          })();
+          const result = await ipcRenderer.invoke('sync', {
             baseUrl: document.getElementById('baseUrl').value.trim(),
             token: document.getElementById('token').value.trim(),
-            versionId: document.getElementById('versionId').value.trim(),
+            versionId,
+            previousIds,
           });
-          document.getElementById('status').textContent = message;
+          if (result && Array.isArray(result.syncedIds)) {
+            localStorage.setItem(storageKey, JSON.stringify(result.syncedIds));
+          }
+          document.getElementById('status').textContent = result.message || result;
         } catch (error) {
           document.getElementById('status').textContent = error.message;
         }

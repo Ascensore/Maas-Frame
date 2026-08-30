@@ -4,13 +4,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  collectSyncedMarkerIds,
   commentSentinel,
+  commentsRemovedFromTimeline,
   fpsToRational,
   nearestResolveColor,
   parseSentinel,
+  parseSyncedMarkerIds,
   reconcile,
+  remainingCommentsAfterTimelineResolves,
   secondsToSmpte,
   sequenceOffsetSeconds,
+  syncedMarkerStorageKey,
 } from '../../../nle/core/src/index';
 
 const remote = [
@@ -117,6 +122,102 @@ describe('nearestResolveColor', () => {
   });
 });
 
+describe('commentsRemovedFromTimeline', () => {
+  const marker = {
+    id: 'm1',
+    commentId: 'c1',
+    startSeconds: 1.5,
+    durationSeconds: 0,
+    name: 'Fix this',
+    comments: commentSentinel('c1'),
+  };
+
+  it('does not resolve a comment that has never been synced', () => {
+    expect(commentsRemovedFromTimeline(remote, [], [])).toEqual([]);
+  });
+
+  it('resolves a previously synced comment whose marker was deleted', () => {
+    expect(commentsRemovedFromTimeline(remote, [], ['c1'])).toEqual(['c1']);
+  });
+
+  it('leaves a comment alone when its marker is still on the timeline', () => {
+    expect(commentsRemovedFromTimeline(remote, [marker], ['c1'])).toEqual([]);
+  });
+
+  it('leaves a comment alone when the marker is identified only by sentinel', () => {
+    expect(
+      commentsRemovedFromTimeline(
+        remote,
+        [{ ...marker, commentId: null, comments: commentSentinel('c1') }],
+        ['c1']
+      )
+    ).toEqual([]);
+  });
+
+  it('does not resolve a comment that the web app already resolved', () => {
+    expect(commentsRemovedFromTimeline([{ ...remote[0], isResolved: true }], [], ['c1'])).toEqual(
+      []
+    );
+  });
+
+  it('does not resolve a reply when a marker disappears', () => {
+    expect(
+      commentsRemovedFromTimeline([{ ...remote[0], id: 'r1', parentId: 'c1' }], [], ['r1'])
+    ).toEqual([]);
+  });
+
+  it('only resolves ids that were stored from a previous sync', () => {
+    const c2 = { ...remote[0], id: 'c2', content: 'Never placed' };
+    expect(commentsRemovedFromTimeline([...remote, c2], [], ['c1'])).toEqual(['c1']);
+  });
+
+  it('does not put a resolved-from-timeline comment back, and still adds never-synced notes', () => {
+    const c2 = { ...remote[0], id: 'c2', content: 'Never placed' };
+    const comments = [...remote, c2];
+    const toResolve = commentsRemovedFromTimeline(comments, [], ['c1']);
+    const remaining = remainingCommentsAfterTimelineResolves(comments, toResolve);
+    expect(reconcile(remaining, []).add.map((row) => row.id)).toEqual(['c2']);
+  });
+});
+
+describe('collectSyncedMarkerIds', () => {
+  it('reads the sentinel when commentId is not set on the marker', () => {
+    expect(
+      collectSyncedMarkerIds([
+        {
+          id: 'm1',
+          commentId: null,
+          startSeconds: 1,
+          durationSeconds: 0,
+          name: 'note',
+          comments: commentSentinel('c1'),
+        },
+      ])
+    ).toEqual(['c1']);
+  });
+});
+
+describe('syncedMarkerStorageKey', () => {
+  it('scopes stored ids to the version', () => {
+    expect(syncedMarkerStorageKey('clabc123')).toBe('of-synced-markers:clabc123');
+  });
+});
+
+describe('parseSyncedMarkerIds', () => {
+  it('reads a JSON array of ids', () => {
+    expect(parseSyncedMarkerIds('["c1","c2"]')).toEqual(['c1', 'c2']);
+  });
+
+  it('returns an empty list for missing or malformed storage', () => {
+    expect(parseSyncedMarkerIds(null)).toEqual([]);
+    expect(parseSyncedMarkerIds('not json')).toEqual([]);
+    expect(parseSyncedMarkerIds('{"c1":true}')).toEqual([]);
+    expect(parseSyncedMarkerIds('[1, "c1"]')).toEqual(['c1']);
+    expect(parseSyncedMarkerIds('["c1",""]')).toEqual(['c1']);
+    expect(parseSyncedMarkerIds(undefined)).toEqual([]);
+  });
+});
+
 describe('sequenceOffsetSeconds', () => {
   it('turns a one-hour start into 3600 seconds at 24fps', () => {
     expect(sequenceOffsetSeconds('01:00:00:00', 24)).toBe(3600);
@@ -144,23 +245,57 @@ describe('nle-core.cjs UMD', () => {
   const corePath = join(here, '../../../nle/core/nle-core.cjs');
   const premierePath = join(here, '../../../nle/premiere/nle-core.cjs');
 
-  it('matches the TypeScript mapping for sentinel, reconcile, and offset', () => {
+  it('matches the TypeScript mapping for sentinels, two-way resolve, and offset', () => {
     const require = createRequire(import.meta.url);
     const umd = require(corePath) as {
       commentSentinel: (id: string) => string;
       parseSentinel: (text: string) => string | null;
       reconcile: typeof reconcile;
+      commentsRemovedFromTimeline: typeof commentsRemovedFromTimeline;
+      remainingCommentsAfterTimelineResolves: typeof remainingCommentsAfterTimelineResolves;
+      parseSyncedMarkerIds: typeof parseSyncedMarkerIds;
+      collectSyncedMarkerIds: typeof collectSyncedMarkerIds;
+      syncedMarkerStorageKey: typeof syncedMarkerStorageKey;
       fpsToRational: typeof fpsToRational;
       secondsToSmpte: typeof secondsToSmpte;
     };
     expect(umd.commentSentinel('abc123')).toBe(commentSentinel('abc123'));
     expect(umd.parseSentinel(`note\n${commentSentinel('abc123')}`)).toBe('abc123');
     expect(umd.reconcile(remote, [], 0)).toEqual(reconcile(remote, [], 0));
+    expect(umd.commentsRemovedFromTimeline(remote, [], [])).toEqual([]);
+    expect(umd.commentsRemovedFromTimeline(remote, [], ['c1'])).toEqual(['c1']);
+    expect(
+      umd.commentsRemovedFromTimeline([{ ...remote[0], id: 'r1', parentId: 'c1' }], [], ['r1'])
+    ).toEqual([]);
+    const c2 = { ...remote[0], id: 'c2', content: 'Never placed' };
+    expect(umd.commentsRemovedFromTimeline([...remote, c2], [], ['c1'])).toEqual(['c1']);
+    const remaining = umd.remainingCommentsAfterTimelineResolves([...remote, c2], ['c1']);
+    expect(umd.reconcile(remaining, [], 0).add.map((row) => row.id)).toEqual(['c2']);
+    expect(umd.parseSyncedMarkerIds('["c1"]')).toEqual(['c1']);
+    expect(umd.parseSyncedMarkerIds('not json')).toEqual([]);
+    expect(
+      umd.collectSyncedMarkerIds([
+        {
+          id: 'm1',
+          commentId: null,
+          startSeconds: 1,
+          durationSeconds: 0,
+          name: 'note',
+          comments: commentSentinel('c1'),
+        },
+      ])
+    ).toEqual(['c1']);
+    expect(umd.syncedMarkerStorageKey('clabc123')).toBe('of-synced-markers:clabc123');
     expect(umd.fpsToRational(29.97)).toEqual({ num: 30000, den: 1001 });
     expect(umd.secondsToSmpte(3600, 24, false)).toBe('01:00:00:00');
   });
 
   it('vendors the same file into the Premiere plugin folder', () => {
     expect(readFileSync(premierePath, 'utf8')).toBe(readFileSync(corePath, 'utf8'));
+  });
+
+  it('keeps the Resolve panel on the same localStorage key prefix', () => {
+    const html = readFileSync(join(here, '../../../nle/resolve/index.html'), 'utf8');
+    expect(html).toContain("'of-synced-markers:' + versionId");
   });
 });

@@ -55,6 +55,7 @@ model User {
   acquisition               UserAcquisition?
   analyticsEvents           AnalyticsEvent[]
   apiTokens                 ApiToken[]
+  c2cConnections            C2cConnection[]
 
   @@map("users")
 }
@@ -232,6 +233,10 @@ model Project {
 
   // Whether non-admin viewers may download project media
   allowDownloads Boolean @default(false)
+
+  // Visible per-viewer overlay on the review player. This is a leak
+  // deterrent, not a forensic encode-time watermark.
+  watermarkReviews Boolean @default(false)
   
   // Ownership
   ownerId     String
@@ -252,6 +257,7 @@ model Project {
   commentTags CommentTag[]
   invitations Invitation[]
   folders     Folder[]
+  c2cConnections C2cConnection[]
   
   @@index([ownerId])
   @@index([slug])
@@ -343,7 +349,13 @@ model Video {
   // Optional folder inside the project. Null is the project root.
   folderId    String?  @map("folder_id")
   folder      Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  
+
+  // What the review page plays: a moving image, a still, a deck, or a mix.
+  kind        ReviewKind @default(VIDEO)
+
+  // Freeform string fields (scene, take, camera, …). Validated in lib/video-metadata.ts.
+  metadata    Json       @default("{}")
+
   // Project relation
   projectId   String
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -372,6 +384,7 @@ model Folder {
   parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children  Folder[] @relation("FolderTree")
   videos    Video[]
+  c2cConnections C2cConnection[]
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -971,6 +984,35 @@ enum VideoProxyStatus {
   READY
   SKIPPED
   FAILED
+}
+
+enum ReviewKind {
+  VIDEO
+  IMAGE
+  PDF
+  AUDIO
+}
+
+// Project-scoped ingest credential for field uploaders and watch-folder
+// scripts. Not a vendor Camera-to-Cloud protocol (Atomos/RED/ARRI firmware).
+model C2cConnection {
+  id          String    @id @default(cuid())
+  name        String
+  projectId   String    @map("project_id")
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  folderId    String?   @map("folder_id")
+  folder      Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  createdById String    @map("created_by_id")
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique @map("token_hash")
+  tokenPrefix String    @map("token_prefix")
+  lastUsedAt  DateTime? @map("last_used_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([projectId])
+  @@index([createdById])
+  @@map("c2c_connections")
 }
 
 model ApiToken {

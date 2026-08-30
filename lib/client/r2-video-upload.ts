@@ -1,5 +1,6 @@
 import { captureVideoThumbnail } from '@/lib/client/video-thumbnail';
 import { apiRequestError } from '@/lib/client/api-error';
+import { reviewKindFromFileName } from '@/lib/review-kind';
 import {
   getMultipartProgressPercent,
   getPartByteRange,
@@ -314,9 +315,10 @@ export async function uploadVideoToR2(
     throw error;
   }
 
+  const kind = reviewKindFromFileName(file.name);
   const [duration, thumbnailBlob] = await Promise.all([
-    readVideoDuration(file),
-    captureVideoThumbnail(file),
+    kind === 'IMAGE' || kind === 'PDF' ? Promise.resolve(null) : readVideoDuration(file),
+    kind === 'VIDEO' ? captureVideoThumbnail(file) : Promise.resolve(null),
   ]);
 
   let thumbnailUrl: string | null = null;

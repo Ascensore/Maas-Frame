@@ -644,6 +644,7 @@ describe('PATCH /api/projects/[projectId]', () => {
     [{ description: 5 }, 'a non-string description'],
     [{ visibility: 'SEMI_PRIVATE' }, 'an unknown visibility'],
     [{ allowDownloads: 'yes' }, 'a non-boolean allowDownloads'],
+    [{ watermarkReviews: 'yes' }, 'a non-boolean watermarkReviews'],
   ])('rejects %j with 400 (%s)', async (body, label) => {
     const scenario = await seedProject();
     signedInAs(scenario.owner);
@@ -658,6 +659,8 @@ describe('PATCH /api/projects/[projectId]', () => {
     const stored = await db.project.findUniqueOrThrow({ where: { id: scenario.project.id } });
     expect(stored.name).toBe(scenario.project.name);
     expect(stored.visibility).toBe(scenario.project.visibility);
+    expect(stored.allowDownloads).toBe(scenario.project.allowDownloads);
+    expect(stored.watermarkReviews).toBe(scenario.project.watermarkReviews);
   });
 
   it('ignores an ownerId and a workspaceId in the body', async () => {

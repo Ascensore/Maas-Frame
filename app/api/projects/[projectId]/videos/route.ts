@@ -11,6 +11,7 @@ import { UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 import { eventKey, recordEvent } from '@/lib/analytics/record';
 import { enqueueJobsForNewVersion } from '@/lib/media-jobs';
+import { reviewKindFromUploadPath } from '@/lib/review-kind';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -230,6 +231,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           : ''
         : normalizedVideoId;
 
+    const kind = reviewKindFromUploadPath(videoUrl, normalizedProviderId);
+    const r2ThumbnailFallback =
+      finalizedR2Session?.thumbnailProxyUrl ?? '/placeholder-video-thumbnail.png';
+    const versionThumbnailUrl =
+      kind === 'IMAGE'
+        ? videoUrl
+        : normalizedProviderId === 'r2'
+          ? r2ThumbnailFallback
+          : thumbnailUrl || null;
+
     // Get the next position
     const lastVideo = await db.video.findFirst({
       where: { projectId },
@@ -286,6 +297,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           position: nextPosition,
           projectId,
           folderId: resolvedFolderId,
+          kind,
           versions: {
             create: {
               versionNumber: 1,
@@ -293,13 +305,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
               videoId: persistedVideoId,
               originalUrl: videoUrl,
               title: title.trim(),
-              thumbnailUrl:
-                normalizedProviderId === 'r2'
-                  ? (finalizedR2Session?.thumbnailProxyUrl ?? '/placeholder-video-thumbnail.png')
-                  : thumbnailUrl || null,
+              thumbnailUrl: versionThumbnailUrl,
               duration: duration || null,
               sizeBytes: versionSizeBytes,
               isActive: true,
+              proxyStatus: kind === 'IMAGE' || kind === 'PDF' ? 'SKIPPED' : undefined,
             },
           },
         },
@@ -333,6 +343,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       await enqueueJobsForNewVersion({
         versionId: firstVersion.id,
         providerId: firstVersion.providerId,
+        kind,
       }).catch((err) => logError('Failed to enqueue media jobs:', err));
     }
 

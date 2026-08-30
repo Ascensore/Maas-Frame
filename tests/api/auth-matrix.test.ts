@@ -52,6 +52,9 @@ import * as approvalDecisionRoute from '@/app/api/approvals/[requestId]/decision
 import * as billingCheckoutRoute from '@/app/api/billing/checkout/route';
 import * as billingPortalRoute from '@/app/api/billing/portal/route';
 import * as billingRoute from '@/app/api/billing/route';
+import * as c2cR2CompleteRoute from '@/app/api/c2c/r2-complete/route';
+import * as c2cR2InitRoute from '@/app/api/c2c/r2-init/route';
+import * as c2cVideosRoute from '@/app/api/c2c/videos/route';
 import * as commentRoute from '@/app/api/comments/[commentId]/route';
 import * as feedbackRoute from '@/app/api/feedback/route';
 import * as feedbackUploadRoute from '@/app/api/feedback/upload/route';
@@ -65,6 +68,8 @@ import * as projectInvitationRoute from '@/app/api/projects/[projectId]/members/
 import * as projectMemberRoute from '@/app/api/projects/[projectId]/members/[memberId]/route';
 import * as projectMembersRoute from '@/app/api/projects/[projectId]/members/route';
 import * as projectRoute from '@/app/api/projects/[projectId]/route';
+import * as projectC2cConnectionsRoute from '@/app/api/projects/[projectId]/c2c-connections/route';
+import * as projectC2cConnectionRoute from '@/app/api/projects/[projectId]/c2c-connections/[connectionId]/route';
 import * as projectTagsRoute from '@/app/api/projects/[projectId]/tags/route';
 import * as projectTagRoute from '@/app/api/projects/[projectId]/tags/[tagId]/route';
 import * as videosBulkDeleteRoute from '@/app/api/projects/[projectId]/videos/bulk-delete/route';
@@ -91,6 +96,7 @@ import * as uploadSubtitleFileRoute from '@/app/api/upload/subtitle/[filename]/r
 import * as uploadVideoFileRoute from '@/app/api/upload/video/[filename]/route';
 import * as versionApprovalsRoute from '@/app/api/versions/[versionId]/approvals/route';
 import * as commentsExportRoute from '@/app/api/versions/[versionId]/comments/export/route';
+import * as commentsLiveRoute from '@/app/api/versions/[versionId]/comments/live/route';
 import * as versionCommentsRoute from '@/app/api/versions/[versionId]/comments/route';
 import * as versionDownloadRoute from '@/app/api/versions/[versionId]/download/route';
 import * as versionTranscriptRoute from '@/app/api/versions/[versionId]/transcript/route';
@@ -161,7 +167,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 78;
+const EXPECTED_ROUTE_MODULE_COUNT = 84;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -421,6 +427,29 @@ const ROUTE_CASES: readonly RouteCase[] = [
     body: { decision: 'APPROVED' },
   },
   {
+    file: 'c2c/r2-complete/route.ts',
+    module: c2cR2CompleteRoute,
+    url: () => '/api/c2c/r2-complete',
+    body: { objectKey: 'x', uploadToken: 'y', parts: [{ partNumber: 1, etag: 'etag' }] },
+  },
+  {
+    file: 'c2c/r2-init/route.ts',
+    module: c2cR2InitRoute,
+    url: () => '/api/c2c/r2-init',
+    body: { fileName: 'a.mp4', sizeBytes: '1024', contentType: 'video/mp4' },
+  },
+  {
+    file: 'c2c/videos/route.ts',
+    module: c2cVideosRoute,
+    url: () => '/api/c2c/videos',
+    body: {
+      title: 'anon',
+      videoUrl: '/api/upload/video/clip.mp4',
+      objectKey: 'videos/clip.mp4',
+      uploadToken: 'y',
+    },
+  },
+  {
     file: 'billing/checkout/route.ts',
     module: billingCheckoutRoute,
     url: () => '/api/billing/checkout',
@@ -515,6 +544,19 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/projects/${f.projectId}`,
     params: (f) => ({ projectId: f.projectId }),
     body: { name: 'renamed by an anonymous caller' },
+  },
+  {
+    file: 'projects/[projectId]/c2c-connections/route.ts',
+    module: projectC2cConnectionsRoute,
+    url: (f) => `/api/projects/${f.projectId}/c2c-connections`,
+    params: (f) => ({ projectId: f.projectId }),
+    body: { name: 'Unit 1' },
+  },
+  {
+    file: 'projects/[projectId]/c2c-connections/[connectionId]/route.ts',
+    module: projectC2cConnectionRoute,
+    url: (f) => `/api/projects/${f.projectId}/c2c-connections/${f.projectId}`,
+    params: (f) => ({ projectId: f.projectId, connectionId: f.projectId }),
   },
   {
     file: 'projects/[projectId]/tags/route.ts',
@@ -739,6 +781,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     file: 'versions/[versionId]/comments/export/route.ts',
     module: commentsExportRoute,
     url: (f) => `/api/versions/${f.versionId}/comments/export`,
+    params: (f) => ({ versionId: f.versionId }),
+  },
+  {
+    file: 'versions/[versionId]/comments/live/route.ts',
+    module: commentsLiveRoute,
+    url: (f) => `/api/versions/${f.versionId}/comments/live`,
     params: (f) => ({ versionId: f.versionId }),
   },
   {

@@ -81,6 +81,9 @@ async function seedUpload(
   const userId = overrides.userId ?? scenario.owner.id;
   const projectId = overrides.projectId ?? scenario.project.id;
   const billedUserId = overrides.billedUserId ?? scenario.owner.id;
+  const fileName = objectKey.startsWith('videos/')
+    ? objectKey.slice('videos/'.length)
+    : `${fileId}.mp4`;
 
   const session = await createR2UploadSession({
     userId,
@@ -110,7 +113,7 @@ async function seedUpload(
     sessionId: session.id,
     objectKey,
     thumbnailObjectKey,
-    proxyUrl: `/api/upload/video/${fileId}.mp4`,
+    proxyUrl: `/api/upload/video/${fileName}`,
     uploadToken,
     reservationId: session.reservationId,
     billedUserId,
@@ -467,6 +470,46 @@ describe('finalizeR2VideoUpload storage checks', () => {
     storageHolds(1024, bytesOf(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45));
 
     expect((await finalize(upload)).ok).toBe(false);
+  });
+
+  it('accepts a jpeg still when the object key is a jpg', async () => {
+    const fileId = randomUUID();
+    const upload = await seedUpload({ objectKey: `videos/${fileId}.jpg` });
+    storageHolds(1024, bytesOf(0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0));
+
+    const result = await finalize(upload);
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.proxyUrl).toBe(`/api/upload/video/${fileId}.jpg`);
+  });
+
+  it('cancels a jpeg header stored under an mp4 name', async () => {
+    const upload = await seedUpload();
+    storageHolds(1024, bytesOf(0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0));
+
+    const result = await finalize(upload);
+    expect(result.ok === false && result.error).toBe('Uploaded file is not a valid video');
+    expect((await sessionOf(upload.sessionId)).status).toBe('CANCELLED');
+    expect(vi.mocked(deleteVideoObject)).toHaveBeenCalledWith(upload.objectKey);
+  });
+
+  it('accepts a pdf deck', async () => {
+    const fileId = randomUUID();
+    const upload = await seedUpload({ objectKey: `videos/${fileId}.pdf` });
+    storageHolds(1024, bytesOf(0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34));
+
+    const result = await finalize(upload);
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.proxyUrl).toBe(`/api/upload/video/${fileId}.pdf`);
+  });
+
+  it('accepts a wav mix', async () => {
+    const fileId = randomUUID();
+    const upload = await seedUpload({ objectKey: `videos/${fileId}.wav` });
+    storageHolds(1024, bytesOf(0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45));
+
+    const result = await finalize(upload);
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.proxyUrl).toBe(`/api/upload/video/${fileId}.wav`);
   });
 });
 

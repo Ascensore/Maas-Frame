@@ -40,7 +40,7 @@ async function createWindow() {
   });
   await win.loadFile(path.join(__dirname, 'index.html'));
 
-  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId }) => {
+  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds }) => {
     const resolve = app.resolve;
     if (!resolve) throw new Error('Resolve scripting API is unavailable. Studio is required.');
     const projectManager = resolve.GetProjectManager();
@@ -89,7 +89,26 @@ async function createWindow() {
       });
     }
 
-    const plan = nleCore.reconcile(comments, local, offsetSeconds);
+    const toResolve = nleCore.commentsRemovedFromTimeline(comments, local, previousIds || []);
+    const resolvedIds = [];
+    for (const commentId of toResolve) {
+      const patch = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/comments/${commentId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isResolved: true }),
+      });
+      if (!patch.ok) {
+        const payload = await patch.json().catch(() => null);
+        throw new Error((payload && payload.error) || `HTTP ${patch.status}`);
+      }
+      resolvedIds.push(commentId);
+    }
+    const remaining = nleCore.remainingCommentsAfterTimelineResolves(comments, resolvedIds);
+
+    const plan = nleCore.reconcile(remaining, local, offsetSeconds);
     let added = 0;
     let moved = 0;
     let removed = 0;
@@ -134,8 +153,25 @@ async function createWindow() {
       if (addMarker(comment)) added += 1;
     }
 
-    const summary = `Synced. Added ${added}, moved ${moved}, removed ${removed}. Offset ${offsetSeconds.toFixed(2)}s.`;
-    return persistError ? `${summary} Sequence link was not saved: ${persistError}` : summary;
+    const after = timeline.GetMarkers() || {};
+    const afterLocal = [];
+    for (const [frame, info] of Object.entries(after)) {
+      const parsed = parseCustomData(info.customData);
+      afterLocal.push({
+        id: String(frame),
+        commentId: parsed?.ofId || nleCore.parseSentinel(info.note || ''),
+        startSeconds: 0,
+        durationSeconds: 0,
+        name: info.name || '',
+        comments: info.note || '',
+      });
+    }
+
+    const summary = `Synced. Added ${added}, moved ${moved}, removed ${removed}, resolved ${resolvedIds.length}. Offset ${offsetSeconds.toFixed(2)}s.`;
+    return {
+      message: persistError ? `${summary} Sequence link was not saved: ${persistError}` : summary,
+      syncedIds: nleCore.collectSyncedMarkerIds(afterLocal),
+    };
   });
 }
 

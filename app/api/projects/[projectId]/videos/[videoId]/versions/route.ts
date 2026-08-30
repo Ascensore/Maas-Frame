@@ -263,12 +263,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
             originalUrl: videoUrl,
             title: versionLabel?.trim() || `Version ${nextVersionNumber}`,
             thumbnailUrl:
-              normalizedProviderId === 'r2'
-                ? (finalizedR2Session?.thumbnailProxyUrl ?? '/placeholder-video-thumbnail.png')
-                : thumbnailUrl || null,
+              video.kind === 'IMAGE'
+                ? videoUrl
+                : normalizedProviderId === 'r2'
+                  ? (finalizedR2Session?.thumbnailProxyUrl ?? '/placeholder-video-thumbnail.png')
+                  : thumbnailUrl || null,
             duration: duration || null,
             sizeBytes: versionSizeBytes,
             isActive: setActive ?? false,
+            proxyStatus: video.kind === 'IMAGE' || video.kind === 'PDF' ? 'SKIPPED' : undefined,
             videoParentId: videoId,
           },
           include: {
@@ -295,6 +298,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     await enqueueJobsForNewVersion({
       versionId: version.id,
       providerId: version.providerId,
+      kind: video.kind,
     }).catch((err) => logError('Failed to enqueue media jobs:', err));
     return withCacheControl(response, 'private, no-store');
   } catch (error) {

@@ -56,6 +56,65 @@ export function markerCommentBody(comment: RemoteComment): string {
   return lines.filter(Boolean).join('\n');
 }
 
+export function markerCommentId(marker: LocalMarker): string | null {
+  return marker.commentId ?? parseSentinel(marker.comments);
+}
+
+export function collectSyncedMarkerIds(local: LocalMarker[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const marker of local) {
+    const id = markerCommentId(marker);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+export function commentsRemovedFromTimeline(
+  remote: RemoteComment[],
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[]
+): string[] {
+  const openIds = new Set(
+    remote
+      .filter((comment) => comment.parentId === null && !comment.isResolved)
+      .map((comment) => comment.id)
+  );
+  const present = new Set(collectSyncedMarkerIds(local));
+  const removed: string[] = [];
+  for (const id of previouslySyncedIds) {
+    if (openIds.has(id) && !present.has(id)) removed.push(id);
+  }
+  return removed;
+}
+
+export function parseSyncedMarkerIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function syncedMarkerStorageKey(versionId: string): string {
+  return `of-synced-markers:${versionId}`;
+}
+
+export function remainingCommentsAfterTimelineResolves(
+  remote: RemoteComment[],
+  toResolve: readonly string[]
+): RemoteComment[] {
+  const resolved = new Set(toResolve);
+  return remote.map((comment) =>
+    resolved.has(comment.id) ? { ...comment, isResolved: true } : comment
+  );
+}
+
 export function reconcile(
   remote: RemoteComment[],
   local: LocalMarker[],
@@ -67,7 +126,7 @@ export function reconcile(
   const orphans: LocalMarker[] = [];
 
   for (const marker of local) {
-    const commentId = marker.commentId ?? parseSentinel(marker.comments);
+    const commentId = markerCommentId(marker);
     if (!commentId) continue;
     if (!byId.has(commentId)) {
       orphans.push(marker);

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import PgBoss from 'pg-boss';
 import pg from 'pg';
-import { needsReviewProxy, reviewProxyFfmpegArgs } from './review-proxy';
+import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 
 const { Pool } = pg;
 
@@ -168,7 +168,26 @@ async function maybeEnqueueReviewProxy(
   probe: { videoCodec: string | null; audioCodec: string | null; formatName: string | null }
 ): Promise<void> {
   if (!isProxyTranscodeEnabled()) return;
-  if (!needsReviewProxy(probe)) {
+
+  const kindRes = await pool.query(
+    `SELECT v.kind, p."watermarkReviews" AS watermark_reviews, p.name AS project_name
+     FROM video_versions vv
+     JOIN videos v ON v.id = vv."videoParentId"
+     JOIN projects p ON p.id = v."projectId"
+     WHERE vv.id = $1`,
+    [versionId]
+  );
+  const kind = kindRes.rows[0]?.kind as string | undefined;
+  const watermarkReviews = Boolean(kindRes.rows[0]?.watermark_reviews);
+  if (kind && kind !== 'VIDEO') {
+    await pool.query(
+      `UPDATE video_versions SET proxy_status = 'SKIPPED' WHERE id = $1 AND proxy_status IN ('NONE', 'PENDING')`,
+      [versionId]
+    );
+    return;
+  }
+
+  if (!shouldTranscodeReviewProxy(probe, { kind, watermarkReviews })) {
     await pool.query(
       `UPDATE video_versions SET proxy_status = 'SKIPPED' WHERE id = $1 AND proxy_status = 'NONE'`,
       [versionId]
@@ -197,7 +216,12 @@ async function maybeEnqueueReviewProxy(
 
 async function transcodeProxy(versionId: string): Promise<void> {
   const versionRes = await pool.query(
-    `SELECT id, "providerId", "videoId", "originalUrl" FROM video_versions WHERE id = $1`,
+    `SELECT vv.id, vv."providerId", vv."videoId", vv."originalUrl",
+            p."watermarkReviews" AS watermark_reviews, p.name AS project_name
+     FROM video_versions vv
+     JOIN videos v ON v.id = vv."videoParentId"
+     JOIN projects p ON p.id = v."projectId"
+     WHERE vv.id = $1`,
     [versionId]
   );
   const version = versionRes.rows[0];
@@ -211,7 +235,10 @@ async function transcodeProxy(versionId: string): Promise<void> {
   try {
     await pool.query(`UPDATE video_versions SET proxy_status = 'RUNNING' WHERE id = $1`, [versionId]);
     await downloadObject(key, source);
-    const encoded = await run('ffmpeg', reviewProxyFfmpegArgs(source, output));
+    const burnIn = version.watermark_reviews
+      ? reviewProxyBurnInLabel(version.project_name ?? '')
+      : null;
+    const encoded = await run('ffmpeg', reviewProxyFfmpegArgs(source, output, burnIn));
     if (encoded.code !== 0) throw new Error(encoded.stderr || 'ffmpeg proxy encode failed');
     const body = await readFile(output);
     const filename = `${randomUUID()}.mp4`;

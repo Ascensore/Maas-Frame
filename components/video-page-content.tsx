@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { type AnnotationStroke, type AnnotationCanvasHandle } from '@/components/annotation-canvas';
 import { PlayerCore } from '@/components/video-page/player-core';
 import { VideoPageHeader } from '@/components/video-page/video-page-header';
+import { VideoMetadataFields } from '@/components/video-page/video-metadata-fields';
 import { ImagePreviewDialog } from '@/components/video-page/image-preview-dialog';
 import { CompareVersionsDialog } from '@/components/video-page/compare-versions-dialog';
 import { VideoPageLoading } from '@/components/video-page/video-page-loading';
@@ -15,6 +16,7 @@ import { GuestNameGate } from '@/components/video-page/guest-name-gate';
 import { useCommentMedia } from '@/components/video-page/hooks/use-comment-media';
 import { validateAnnotationStrokes } from '@/lib/validation';
 import { resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
+import { reviewWatermarkLabel } from '@/lib/review-watermark';
 import { useVersionActions } from '@/components/video-page/hooks/use-version-actions';
 import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progress';
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
@@ -160,6 +162,11 @@ export function VideoPageContent({
   const isGuest = video ? !video.isAuthenticated : false;
   const canInitializePlayer = mode !== 'watch' || !isGuest || guestNameConfirmed;
   const normalizedGuestName = guestName.trim();
+  const reviewWatermark = !video?.reviewWatermark
+    ? null
+    : isGuest && normalizedGuestName
+      ? reviewWatermarkLabel({ guestName: normalizedGuestName })
+      : video.reviewWatermark;
   const canUploadAssets = !!video?.canUploadAssets;
   const canDownloadAssets = !!video?.canDownloadAssets;
 
@@ -834,15 +841,30 @@ export function VideoPageContent({
             onOpenApprovalsPanel={handleOpenApprovalsPanel}
           />
 
-          {(activeVersion.proxyStatus === 'PENDING' || activeVersion.proxyStatus === 'RUNNING') && (
-            <p className="text-sm text-muted-foreground px-4 pt-2">
-              Preparing a review proxy so this file can play in the browser…
-            </p>
+          {!isFullscreenMode && (
+            <VideoMetadataFields
+              projectId={video.projectId}
+              videoId={video.id}
+              metadata={video.metadata ?? {}}
+              canEdit={!!video.canShareVideo}
+              onSaved={(next) => {
+                setVideo((prev) => (prev ? { ...prev, metadata: next } : prev));
+              }}
+            />
           )}
+
+          {(video.kind ?? 'VIDEO') === 'VIDEO' &&
+            (activeVersion.proxyStatus === 'PENDING' ||
+              activeVersion.proxyStatus === 'RUNNING') && (
+              <p className="text-sm text-muted-foreground px-4 pt-2">
+                Preparing a review proxy so this file can play in the browser…
+              </p>
+            )}
 
           <PlayerCore
             activeVersionId={activeVersionId}
             activeProviderId={activeVersion?.providerId}
+            reviewKind={video.kind ?? 'VIDEO'}
             embedUrl={embedUrl}
             videoRef={videoRef}
             iframeRef={iframeRef}
@@ -911,6 +933,7 @@ export function VideoPageContent({
             handleTimelineMouseMove={handleTimelineMouseMove}
             handleSeekToTimestamp={handleSeekToTimestamp}
             commentMarkers={commentMarkers}
+            reviewWatermark={reviewWatermark}
           />
         </div>
 

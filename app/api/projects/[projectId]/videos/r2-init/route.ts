@@ -1,49 +1,16 @@
 import { NextRequest } from 'next/server';
-import { randomUUID } from 'crypto';
 import { db } from '@/lib/db';
 import { auth, checkProjectAccess } from '@/lib/auth';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { rateLimit } from '@/lib/rate-limit';
-import {
-  createR2UploadToken,
-  parseR2UploadToken,
-  verifyR2UploadToken,
-} from '@/lib/r2-upload-token';
-import {
-  abortMultipartVideoUpload,
-  createMultipartVideoUpload,
-  createPresignedImagePutUrl,
-  createPresignedUploadPartUrl,
-  createPresignedVideoPutUrl,
-  deleteR2Object,
-  deleteVideoObject,
-} from '@/lib/r2';
-import {
-  getR2MultipartPartSizeBytes,
-  getR2MultipartThresholdBytes,
-  isS3VideoUploadsEnabled,
-} from '@/lib/feature-flags';
-import {
-  buildVideoObjectKey,
-  getVideoExtensionFromMime,
-  resolveVideoContentType,
-  videoProxyPathFromFilename,
-} from '@/lib/video-upload-validation';
+import { parseR2UploadToken, verifyR2UploadToken } from '@/lib/r2-upload-token';
+import { abortMultipartVideoUpload, deleteR2Object, deleteVideoObject } from '@/lib/r2';
+import { isS3VideoUploadsEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
-import {
-  enforceStorageQuota,
-  getMaxVideoUploadBytesForUser,
-  releaseStorageReservation,
-  reserveStorageQuota,
-  UPLOAD_RESERVATION_PURPOSES,
-} from '@/lib/storage-quota';
-import { uploadTooLargeMessage } from '@/lib/upload-size';
-import { createR2UploadSession } from '@/lib/r2-upload-session';
+import { releaseStorageReservation, UPLOAD_RESERVATION_PURPOSES } from '@/lib/storage-quota';
+import { startR2ReviewUpload } from '@/lib/r2-review-upload';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
-
-const VIDEO_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
-const THUMBNAIL_RESERVE_BYTES = BigInt(512 * 1024);
 
 async function getProjectWithEditAccess(projectId: string, userId: string) {
   const project = await db.project.findUnique({
@@ -107,138 +74,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('sizeBytes must be a positive integer');
     }
 
-    const maxBytes = await getMaxVideoUploadBytesForUser(project.workspace.ownerId);
-    if (sizeBytes > maxBytes) {
-      return apiErrors.badRequest(uploadTooLargeMessage(maxBytes));
-    }
-
-    const contentType = resolveVideoContentType(fileName, contentTypeInput);
-    if (!contentType) {
-      return apiErrors.badRequest('Unsupported video format');
-    }
-
-    const ext = getVideoExtensionFromMime(contentType);
-    if (!ext) {
-      return apiErrors.badRequest('Unsupported video format');
-    }
-
-    const quotaError = await enforceStorageQuota(
-      project.workspace.ownerId,
-      sizeBytes + THUMBNAIL_RESERVE_BYTES
-    );
-    if (quotaError) return quotaError;
-
-    const reserveResult = await reserveStorageQuota(
-      project.workspace.ownerId,
-      sizeBytes + THUMBNAIL_RESERVE_BYTES,
-      UPLOAD_RESERVATION_PURPOSES.R2_VIDEO,
-      VIDEO_RESERVATION_TTL_MS
-    );
-    if ('error' in reserveResult) return reserveResult.error;
-
-    const fileId = randomUUID();
-    const filename = `${fileId}.${ext}`;
-    const objectKey = buildVideoObjectKey(filename);
-    const proxyUrl = videoProxyPathFromFilename(filename);
-    const thumbnailFilename = `${fileId}.jpg`;
-    const thumbnailObjectKey = `images/${thumbnailFilename}`;
-    const thumbnailProxyUrl = `/api/upload/image/${thumbnailFilename}`;
-
-    const useMultipart = sizeBytes > getR2MultipartThresholdBytes();
-
-    let presignedPutUrl = '';
-    let thumbnailPresignedPutUrl: string;
-    let multipartUploadId: string | null = null;
-    let multipart: {
-      uploadId: string;
-      partSizeBytes: number;
-      parts: Array<{ partNumber: number; url: string }>;
-    } | null = null;
-
-    try {
-      if (useMultipart) {
-        const partSize = getR2MultipartPartSizeBytes();
-        const partCount = Number((sizeBytes + partSize - BigInt(1)) / partSize);
-
-        multipartUploadId = await createMultipartVideoUpload(objectKey, contentType);
-
-        try {
-          const [parts, thumbnailUrl] = await Promise.all([
-            Promise.all(
-              Array.from({ length: partCount }, async (_unused, index) => {
-                const partNumber = index + 1;
-                const url = await createPresignedUploadPartUrl(
-                  objectKey,
-                  multipartUploadId as string,
-                  partNumber
-                );
-                return { partNumber, url };
-              })
-            ),
-            createPresignedImagePutUrl(thumbnailObjectKey, 'image/jpeg'),
-          ]);
-
-          multipart = { uploadId: multipartUploadId, partSizeBytes: Number(partSize), parts };
-          thumbnailPresignedPutUrl = thumbnailUrl;
-        } catch (error) {
-          await abortMultipartVideoUpload(objectKey, multipartUploadId).catch(() => undefined);
-          throw error;
-        }
-      } else {
-        [presignedPutUrl, thumbnailPresignedPutUrl] = await Promise.all([
-          createPresignedVideoPutUrl(objectKey, contentType, sizeBytes),
-          createPresignedImagePutUrl(thumbnailObjectKey, 'image/jpeg'),
-        ]);
-      }
-    } catch (error) {
-      await releaseStorageReservation(
-        reserveResult.reservationId,
-        project.workspace.ownerId,
-        UPLOAD_RESERVATION_PURPOSES.R2_VIDEO
-      );
-      logError('Failed to create presigned video upload URL:', error);
-      return apiErrors.internalError('Failed to initialize video upload');
-    }
-
-    const uploadJti = randomUUID();
-    const expiresAt = new Date(Date.now() + VIDEO_RESERVATION_TTL_MS);
-    const uploadSession = await createR2UploadSession({
+    return startR2ReviewUpload({
       userId: session.user.id,
       projectId,
       billedUserId: project.workspace.ownerId,
-      objectKey,
-      thumbnailObjectKey,
-      declaredSizeBytes: sizeBytes,
-      contentType,
-      reservationId: reserveResult.reservationId,
-      uploadJti,
-      expiresAt,
-      multipartUploadId,
+      fileName,
+      contentTypeInput,
+      sizeBytes,
     });
-
-    const uploadToken = createR2UploadToken({
-      userId: session.user.id,
-      projectId,
-      objectKey,
-      sessionId: uploadSession.id,
-      tokenId: uploadJti,
-      thumbnailObjectKey,
-    });
-
-    const response = successResponse({
-      presignedPutUrl,
-      objectKey,
-      proxyUrl,
-      uploadToken,
-      reservationId: reserveResult.reservationId,
-      contentType,
-      thumbnailPresignedPutUrl,
-      thumbnailObjectKey,
-      thumbnailProxyUrl,
-      multipart,
-    });
-
-    return withCacheControl(response, 'private, no-store');
   } catch (error) {
     logError('Error initializing R2 video upload:', error);
     return apiErrors.internalError('Failed to initialize upload');

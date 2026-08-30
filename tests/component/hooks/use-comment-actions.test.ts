@@ -1131,6 +1131,96 @@ describe('useCommentActions background refresh', () => {
   });
 });
 
+describe('useCommentActions live comment stream', () => {
+  class FakeEventSource {
+    url: string;
+    closed = false;
+    private listeners = new Map<string, Set<(event: Event) => void>>();
+    static instances: FakeEventSource[] = [];
+
+    constructor(url: string) {
+      this.url = url;
+      FakeEventSource.instances.push(this);
+    }
+
+    addEventListener(type: string, listener: (event: Event) => void) {
+      const set = this.listeners.get(type) ?? new Set();
+      set.add(listener);
+      this.listeners.set(type, set);
+    }
+
+    removeEventListener(type: string, listener: (event: Event) => void) {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    close() {
+      this.closed = true;
+    }
+
+    emit(type: string) {
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener(new Event(type));
+      }
+    }
+  }
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('opens a live stream for the active version', () => {
+    renderActions();
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0]?.url).toBe(`/api/versions/${ACTIVE_VERSION}/comments/live`);
+  });
+
+  it('re-reads comments when the stream reports a change', async () => {
+    renderActions();
+    await act(async () => {
+      FakeEventSource.instances[0]?.emit('comments');
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledWith(ACTIVE_VERSION, true);
+  });
+
+  it('skips the live refresh while a write is still in flight', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Colour is off'));
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleAddComment();
+    });
+
+    await act(async () => {
+      FakeEventSource.instances[0]?.emit('comments');
+    });
+    expect(stableDeps.fetchVersionComments).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: serverComment }));
+      await submitted;
+    });
+
+    await act(async () => {
+      FakeEventSource.instances[0]?.emit('comments');
+    });
+    expect(stableDeps.fetchVersionComments).toHaveBeenCalledWith(ACTIVE_VERSION, true);
+  });
+
+  it('closes the stream on unmount', () => {
+    const harness = renderActions();
+    harness.unmount();
+    expect(FakeEventSource.instances[0]?.closed).toBe(true);
+  });
+});
+
 // Two bugs lived here. The recording clock counted setInterval ticks, which a
 // background tab throttles away, so a recording that kept going looked frozen
 // and was saved with the short length. And MediaRecorder writes WebM with no

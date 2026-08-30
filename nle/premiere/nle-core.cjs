@@ -33,6 +33,66 @@
     return lines.filter(Boolean).join('\n');
   }
 
+  function markerCommentId(marker) {
+    if (marker.commentId != null && marker.commentId !== '') return marker.commentId;
+    return parseSentinel(marker.comments);
+  }
+
+  function collectSyncedMarkerIds(local) {
+    var ids = [];
+    var seen = {};
+    (local || []).forEach(function (marker) {
+      var id = markerCommentId(marker);
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      ids.push(id);
+    });
+    return ids;
+  }
+
+  function commentsRemovedFromTimeline(remote, local, previouslySyncedIds) {
+    var openIds = {};
+    (remote || []).forEach(function (comment) {
+      if (comment.parentId === null && !comment.isResolved) openIds[comment.id] = true;
+    });
+    var present = {};
+    collectSyncedMarkerIds(local).forEach(function (id) {
+      present[id] = true;
+    });
+    var removed = [];
+    (previouslySyncedIds || []).forEach(function (id) {
+      if (openIds[id] && !present[id]) removed.push(id);
+    });
+    return removed;
+  }
+
+  function parseSyncedMarkerIds(raw) {
+    if (!raw) return [];
+    try {
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(function (id) {
+        return typeof id === 'string' && id.length > 0;
+      });
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function syncedMarkerStorageKey(versionId) {
+    return 'of-synced-markers:' + versionId;
+  }
+
+  function remainingCommentsAfterTimelineResolves(remote, toResolve) {
+    var resolved = {};
+    (toResolve || []).forEach(function (id) {
+      resolved[id] = true;
+    });
+    return (remote || []).map(function (comment) {
+      return resolved[comment.id] ? Object.assign({}, comment, { isResolved: true }) : comment;
+    });
+  }
+
   function reconcile(remote, local, offsetSeconds) {
     var offset = typeof offsetSeconds === 'number' ? offsetSeconds : 0;
     var tops = remote.filter(function (comment) {
@@ -46,7 +106,7 @@
     var orphans = [];
 
     local.forEach(function (marker) {
-      var commentId = marker.commentId != null ? marker.commentId : parseSentinel(marker.comments);
+      var commentId = markerCommentId(marker);
       if (!commentId) return;
       if (!byId.has(commentId)) {
         orphans.push(marker);
@@ -154,6 +214,12 @@
     parseSentinel: parseSentinel,
     commentLabel: commentLabel,
     markerCommentBody: markerCommentBody,
+    markerCommentId: markerCommentId,
+    collectSyncedMarkerIds: collectSyncedMarkerIds,
+    commentsRemovedFromTimeline: commentsRemovedFromTimeline,
+    parseSyncedMarkerIds: parseSyncedMarkerIds,
+    syncedMarkerStorageKey: syncedMarkerStorageKey,
+    remainingCommentsAfterTimelineResolves: remainingCommentsAfterTimelineResolves,
     reconcile: reconcile,
     nearestResolveColor: nearestResolveColor,
     sequenceOffsetSeconds: sequenceOffsetSeconds,
