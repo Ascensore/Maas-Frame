@@ -10,6 +10,8 @@ import {
   isBunnyUploadsFeatureEnabled,
   isDirectFileUploadEnabled,
   isInviteCodeRequired,
+  isSignupEmailAllowed,
+  getAllowedSignupEmails,
   isS3VideoUploadsEnabled,
   isS3VideoUploadsFeatureEnabled,
   isStripeBillingEnabled,
@@ -26,6 +28,7 @@ const MANAGED_ENV = [
   'OPENFRAME_ENABLE_S3_VIDEO_UPLOADS',
   'OPENFRAME_ENABLE_PROXY_TRANSCODE',
   'OPENFRAME_REQUIRE_INVITE_CODE',
+  'OPENFRAME_ALLOWED_SIGNUP_EMAILS',
   'OPENFRAME_MAX_VIDEO_UPLOAD_BYTES',
   'OPENFRAME_R2_MULTIPART_THRESHOLD_BYTES',
   'OPENFRAME_R2_MULTIPART_PART_SIZE_BYTES',
@@ -116,6 +119,35 @@ describe('boolean feature flags', () => {
   it('lets OPENFRAME_REQUIRE_INVITE_CODE=false open registration', () => {
     vi.stubEnv('OPENFRAME_REQUIRE_INVITE_CODE', 'false');
     expect(isInviteCodeRequired()).toBe(false);
+  });
+});
+
+describe('signup email allowlist', () => {
+  it('allows every address when the env is unset', () => {
+    expect(getAllowedSignupEmails()).toEqual([]);
+    expect(isSignupEmailAllowed('anyone@example.com')).toBe(true);
+  });
+
+  it('treats blank and whitespace as unset', () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', '   ');
+    expect(getAllowedSignupEmails()).toEqual([]);
+    expect(isSignupEmailAllowed('anyone@example.com')).toBe(true);
+  });
+
+  it('allows only the listed addresses, case-insensitively', () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', 'ciao@tdistefano.com');
+    expect(getAllowedSignupEmails()).toEqual(['ciao@tdistefano.com']);
+    expect(isSignupEmailAllowed('ciao@tdistefano.com')).toBe(true);
+    expect(isSignupEmailAllowed('  Ciao@Tdistefano.COM  ')).toBe(true);
+    expect(isSignupEmailAllowed('alex@flame-labs.com')).toBe(false);
+  });
+
+  it('splits a comma-separated list and drops empty entries', () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', 'a@x.com, , B@Y.com');
+    expect(getAllowedSignupEmails()).toEqual(['a@x.com', 'b@y.com']);
+    expect(isSignupEmailAllowed('a@x.com')).toBe(true);
+    expect(isSignupEmailAllowed('b@y.com')).toBe(true);
+    expect(isSignupEmailAllowed('c@z.com')).toBe(false);
   });
 });
 

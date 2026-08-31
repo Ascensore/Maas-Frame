@@ -109,6 +109,25 @@ export function isInviteCodeRequired() {
   return readBooleanEnv('OPENFRAME_REQUIRE_INVITE_CODE', true);
 }
 
+/**
+ * Addresses allowed to self-register with the invite code. Empty means no
+ * extra restriction. Invitation tokens still admit the invited address.
+ */
+export function getAllowedSignupEmails(): string[] {
+  const raw = process.env.OPENFRAME_ALLOWED_SIGNUP_EMAILS?.trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isSignupEmailAllowed(email: string): boolean {
+  const allowed = getAllowedSignupEmails();
+  if (allowed.length === 0) return true;
+  return allowed.includes(email.trim().toLowerCase());
+}
+
 // Acquisition attribution and funnel events. Defaults to OFF, unlike the other
 // product flags here, because the cost of the two mistakes is not symmetric: a
 // hosted instance that forgets to switch it on shows an empty growth page and is
