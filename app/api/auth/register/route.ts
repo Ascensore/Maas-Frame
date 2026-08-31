@@ -9,7 +9,7 @@ import {
   RATE_LIMIT_CONFIGS,
 } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
-import { isInviteCodeRequired } from '@/lib/feature-flags';
+import { isInviteCodeRequired, isSignupEmailAllowed } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
 import {
   createVerificationToken,
@@ -101,6 +101,10 @@ export async function POST(request: NextRequest) {
       return apiErrors.badRequest(
         'Please sign up with a permanent email address. Disposable mailboxes are not accepted.'
       );
+    }
+
+    if (!invitationIsValid && !isSignupEmailAllowed(normalizedEmail)) {
+      return apiErrors.forbidden('This email is not allowed to register');
     }
 
     if (!password || typeof password !== 'string' || password.length < 8 || password.length > 128) {

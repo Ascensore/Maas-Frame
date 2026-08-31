@@ -82,6 +82,36 @@ describe('POST /api/auth/register', () => {
     }
   );
 
+  it('returns 403 when the address is outside the signup allowlist', async () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', 'ciao@tdistefano.com');
+
+    const response = await post({
+      name: 'Valid Name',
+      email: 'alex@flame-labs.com',
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(403);
+    expect(await db.user.count()).toBe(0);
+  });
+
+  it('creates the account when the address is on the signup allowlist', async () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', 'ciao@tdistefano.com');
+
+    const response = await post({
+      name: 'Tommaso',
+      email: 'Ciao@Tdistefano.com',
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(201);
+    expect(await db.user.count()).toBe(1);
+    const stored = await db.user.findUniqueOrThrow({
+      where: { email: 'ciao@tdistefano.com' },
+    });
+    expect(stored.name).toBe('Tommaso');
+  });
+
   it('does not require an invite code when the flag is off', async () => {
     vi.stubEnv('OPENFRAME_REQUIRE_INVITE_CODE', 'false');
     signedOut();
@@ -198,6 +228,32 @@ describe('POST /api/auth/register', () => {
     expect((await db.invitation.findUniqueOrThrow({ where: { id: invitation.id } })).status).toBe(
       'ACCEPTED'
     );
+  });
+
+  it('still accepts an invited address that is not on the signup allowlist', async () => {
+    vi.stubEnv('OPENFRAME_ALLOWED_SIGNUP_EMAILS', 'ciao@tdistefano.com');
+    const scenario = await seedProject();
+    const invitation = await createInvitation({
+      invitedById: scenario.owner.id,
+      scope: 'PROJECT',
+      projectId: scenario.project.id,
+      email: 'invited@example.com',
+      role: 'COMMENTATOR',
+    });
+    signedOut();
+
+    const response = await callRoute(
+      register,
+      registerRequest({
+        name: 'Invited Person',
+        email: 'invited@example.com',
+        password: PASSWORD,
+        invitationToken: invitation.token,
+      })
+    );
+
+    expect(response.status).toBe(201);
+    expect(await db.user.findUnique({ where: { email: 'invited@example.com' } })).not.toBeNull();
   });
 
   it('applies a workspace invitation membership', async () => {
