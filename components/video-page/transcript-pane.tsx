@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import { Captions, Loader2, Search } from 'lucide-react';
+import { Captions, Loader2, Search, Upload } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { commentRangeFromHighlight, commentsForSegment } from '@/lib/transcript-comment';
+import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
 import { cn } from '@/lib/utils';
 
@@ -32,6 +34,16 @@ export type TranscriptPayload = {
   status: 'PENDING' | 'RUNNING' | 'READY' | 'FAILED';
   segments: TranscriptSegment[];
 } | null;
+
+export type TranscriptCommentMarker = {
+  id: string;
+  timestamp: number;
+  timestampEnd: number | null;
+  content: string | null;
+  authorName: string;
+  authorImage: string | null;
+  color: string | null;
+};
 
 function asWords(value: unknown): TranscriptWord[] {
   if (!Array.isArray(value)) return [];
@@ -61,47 +73,76 @@ function toVttTime(seconds: number): string {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
 }
 
+function rangeNodeFromDom(node: Node | null): { start: number; end: number } | null {
+  const element = node instanceof Element ? node : node?.parentElement;
+  const rangeEl = element?.closest('[data-transcript-range][data-start][data-end]');
+  if (!rangeEl) return null;
+  const start = Number(rangeEl.getAttribute('data-start'));
+  const end = Number(rangeEl.getAttribute('data-end'));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return { start, end };
+}
+
 interface TranscriptPaneProps {
   versionId: string | null;
   getCurrentTime: () => number;
   canManage: boolean;
+  comments: TranscriptCommentMarker[];
   onSeek: (
     seconds: number,
     options?: { pauseAfterSeek?: boolean; timestampEnd?: number | null }
   ) => void;
   onCommentRange: (start: number, end: number, quote: string) => void;
+  onOpenThread: (commentId: string) => void;
 }
 
 type TranscriptRowProps = {
   segments: TranscriptSegment[];
+  comments: TranscriptCommentMarker[];
+  openCommentId: string | null;
+  setOpenCommentId: (id: string | null) => void;
+  getCurrentTime: () => number;
   onSeek: TranscriptPaneProps['onSeek'];
   onCommentRange: TranscriptPaneProps['onCommentRange'];
+  onOpenThread: TranscriptPaneProps['onOpenThread'];
 };
 
 function TranscriptRow({
   index,
   style,
   segments,
+  comments,
+  openCommentId,
+  setOpenCommentId,
+  getCurrentTime,
   onSeek,
   onCommentRange,
+  onOpenThread,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
   const words = asWords(segment.words);
+  const timed = isTranscriptSegmentTimed(segment);
+  const markers = commentsForSegment(comments, segment);
 
   const handleMouseUp = () => {
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) return;
-    const quote = selection.toString().trim();
-    if (!quote) return;
-    const matched = words.filter((word) => quote.toLowerCase().includes(word.text.toLowerCase()));
-    const start = matched[0]?.start ?? segment.startSec;
-    const end = matched[matched.length - 1]?.end ?? segment.endSec;
-    onCommentRange(start, end, quote);
-    selection.removeAllRanges();
+    const highlight = commentRangeFromHighlight({
+      quote: selection?.toString() ?? '',
+      first: rangeNodeFromDom(selection?.anchorNode ?? null),
+      last: rangeNodeFromDom(selection?.focusNode ?? null),
+    });
+    if (!highlight) return;
+    if (highlight.end > highlight.start) {
+      onCommentRange(highlight.start, highlight.end, highlight.quote);
+    } else {
+      const now = getCurrentTime();
+      onCommentRange(now, now, highlight.quote);
+    }
+    selection?.removeAllRanges();
   };
 
   return (
-    <div style={style} className="px-1">
+    <div style={style} className="px-1 overflow-visible">
       <div
         data-transcript-range=""
         data-start={String(segment.startSec)}
@@ -110,16 +151,64 @@ function TranscriptRow({
         className="rounded-md px-2 py-1.5 text-sm h-full hover:bg-accent/50 data-[active=true]:bg-primary/10"
         onMouseUp={handleMouseUp}
       >
-        <button
-          type="button"
-          className="text-xs text-muted-foreground tabular-nums mb-0.5 hover:text-foreground"
-          onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
-        >
-          {formatClock(segment.startSec)}
-          {segment.speaker ? ` · ${segment.speaker}` : ''}
-        </button>
+        <div className="flex items-center justify-between gap-2 mb-0.5">
+          {timed ? (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground tabular-nums hover:text-foreground"
+              onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
+            >
+              {formatClock(segment.startSec)}
+              {segment.speaker ? ` · ${segment.speaker}` : ''}
+            </button>
+          ) : (
+            <span className="text-xs text-muted-foreground">Script</span>
+          )}
+          {markers.length > 0 && (
+            <div className="relative flex items-center gap-1">
+              {markers.map((marker) => (
+                <button
+                  key={marker.id}
+                  type="button"
+                  title={marker.authorName}
+                  className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-medium text-primary-foreground"
+                  style={{ backgroundColor: marker.color || 'var(--primary)' }}
+                  onClick={() => {
+                    onSeek(marker.timestamp, {
+                      pauseAfterSeek: true,
+                      timestampEnd: marker.timestampEnd,
+                    });
+                    setOpenCommentId(openCommentId === marker.id ? null : marker.id);
+                  }}
+                >
+                  {marker.authorName.charAt(0).toUpperCase() || '?'}
+                </button>
+              ))}
+              {markers
+                .filter((marker) => marker.id === openCommentId)
+                .map((marker) => (
+                  <div
+                    key={`${marker.id}-popover`}
+                    className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
+                  >
+                    <p className="text-xs font-medium">{marker.authorName}</p>
+                    <p className="mt-1 text-xs text-muted-foreground line-clamp-4">
+                      {marker.content || 'Voice or attachment comment'}
+                    </p>
+                    <button
+                      type="button"
+                      className="mt-2 text-xs text-primary hover:underline"
+                      onClick={() => onOpenThread(marker.id)}
+                    >
+                      Open thread
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
         <p className="leading-relaxed line-clamp-2">
-          {words.length > 0 ? (
+          {timed && words.length > 0 ? (
             words.map((word, wordIndex) => {
               return (
                 <button
@@ -139,7 +228,7 @@ function TranscriptRow({
                 </button>
               );
             })
-          ) : (
+          ) : timed ? (
             <button
               type="button"
               className="text-left"
@@ -147,6 +236,8 @@ function TranscriptRow({
             >
               {segment.text}
             </button>
+          ) : (
+            <span>{segment.text}</span>
           )}
         </p>
       </div>
@@ -158,15 +249,20 @@ export const TranscriptPane = memo(function TranscriptPane({
   versionId,
   getCurrentTime,
   canManage,
+  comments,
   onSeek,
   onCommentRange,
+  onOpenThread,
 }: TranscriptPaneProps) {
   const [transcript, setTranscript] = useState<TranscriptPayload>(null);
   const [loading, setLoading] = useState(false);
   const [enqueueing, setEnqueueing] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [openCommentId, setOpenCommentId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchTranscript = useCallback(async () => {
     if (!versionId) {
@@ -213,10 +309,15 @@ export const TranscriptPane = memo(function TranscriptPane({
   const rowProps = useMemo(
     () => ({
       segments: filtered,
+      comments,
+      openCommentId,
+      setOpenCommentId,
+      getCurrentTime,
       onSeek,
       onCommentRange,
+      onOpenThread,
     }),
-    [filtered, onSeek, onCommentRange]
+    [filtered, comments, openCommentId, getCurrentTime, onSeek, onCommentRange, onOpenThread]
   );
 
   useEffect(() => {
@@ -255,6 +356,12 @@ export const TranscriptPane = memo(function TranscriptPane({
 
   const handleEnqueue = async () => {
     if (!versionId) return;
+    if (
+      transcript?.status === 'READY' &&
+      !window.confirm('Replace the current transcript with a new transcription?')
+    ) {
+      return;
+    }
     setEnqueueing(true);
     setError(null);
     try {
@@ -277,6 +384,35 @@ export const TranscriptPane = memo(function TranscriptPane({
     }
   };
 
+  const handleUploadFile = async (file: File) => {
+    if (!versionId) return;
+    if (transcript?.status === 'READY' && !window.confirm('Replace the current transcript?')) {
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append('transcript', file);
+      form.append('language', 'en');
+      const response = await fetch(`/api/versions/${versionId}/transcript/upload`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          typeof body?.error === 'string' ? body.error : 'Failed to upload transcript'
+        );
+      }
+      await fetchTranscript();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload transcript');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   if (!versionId) {
     return <p className="text-sm text-muted-foreground">Select a version to see its transcript.</p>;
   }
@@ -294,19 +430,46 @@ export const TranscriptPane = memo(function TranscriptPane({
           />
         </div>
         {canManage && (
-          <Button
-            size="sm"
-            className="h-8"
-            onClick={() => void handleEnqueue()}
-            disabled={enqueueing}
-          >
-            {enqueueing ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Captions className="h-4 w-4" />
-            )}
-            <span className="ml-1">{transcript ? 'Re-run' : 'Transcribe'}</span>
-          </Button>
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".srt,.vtt,.txt,.docx"
+              className="sr-only"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void handleUploadFile(file);
+              }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Upload className="h-4 w-4" />
+              )}
+              <span className="ml-1">Upload</span>
+            </Button>
+            <Button
+              size="sm"
+              className="h-8"
+              onClick={() => void handleEnqueue()}
+              disabled={enqueueing}
+            >
+              {enqueueing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Captions className="h-4 w-4" />
+              )}
+              <span className="ml-1">{transcript ? 'Re-run' : 'Transcribe'}</span>
+            </Button>
+          </>
         )}
         {transcript?.status === 'READY' && transcript.segments.length > 0 && (
           <Button size="sm" variant="outline" className="h-8" onClick={handleDownloadVtt}>
@@ -327,7 +490,7 @@ export const TranscriptPane = memo(function TranscriptPane({
         <p className="text-sm text-muted-foreground">
           {query
             ? 'No matching lines.'
-            : 'No transcript yet. Generate one to click through the dialogue.'}
+            : 'No transcript yet. Listen to this version and transcribe it, or upload a .srt, .vtt, .txt, or .docx file.'}
         </p>
       ) : (
         <div ref={listRef} className="flex-1 min-h-0">
