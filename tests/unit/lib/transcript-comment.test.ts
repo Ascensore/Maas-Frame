@@ -38,14 +38,14 @@ describe('commentRangeFromHighlight', () => {
     ).toEqual({ start: 1, end: 2.5, quote: 'Hello world' });
   });
 
-  it('returns a zero-width range for an untimed line so the caller can use the playhead', () => {
+  it('keeps a single zero-width node instead of collapsing it to 0', () => {
     expect(
       commentRangeFromHighlight({
-        quote: 'INT. KITCHEN',
-        first: { start: 0, end: 0 },
-        last: { start: 0, end: 0 },
+        quote: 'Hello',
+        first: { start: 5, end: 5 },
+        last: null,
       })
-    ).toEqual({ start: 0, end: 0, quote: 'INT. KITCHEN' });
+    ).toEqual({ start: 5, end: 5, quote: 'Hello' });
   });
 
   it('drops a highlight that is only whitespace', () => {
@@ -64,8 +64,10 @@ describe('commentOverlapsSegment', () => {
 
   it('places a point comment inside the half-open segment', () => {
     expect(commentOverlapsSegment({ timestamp: 10 }, segment)).toBe(true);
+    expect(commentOverlapsSegment({ timestamp: 10, timestampEnd: 10 }, segment)).toBe(true);
     expect(commentOverlapsSegment({ timestamp: 19.9 }, segment)).toBe(true);
     expect(commentOverlapsSegment({ timestamp: 20 }, segment)).toBe(false);
+    expect(commentOverlapsSegment({ timestamp: 20, timestampEnd: 20 }, segment)).toBe(false);
     expect(commentOverlapsSegment({ timestamp: 9.9 }, segment)).toBe(false);
   });
 
@@ -73,6 +75,8 @@ describe('commentOverlapsSegment', () => {
     expect(commentOverlapsSegment({ timestamp: 8, timestampEnd: 11 }, segment)).toBe(true);
     expect(commentOverlapsSegment({ timestamp: 19, timestampEnd: 22 }, segment)).toBe(true);
     expect(commentOverlapsSegment({ timestamp: 4, timestampEnd: 9 }, segment)).toBe(false);
+    expect(commentOverlapsSegment({ timestamp: 20, timestampEnd: 25 }, segment)).toBe(false);
+    expect(commentOverlapsSegment({ timestamp: 5, timestampEnd: 10 }, segment)).toBe(false);
   });
 
   it('never marks an untimed line', () => {

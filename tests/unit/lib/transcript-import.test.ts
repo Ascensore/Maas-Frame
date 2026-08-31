@@ -5,7 +5,6 @@ import {
   getTranscriptUploadExtension,
   importTranscriptFile,
   isTranscriptSegmentTimed,
-  MAX_TRANSCRIPT_FILE_SIZE,
   paragraphsToUntimedSegments,
   sanitizeTranscriptText,
   splitUntimedParagraphs,
@@ -153,7 +152,7 @@ describe('isTranscriptSegmentTimed', () => {
 
 describe('stripCueMarkup', () => {
   it('drops WebVTT tags and decodes the entities the subtitle parser wrote', () => {
-    expect(stripCueMarkup('<b>Hello</b> &amp; <i>world</i>')).toBe('Hello & world');
+    expect(stripCueMarkup('<b>Hello</b> &lt;world&gt; &amp; more')).toBe('Hello <world> & more');
   });
 });
 
@@ -165,8 +164,9 @@ describe('spreadWordsAcrossRange', () => {
     ]);
   });
 
-  it('returns nothing for an empty or inverted range', () => {
+  it('returns nothing for an empty, inverted, or zero-width range', () => {
     expect(spreadWordsAcrossRange(['Hello'], 3, 1)).toEqual([]);
+    expect(spreadWordsAcrossRange(['Hello'], 2, 2)).toEqual([]);
     expect(spreadWordsAcrossRange([], 1, 3)).toEqual([]);
   });
 });
@@ -190,10 +190,10 @@ describe('cueToTimedSegment', () => {
 });
 
 describe('splitUntimedParagraphs', () => {
-  it('splits on blank lines when they exist', () => {
-    expect(splitUntimedParagraphs('First line\n\nSecond line')).toEqual([
-      'First line',
-      'Second line',
+  it('keeps newlines inside a paragraph and only splits on a blank line', () => {
+    expect(splitUntimedParagraphs('INT. KITCHEN\nNIGHT\n\nHello there.')).toEqual([
+      'INT. KITCHEN NIGHT',
+      'Hello there.',
     ]);
   });
 
@@ -221,6 +221,14 @@ describe('paragraphsToUntimedSegments', () => {
       { startSec: 0, endSec: 0, text: 'Hello', words: [] },
       { startSec: 0, endSec: 0, text: 'World', words: [] },
     ]);
+  });
+
+  it('caps a paragraph at 4000 characters and a script at 5000 segments', () => {
+    const long = 'a'.repeat(4001);
+    expect(paragraphsToUntimedSegments([long])[0]?.text).toHaveLength(4000);
+    const many = Array.from({ length: 5001 }, (_, index) => `Line ${index}`);
+    expect(paragraphsToUntimedSegments(many)).toHaveLength(5000);
+    expect(paragraphsToUntimedSegments(many)[4999]?.text).toBe('Line 4999');
   });
 });
 
@@ -337,14 +345,24 @@ describe('importTranscriptFile', () => {
     expect(result.error).toBe('Transcript must be a .srt, .vtt, .txt, or .docx file');
   });
 
-  it('rejects a file over the 2MB ceiling', async () => {
-    const result = await importTranscriptFile({
+  it('rejects a file over two megabytes and accepts one that fits', async () => {
+    const over = await importTranscriptFile({
       fileName: 'huge.txt',
-      buffer: new Uint8Array(MAX_TRANSCRIPT_FILE_SIZE + 1),
+      buffer: new Uint8Array(2 * 1024 * 1024 + 1),
     });
-    expect(result).toEqual({
+    expect(over).toEqual({
       ok: false,
       error: 'Transcript file is too large. Maximum size is 2MB.',
+    });
+
+    const fits = await importTranscriptFile({
+      fileName: 'ok.txt',
+      buffer: encode('Fits'),
+    });
+    expect(fits).toEqual({
+      ok: true,
+      timed: false,
+      segments: [{ startSec: 0, endSec: 0, text: 'Fits', words: [] }],
     });
   });
 

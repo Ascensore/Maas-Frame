@@ -9,7 +9,14 @@ import {
 import { POST as uploadTranscript } from '@/app/api/versions/[versionId]/transcript/upload/route';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
-import { addProjectMember, createShareLink, createUser, seedVersion } from '../factories';
+import {
+  addProjectMember,
+  createShareLink,
+  createUser,
+  createVersion,
+  createVideo,
+  seedVersion,
+} from '../factories';
 
 const r2 = vi.hoisted(() => ({
   bucket: 'openframe-transcript-test-bucket',
@@ -152,6 +159,72 @@ describe('GET /api/versions/[versionId]/transcript', () => {
     ]);
   });
 
+  it('returns null when the version has no transcript', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      getTranscript,
+      apiRequest(transcriptUrl(scenario.version.id)),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readData<{ transcript: null }>(response);
+    expect(body.transcript).toBeNull();
+  });
+
+  it('filters segments by q without changing the stored rows', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    await db.transcript.create({
+      data: {
+        versionId: scenario.version.id,
+        language: 'en',
+        provider: 'whisper-local',
+        status: TranscriptStatus.READY,
+        searchText: 'Hello goodbye',
+        segments: {
+          create: [
+            { startSec: 1, endSec: 2, text: 'Hello', words: [], position: 0 },
+            { startSec: 3, endSec: 4, text: 'Goodbye', words: [], position: 1 },
+          ],
+        },
+      },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      getTranscript,
+      apiRequest(transcriptUrl(scenario.version.id), { searchParams: { q: 'hello' } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readData<{ transcript: { segments: Array<{ text: string }> } }>(response);
+    expect(body.transcript.segments.map((segment) => segment.text)).toEqual(['Hello']);
+    expect(
+      await db.transcriptSegment.count({
+        where: { transcript: { versionId: scenario.version.id } },
+      })
+    ).toBe(2);
+  });
+
+  it('returns 403 to a signed-in stranger and leaves the row', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    await seedReadyTranscript(scenario.version.id);
+    const stranger = await createUser();
+    signedInAs(stranger);
+
+    const response = await callRoute(
+      getTranscript,
+      apiRequest(transcriptUrl(scenario.version.id)),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(403);
+    expect(await db.transcript.count({ where: { versionId: scenario.version.id } })).toBe(1);
+  });
+
   it('lets a guest with a VIEW share session read the transcript', async () => {
     const scenario = await seedVersion({ visibility: 'PRIVATE' });
     await seedReadyTranscript(scenario.version.id);
@@ -181,32 +254,50 @@ describe('GET /api/versions/[versionId]/transcript', () => {
     expect(body.transcript.segments[0]?.text).toBe('Hello');
   });
 
-  it('refuses a share session signed for a different video', async () => {
+  it('refuses a share session for a different video in the same project', async () => {
     const scenario = await seedVersion({ visibility: 'PRIVATE' });
     await seedReadyTranscript(scenario.version.id);
-    const other = await seedVersion({ visibility: 'PRIVATE' });
+    const otherVideo = await createVideo({
+      projectId: scenario.project.id,
+    });
+    const otherVersion = await createVersion({ videoParentId: otherVideo.id });
+    await seedReadyTranscript(otherVersion.id);
     const link = await createShareLink({
-      projectId: other.project.id,
-      videoId: other.video.id,
+      projectId: scenario.project.id,
+      videoId: otherVideo.id,
       permission: 'VIEW',
     });
     signedOut();
 
-    const response = await callRoute(
+    const refused = await callRoute(
       getTranscript,
       apiRequest(transcriptUrl(scenario.version.id), {
         cookies: {
           [getShareSessionCookieName(scenario.video.id)]: createShareSessionValue(
             link.token,
-            other.video.id,
+            otherVideo.id,
             false
           ),
         },
       }),
       { versionId: scenario.version.id }
     );
+    expect(refused.status).toBe(403);
 
-    expect(response.status).toBe(403);
+    const allowed = await callRoute(
+      getTranscript,
+      apiRequest(transcriptUrl(otherVersion.id), {
+        cookies: {
+          [getShareSessionCookieName(otherVideo.id)]: createShareSessionValue(
+            link.token,
+            otherVideo.id,
+            false
+          ),
+        },
+      }),
+      { versionId: otherVersion.id }
+    );
+    expect(allowed.status).toBe(200);
   });
 });
 
@@ -223,6 +314,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
 
     expect(response.status).toBe(401);
     expect(await db.transcript.count({ where: { versionId: scenario.version.id } })).toBe(0);
+    expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
   it('returns 403 to a signed-in commentator', async () => {
@@ -243,9 +335,10 @@ describe('POST /api/versions/[versionId]/transcript', () => {
 
     expect(response.status).toBe(403);
     expect(await db.transcript.count({ where: { versionId: scenario.version.id } })).toBe(0);
+    expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
-  it('enqueues a PENDING transcript for an editor', async () => {
+  it('enqueues a PENDING transcript for the project owner', async () => {
     const scenario = await seedVersion();
     signedInAs(scenario.owner);
 
@@ -263,9 +356,34 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     expect(row.provider).toBe('whisper-local');
     const jobs = await db.mediaJob.findMany({
       where: { versionId: scenario.version.id },
-      select: { kind: true },
+      select: { kind: true, payload: true },
     });
     expect(jobs.map((job) => job.kind).sort()).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE']);
+    const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: row.id });
+  });
+
+  it('re-enqueues an existing READY transcript as PENDING', async () => {
+    const scenario = await seedVersion();
+    const existing = await seedReadyTranscript(scenario.version.id);
+    await db.transcript.update({
+      where: { id: existing.id },
+      data: { error: 'whisper failed' },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      enqueueTranscript,
+      apiRequest(transcriptUrl(scenario.version.id), { body: { language: 'en' } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(202);
+    const rows = await db.transcript.findMany({ where: { versionId: scenario.version.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(existing.id);
+    expect(rows[0]?.status).toBe(TranscriptStatus.PENDING);
+    expect(rows[0]?.error).toBeNull();
   });
 });
 
@@ -335,15 +453,22 @@ describe('POST /api/versions/[versionId]/transcript/upload', () => {
     expect(row.segments[0]?.startSec).toBe(1);
     expect(row.segments[0]?.endSec).toBe(3);
     expect(row.segments[0]?.text).toBe('Hello world');
+    expect(row.segments[0]?.words).toEqual([
+      { text: 'Hello', start: 1, end: 2 },
+      { text: 'world', start: 2, end: 3 },
+    ]);
 
     const subtitle = await db.videoSubtitle.findFirstOrThrow({
       where: { versionId: scenario.version.id, language: 'en' },
     });
     expect(subtitle.label).toBe('Transcript (en)');
+    expect(subtitle.billedUserId).toBe(scenario.workspace.ownerId);
+    expect(subtitle.uploadedByUserId).toBe(scenario.owner.id);
     expect(subtitle.sourceUrl).toMatch(/^\/api\/upload\/subtitle\/[0-9a-f-]{36}\.vtt$/);
     expect(r2.puts).toHaveLength(1);
-    expect(r2.puts[0]?.body).toContain('WEBVTT');
-    expect(r2.puts[0]?.body).toContain('Hello world');
+    expect(r2.puts[0]?.contentType).toBe('text/vtt; charset=utf-8');
+    expect(r2.puts[0]?.body).toBe('WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello world\n');
+    expect(await db.uploadReservation.count()).toBe(0);
   });
 
   it('stores a text script without creating a caption track', async () => {
@@ -373,7 +498,11 @@ describe('POST /api/versions/[versionId]/transcript/upload', () => {
 
   it('replaces an existing transcript for the same language', async () => {
     const scenario = await seedVersion();
-    await seedReadyTranscript(scenario.version.id);
+    const existing = await seedReadyTranscript(scenario.version.id);
+    await db.transcript.update({
+      where: { id: existing.id },
+      data: { status: TranscriptStatus.PENDING, error: 'whisper failed' },
+    });
     signedInAs(scenario.owner);
 
     const response = await callRoute(
@@ -388,9 +517,78 @@ describe('POST /api/versions/[versionId]/transcript/upload', () => {
       include: { segments: true },
     });
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(existing.id);
     expect(rows[0]?.provider).toBe('upload');
+    expect(rows[0]?.status).toBe(TranscriptStatus.READY);
+    expect(rows[0]?.error).toBeNull();
     expect(rows[0]?.segments).toHaveLength(2);
     expect(rows[0]?.searchText).toBe('INT. KITCHEN Hello there.');
+  });
+
+  it('replaces the caption object when a second SRT is uploaded', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const first = await callRoute(
+      uploadTranscript,
+      uploadRequest(scenario.version.id, uploadForm({})),
+      { versionId: scenario.version.id }
+    );
+    expect(first.status).toBe(201);
+    const firstKey = r2.puts[0]?.key;
+    expect(firstKey).toBeTruthy();
+
+    const second = await callRoute(
+      uploadTranscript,
+      uploadRequest(
+        scenario.version.id,
+        uploadForm({
+          content: ['1', '00:00:04,000 --> 00:00:05,000', 'Replaced', '', ''].join('\n'),
+        })
+      ),
+      { versionId: scenario.version.id }
+    );
+    expect(second.status).toBe(201);
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(1);
+    expect(r2.deletedKeys).toEqual([firstKey]);
+  });
+
+  it('keeps a second language alongside the first', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    await callRoute(
+      uploadTranscript,
+      uploadRequest(scenario.version.id, uploadForm({ language: 'en' })),
+      { versionId: scenario.version.id }
+    );
+    const response = await callRoute(
+      uploadTranscript,
+      uploadRequest(scenario.version.id, uploadForm({ language: 'tr', fileName: 'cut.tr.srt' })),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    const rows = await db.transcript.findMany({
+      where: { versionId: scenario.version.id },
+      orderBy: { language: 'asc' },
+    });
+    expect(rows.map((row) => row.language)).toEqual(['en', 'tr']);
+  });
+
+  it('rejects an invalid language and writes nothing', async () => {
+    const scenario = await seedVersion();
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      uploadTranscript,
+      uploadRequest(scenario.version.id, uploadForm({ language: 'nope' })),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toContain('language must be a BCP-47 tag');
+    expect(await db.transcript.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
   it('rejects a file it cannot parse and writes nothing', async () => {
