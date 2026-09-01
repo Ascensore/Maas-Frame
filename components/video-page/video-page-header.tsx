@@ -4,6 +4,7 @@ import { memo } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft,
+  Captions,
   ChevronDown,
   GitCompareArrows,
   ListChecks,
@@ -80,6 +81,8 @@ interface VideoPageHeaderProps {
   hasPendingApprovalRequest: boolean;
   onOpenApprovalRequest: () => void;
   onOpenApprovalsPanel: () => void;
+  transcriptOpen: boolean;
+  onToggleTranscript: () => void;
 }
 
 export const VideoPageHeader = memo(function VideoPageHeader({
@@ -128,6 +131,8 @@ export const VideoPageHeader = memo(function VideoPageHeader({
   hasPendingApprovalRequest,
   onOpenApprovalRequest,
   onOpenApprovalsPanel,
+  transcriptOpen,
+  onToggleTranscript,
 }: VideoPageHeaderProps) {
   const canManageVideo = canShareVideo || canRequestApproval;
 
@@ -243,7 +248,22 @@ export const VideoPageHeader = memo(function VideoPageHeader({
                 </Badge>
               ) : null}
             </Button>
+          </>
+        )}
 
+        <Button
+          variant={transcriptOpen ? 'secondary' : 'outline'}
+          size="sm"
+          onClick={onToggleTranscript}
+          className="inline-flex"
+          title={transcriptOpen ? 'Hide transcript (T)' : 'Show transcript (T)'}
+        >
+          <Captions className="h-4 w-4 sm:mr-1" />
+          <span className="hidden sm:inline">Transcript</span>
+        </Button>
+
+        {mode === 'dashboard' && (
+          <>
             {versions.length >= 2 && (
               <Button
                 variant="outline"

@@ -30,6 +30,17 @@ type YoutubeCaptionTrack = {
 
 const CAPTIONS_MODULE = 'captions';
 
+/**
+ * Unloading the captions module (to honour "Off") fires onApiChange with an
+ * empty tracklist. Keep the last known tracks so the CC menu does not vanish.
+ */
+export function mergeYoutubeCaptionTracks(
+  incoming: SubtitleTrackOption[],
+  previous: SubtitleTrackOption[]
+): SubtitleTrackOption[] {
+  return incoming.length > 0 ? incoming : previous;
+}
+
 function asYoutubePlayer(
   player: YT.Player | PlayerAdapter | null
 ): (YT.Player & { loadModule?: unknown }) | null {
@@ -80,7 +91,7 @@ export function useYoutubeCaptions({
   // Loading the module is what makes the track list readable, and it also switches
   // captions on. The probe below turns them straight back off for a viewer who has not
   // asked for them: at this point the video is at its first frame with no cue to draw,
-  // so there is nothing to flash.
+  // so there is nothing to flash. onApiChange is flaky, so we also poll.
   useEffect(() => {
     if (!enabled || !isReady) return;
     const player = asYoutubePlayer(playerRef.current);
@@ -89,57 +100,62 @@ export function useYoutubeCaptions({
       player.loadModule(CAPTIONS_MODULE);
     } catch {
       // An older or restricted player without the module API simply has no captions.
-    }
-  }, [enabled, isReady, playerRef, versionId]);
-
-  useEffect(() => {
-    if (!enabled || !isReady || moduleRevision === 0) return;
-    const player = asYoutubePlayer(playerRef.current);
-    if (!player) return;
-
-    let rawTracks: YoutubeCaptionTrack[] = [];
-    try {
-      rawTracks = player.getOption<YoutubeCaptionTrack[]>(CAPTIONS_MODULE, 'tracklist') ?? [];
-    } catch {
-      rawTracks = [];
+      return;
     }
 
-    const mapped: SubtitleTrackOption[] = rawTracks
-      .filter((track): track is YoutubeCaptionTrack & { languageCode: string } =>
-        Boolean(track?.languageCode)
-      )
-      .map((track) => ({
-        id: `youtube:${track.languageCode}`,
-        language: track.languageCode.toLowerCase(),
-        label: track.displayName || track.languageName || track.languageCode.toUpperCase(),
-        canDelete: false,
-      }));
-
-    setTracks(mapped);
-
-    const stored =
-      versionId && appliedPreferenceForVersionRef.current !== versionId
-        ? readStoredSubtitleLanguage(videoId)
-        : null;
-    if (versionId) appliedPreferenceForVersionRef.current = versionId;
-
-    const wanted =
-      activeLanguageRef.current ??
-      (stored && mapped.some((track) => track.language === stored) ? stored : null);
-
-    if (appliedLanguageRef.current === wanted) return;
-    appliedLanguageRef.current = wanted;
-
-    try {
-      if (wanted) {
-        player.setOption(CAPTIONS_MODULE, 'track', { languageCode: wanted });
-        setActiveLanguage(wanted);
-      } else {
-        player.unloadModule(CAPTIONS_MODULE);
+    let cancelled = false;
+    const readTracks = () => {
+      if (cancelled) return;
+      let rawTracks: YoutubeCaptionTrack[] = [];
+      try {
+        rawTracks = player.getOption<YoutubeCaptionTrack[]>(CAPTIONS_MODULE, 'tracklist') ?? [];
+      } catch {
+        rawTracks = [];
       }
-    } catch {
-      // Same as above: a player that will not take the option has no captions to give.
-    }
+
+      const mapped: SubtitleTrackOption[] = rawTracks
+        .filter((track): track is YoutubeCaptionTrack & { languageCode: string } =>
+          Boolean(track?.languageCode)
+        )
+        .map((track) => ({
+          id: `youtube:${track.languageCode}`,
+          language: track.languageCode.toLowerCase(),
+          label: track.displayName || track.languageName || track.languageCode.toUpperCase(),
+          canDelete: false,
+        }));
+
+      setTracks((previous) => mergeYoutubeCaptionTracks(mapped, previous));
+
+      const stored =
+        versionId && appliedPreferenceForVersionRef.current !== versionId
+          ? readStoredSubtitleLanguage(videoId)
+          : null;
+      if (versionId) appliedPreferenceForVersionRef.current = versionId;
+
+      const wanted =
+        activeLanguageRef.current ??
+        (stored && mapped.some((track) => track.language === stored) ? stored : null);
+
+      if (appliedLanguageRef.current === wanted) return;
+      appliedLanguageRef.current = wanted;
+
+      try {
+        if (wanted) {
+          player.setOption(CAPTIONS_MODULE, 'track', { languageCode: wanted });
+          setActiveLanguage(wanted);
+        } else {
+          player.unloadModule(CAPTIONS_MODULE);
+        }
+      } catch {
+        // Same as above: a player that will not take the option has no captions to give.
+      }
+    };
+
+    const timers = [0, 250, 800, 2000].map((delay) => window.setTimeout(readTracks, delay));
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
   }, [enabled, isReady, moduleRevision, playerRef, versionId, videoId]);
 
   const selectCaptionLanguage = useCallback(

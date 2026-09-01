@@ -138,6 +138,24 @@ export function isProductAnalyticsEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_ANALYTICS', false);
 }
 
+/**
+ * In-product review agents. Defaults off: a non-mock model sends transcript
+ * and comment text to a third-party provider. Same caution as analytics.
+ */
+export function isAgentsFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_AGENTS', false);
+}
+
+/**
+ * Model id for agent runs. `mock` never leaves the process (tests and no-key
+ * hosts). Anything else is passed to the AI SDK (`openai/…`, `anthropic/…`,
+ * `google/…`).
+ */
+export function getAgentModelId(): string {
+  const raw = process.env.OPENFRAME_AGENT_MODEL?.trim();
+  return raw && raw.length > 0 ? raw : 'mock';
+}
+
 export function isTranscriptionFeatureEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_TRANSCRIPTION', true);
 }

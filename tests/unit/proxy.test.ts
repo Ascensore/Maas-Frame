@@ -101,7 +101,7 @@ describe('proxy', () => {
 
     const response = await proxy(
       documentRequest('https://open-frame.net/vs/frameio', {
-        headers: { referer: 'https://github.com/yusufipk/OpenFrame' },
+        headers: { referer: 'https://github.com/Ascensore/Maas-Frame' },
       })
     );
 

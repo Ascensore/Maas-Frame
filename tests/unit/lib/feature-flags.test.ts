@@ -17,6 +17,8 @@ import {
   isStripeBillingEnabled,
   isStripeFeatureEnabled,
   isProxyTranscodeEnabled,
+  isAgentsFeatureEnabled,
+  getAgentModelId,
 } from '@/lib/feature-flags';
 
 const MIB = BigInt(1024) * BigInt(1024);
@@ -27,6 +29,8 @@ const MANAGED_ENV = [
   'OPENFRAME_ENABLE_BUNNY_UPLOADS',
   'OPENFRAME_ENABLE_S3_VIDEO_UPLOADS',
   'OPENFRAME_ENABLE_PROXY_TRANSCODE',
+  'OPENFRAME_ENABLE_AGENTS',
+  'OPENFRAME_AGENT_MODEL',
   'OPENFRAME_REQUIRE_INVITE_CODE',
   'OPENFRAME_ALLOWED_SIGNUP_EMAILS',
   'OPENFRAME_MAX_VIDEO_UPLOAD_BYTES',
@@ -114,6 +118,18 @@ describe('boolean feature flags', () => {
   it('turns review-proxy transcode off when the env is false', () => {
     vi.stubEnv('OPENFRAME_ENABLE_PROXY_TRANSCODE', 'false');
     expect(isProxyTranscodeEnabled()).toBe(false);
+  });
+
+  it('defaults agents to off and the model to mock', () => {
+    expect(isAgentsFeatureEnabled()).toBe(false);
+    expect(getAgentModelId()).toBe('mock');
+  });
+
+  it('reads OPENFRAME_ENABLE_AGENTS and OPENFRAME_AGENT_MODEL', () => {
+    vi.stubEnv('OPENFRAME_ENABLE_AGENTS', 'true');
+    vi.stubEnv('OPENFRAME_AGENT_MODEL', 'anthropic/claude-sonnet-4.5');
+    expect(isAgentsFeatureEnabled()).toBe(true);
+    expect(getAgentModelId()).toBe('anthropic/claude-sonnet-4.5');
   });
 
   it('lets OPENFRAME_REQUIRE_INVITE_CODE=false open registration', () => {

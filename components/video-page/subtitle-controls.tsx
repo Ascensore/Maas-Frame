@@ -78,6 +78,12 @@ interface SubtitleControlsProps {
   activeSubtitleLanguage: string | null;
   onSelectSubtitleLanguage: (language: string | null) => void;
   canManageSubtitles: boolean;
+  /**
+   * Show the CC button even when the track list is still empty. Used for YouTube,
+   * where captions load asynchronously through the iframe module API and would
+   * otherwise leave the control missing until that probe succeeds.
+   */
+  alwaysShow?: boolean;
   onUploadSubtitle: (file: File, language: string, label: string) => Promise<string | null>;
   onDeleteSubtitle: (subtitleId: string) => Promise<string | null>;
   isUploadingSubtitle: boolean;
@@ -88,6 +94,7 @@ export const SubtitleControls = memo(function SubtitleControls({
   activeSubtitleLanguage,
   onSelectSubtitleLanguage,
   canManageSubtitles,
+  alwaysShow = false,
   onUploadSubtitle,
   onDeleteSubtitle,
   isUploadingSubtitle,
@@ -145,7 +152,7 @@ export const SubtitleControls = memo(function SubtitleControls({
     [onDeleteSubtitle]
   );
 
-  if (subtitles.length === 0 && !canManageSubtitles) return null;
+  if (subtitles.length === 0 && !canManageSubtitles && !alwaysShow) return null;
 
   const replacesExisting = subtitles.some(
     (subtitle) => subtitle.language === resolvedLanguage.toLowerCase()
@@ -172,6 +179,9 @@ export const SubtitleControls = memo(function SubtitleControls({
           >
             Off
           </DropdownMenuItem>
+          {subtitles.length === 0 && alwaysShow && (
+            <DropdownMenuItem disabled>No captions on this video</DropdownMenuItem>
+          )}
           {subtitles.map((subtitle) => (
             <DropdownMenuItem
               key={subtitle.id}

@@ -41,9 +41,9 @@ if (process.env.NODE_ENV === 'production' && isRateLimitDisabled()) {
 if (process.env.NODE_ENV === 'production' && !process.env.TRUSTED_PROXY_MODE?.trim()) {
   logWarn(
     'TRUSTED_PROXY_MODE is not set. Every request resolves to 127.0.0.1, so rate limits ' +
-      'apply per process rather than per client. Set TRUSTED_PROXY_MODE=cloudflare or ' +
-      'TRUSTED_PROXY_MODE=nginx once you have confirmed your proxy overwrites the ' +
-      'corresponding header on every inbound request.'
+      'apply per process rather than per client. Set TRUSTED_PROXY_MODE=cloudflare, ' +
+      'TRUSTED_PROXY_MODE=nginx, or TRUSTED_PROXY_MODE=vercel once you have confirmed ' +
+      'your proxy overwrites the corresponding header on every inbound request.'
   );
 }
 
@@ -75,6 +75,7 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   'subtitle-create': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
   'subtitle-delete': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
   'api-v1': { windowMs: 60 * 1000, maxRequests: 120 }, // 120 per minute
+  'agent-run': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per version per hour
 
   // Search — debounced on client but protect against scripted callers
   search: { windowMs: 60 * 1000, maxRequests: 60 }, // 60 per minute
@@ -231,6 +232,7 @@ function isPlausibleIp(value: string): boolean {
  *
  *   TRUSTED_PROXY_MODE=cloudflare  — trust cf-connecting-ip (Cloudflare edge)
  *   TRUSTED_PROXY_MODE=nginx       — trust x-real-ip / x-forwarded-for (Nginx real_ip_header)
+ *   TRUSTED_PROXY_MODE=vercel      — trust the first x-forwarded-for entry (Vercel overwrites it)
  *
  * Without TRUSTED_PROXY_MODE set, no proxy headers are trusted: all requests appear
  * as 127.0.0.1, which means rate limits apply per-process rather than per-client IP.
@@ -275,6 +277,15 @@ export function getClientIpFromHeaders(headers: Headers): string {
     }
   }
 
+  if (mode === 'vercel') {
+    // Vercel overwrites x-forwarded-for; the left-most address is the client.
+    const forwardedFor = headers.get('x-forwarded-for');
+    if (forwardedFor) {
+      const first = forwardedFor.split(',')[0].trim();
+      if (isPlausibleIp(first)) return first;
+    }
+  }
+
   // No trusted proxy configured — fall back to a constant value.
   // Rate limiting will apply per-process; use userId-keyed limits for authenticated endpoints.
   return '127.0.0.1';
@@ -291,7 +302,7 @@ export function getClientIpFromHeaders(headers: Headers): string {
  */
 export function isClientIpTrustworthy(): boolean {
   const mode = process.env.TRUSTED_PROXY_MODE?.trim().toLowerCase();
-  return mode === 'cloudflare' || mode === 'nginx';
+  return mode === 'cloudflare' || mode === 'nginx' || mode === 'vercel';
 }
 
 /**

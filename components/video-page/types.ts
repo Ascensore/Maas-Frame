@@ -115,6 +115,8 @@ export interface CommentReply {
   createdAt: string;
   author: { id: string; name: string | null; image: string | null } | null;
   guestName: string | null;
+  source?: 'HUMAN' | 'AGENT';
+  agentSlug?: string | null;
   canEdit?: boolean;
   canDelete?: boolean;
   tag: CommentTag | null;
@@ -133,6 +135,8 @@ export interface Comment {
   createdAt: string;
   author: { id: string; name: string | null; image: string | null } | null;
   guestName: string | null;
+  source?: 'HUMAN' | 'AGENT';
+  agentSlug?: string | null;
   canEdit?: boolean;
   canDelete?: boolean;
   tag: CommentTag | null;
@@ -164,6 +168,8 @@ export interface VideoData {
   canShareVideo?: boolean;
   canUploadAssets?: boolean;
   canDownloadAssets?: boolean;
+  canManageAgentComments?: boolean;
+  agentsEnabled?: boolean;
   reviewWatermark?: string | null;
 }
 

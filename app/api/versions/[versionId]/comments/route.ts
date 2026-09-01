@@ -135,6 +135,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         tagId: true,
         versionId: true,
         guestName: true,
+        source: true,
+        agentSlug: true,
         author: { select: { id: true, name: true, image: true } },
         tag: { select: { id: true, name: true, color: true } },
         replies: {
@@ -158,6 +160,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             tagId: true,
             versionId: true,
             guestName: true,
+            source: true,
+            agentSlug: true,
             author: { select: { id: true, name: true, image: true } },
             tag: { select: { id: true, name: true, color: true } },
           },
@@ -282,7 +286,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         };
       }
 
-      if (maxTimestamp !== null && parsed > maxTimestamp) {
+      if (maxTimestamp !== null && Math.floor(parsed) > maxTimestamp) {
         return {
           error: apiErrors.badRequest(`${fieldName} must be less than or equal to video duration`),
         };

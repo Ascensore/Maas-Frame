@@ -4,7 +4,6 @@ import { memo, type RefObject } from 'react';
 import {
   AlertCircle,
   Clock,
-  Gauge,
   Maximize,
   MessageSquare,
   MessageSquareOff,
@@ -31,7 +30,10 @@ import {
   type AnnotationCanvasHandle,
   type AnnotationStroke,
 } from '@/components/annotation-canvas';
-import { SILENT_ABOVE_SPEED } from '@/components/video-page/hooks/video-player-utils';
+import {
+  formatPlaybackSpeed,
+  nudgePlaybackSpeed,
+} from '@/components/video-page/hooks/video-player-utils';
 import { SubtitleControls } from '@/components/video-page/subtitle-controls';
 import type {
   BunnyQualityOption,
@@ -41,6 +43,7 @@ import type {
 } from '@/components/video-page/types';
 import { reviewPlayerMode, type ReviewKind } from '@/lib/review-kind';
 import { ReviewWatermarkOverlay } from '@/components/video-page/review-watermark-overlay';
+import { CommentInOutControls } from '@/components/video-page/comment-in-out-controls';
 
 interface PlayerCoreProps {
   activeVersionId: string | null;
@@ -86,6 +89,7 @@ interface PlayerCoreProps {
   duration: number;
   isFrameMode: boolean;
   frameStepLabel: string;
+  estimatedFrameRate: number | null;
   handleSkip: (seconds: number) => void;
   handleFrameModeToggle: () => void;
   handleMuteToggle: () => void;
@@ -113,8 +117,8 @@ interface PlayerCoreProps {
   onDeleteSubtitle: (subtitleId: string) => Promise<string | null>;
   isUploadingSubtitle: boolean;
   playbackSpeed: number;
-  speedOptions: number[];
-  handleSpeedChange: (speed: number) => void;
+  playbackSpeedBounds: { min: number; max: number; snapTo?: number[] };
+  handleSpeedNudge: (delta: number) => void;
   toggleFullscreen: () => void;
   showComments: boolean;
   setShowComments: (value: boolean) => void;
@@ -127,6 +131,13 @@ interface PlayerCoreProps {
     options?: { pauseAfterSeek?: boolean; timestampEnd?: number | null }
   ) => void;
   commentMarkers: CommentMarker[];
+  draftRange?: { start: number; end: number } | null;
+  commentRangeStart?: number | null;
+  commentRangeEnd?: number | null;
+  markCommentRangeIn?: () => void;
+  markCommentRangeOut?: () => void;
+  clearCommentRangeSelection?: () => void;
+  onOpenCommandPalette?: () => void;
   reviewWatermark?: string | null;
 }
 
@@ -174,6 +185,7 @@ export const PlayerCore = memo(function PlayerCore({
   duration,
   isFrameMode,
   frameStepLabel,
+  estimatedFrameRate,
   handleSkip,
   handleFrameModeToggle,
   handleMuteToggle,
@@ -192,8 +204,8 @@ export const PlayerCore = memo(function PlayerCore({
   onDeleteSubtitle,
   isUploadingSubtitle,
   playbackSpeed,
-  speedOptions,
-  handleSpeedChange,
+  playbackSpeedBounds,
+  handleSpeedNudge,
   toggleFullscreen,
   showComments,
   setShowComments,
@@ -202,6 +214,13 @@ export const PlayerCore = memo(function PlayerCore({
   handleTimelineMouseMove,
   handleSeekToTimestamp,
   commentMarkers,
+  draftRange = null,
+  commentRangeStart = null,
+  commentRangeEnd = null,
+  markCommentRangeIn,
+  markCommentRangeOut,
+  clearCommentRangeSelection,
+  onOpenCommandPalette,
   reviewWatermark,
 }: PlayerCoreProps) {
   const playerMode = reviewPlayerMode(reviewKind, activeProviderId);
@@ -473,21 +492,52 @@ export const PlayerCore = memo(function PlayerCore({
               <span className="text-xs text-muted-foreground ml-1 tabular-nums">
                 {formatTime(currentTime)} / {formatTime(duration)}
               </span>
+
+              {markCommentRangeIn && markCommentRangeOut && clearCommentRangeSelection && (
+                <div className="ml-2 flex">
+                  <CommentInOutControls
+                    inTime={commentRangeStart ?? null}
+                    outTime={commentRangeEnd ?? null}
+                    formatTime={formatTime}
+                    onMarkIn={markCommentRangeIn}
+                    onMarkOut={markCommentRangeOut}
+                    onSeekIn={
+                      commentRangeStart != null
+                        ? () => handleSeekToTimestamp(commentRangeStart)
+                        : undefined
+                    }
+                    onSeekOut={
+                      commentRangeEnd != null
+                        ? () => handleSeekToTimestamp(commentRangeEnd)
+                        : undefined
+                    }
+                    onClear={clearCommentRangeSelection}
+                    compact
+                  />
+                </div>
+              )}
             </>
           )}
 
           <div className="ml-auto flex items-center">
             {!isStillPlayer && (
               <>
-                <Button
-                  variant={isFrameMode ? 'default' : 'ghost'}
-                  size="sm"
-                  className="h-8 gap-1 text-xs"
-                  onClick={handleFrameModeToggle}
-                  title="Toggle frame step mode"
-                >
-                  Frame {frameStepLabel}
-                </Button>
+                {activeProviderId !== 'youtube' && (
+                  <Button
+                    variant={isFrameMode ? 'default' : 'ghost'}
+                    size="sm"
+                    className="h-8 gap-1 text-xs"
+                    disabled={!estimatedFrameRate}
+                    onClick={handleFrameModeToggle}
+                    title={
+                      estimatedFrameRate
+                        ? 'Step one frame with the skip buttons or ← →'
+                        : 'Play briefly to measure the frame rate, then step one frame'
+                    }
+                  >
+                    {isFrameMode ? `Frame ${frameStepLabel}` : 'Frame step'}
+                  </Button>
+                )}
 
                 {activeProviderId === 'bunny' && (
                   <DropdownMenu>
@@ -530,41 +580,74 @@ export const PlayerCore = memo(function PlayerCore({
                     subtitles={subtitleTracks}
                     activeSubtitleLanguage={activeSubtitleLanguage}
                     onSelectSubtitleLanguage={onSelectSubtitleLanguage}
-                    canManageSubtitles={canManageSubtitles}
+                    canManageSubtitles={activeProviderId === 'youtube' ? false : canManageSubtitles}
+                    alwaysShow={activeProviderId === 'youtube'}
                     onUploadSubtitle={onUploadSubtitle}
                     onDeleteSubtitle={onDeleteSubtitle}
                     isUploadingSubtitle={isUploadingSubtitle}
                   />
                 )}
 
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                      <Gauge className="h-3.5 w-3.5" />
-                      {playbackSpeed === 1 ? '1x' : `${playbackSpeed}x`}
+                <div className="flex items-center">
+                  {(
+                    [
+                      [-0.5, '−0.5'],
+                      [-0.1, '−0.1'],
+                    ] as const
+                  ).map(([delta, label]) => (
+                    <Button
+                      key={label}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 px-1.5 text-[11px] tabular-nums"
+                      disabled={
+                        nudgePlaybackSpeed(playbackSpeed, delta, playbackSpeedBounds) ===
+                        playbackSpeed
+                      }
+                      onClick={() => handleSpeedNudge(delta)}
+                      title={`Slow down by ${Math.abs(delta)}`}
+                    >
+                      {label}
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-[80px]">
-                    {speedOptions.map((speed) => (
-                      <DropdownMenuItem
-                        key={speed}
-                        onClick={() => handleSpeedChange(speed)}
-                        className={cn(
-                          'flex items-center justify-between gap-2',
-                          speed === playbackSpeed && 'font-bold text-primary'
-                        )}
-                      >
-                        {speed}x
-                        {speed > SILENT_ABOVE_SPEED && (
-                          <span className="text-[10px] font-normal text-muted-foreground">
-                            no audio
-                          </span>
-                        )}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  ))}
+                  <span className="min-w-[3.25rem] px-0.5 text-center text-xs tabular-nums">
+                    {formatPlaybackSpeed(playbackSpeed)}
+                  </span>
+                  {(
+                    [
+                      [0.1, '+0.1'],
+                      [0.5, '+0.5'],
+                    ] as const
+                  ).map(([delta, label]) => (
+                    <Button
+                      key={label}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 px-1.5 text-[11px] tabular-nums"
+                      disabled={
+                        nudgePlaybackSpeed(playbackSpeed, delta, playbackSpeedBounds) ===
+                        playbackSpeed
+                      }
+                      onClick={() => handleSpeedNudge(delta)}
+                      title={`Speed up by ${delta}`}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
               </>
+            )}
+
+            {onOpenCommandPalette && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1 text-[11px] text-muted-foreground hidden sm:inline-flex"
+                onClick={onOpenCommandPalette}
+                title="Command palette (⌘K)"
+              >
+                ⌘K
+              </Button>
             )}
 
             <Button
@@ -615,6 +698,7 @@ export const PlayerCore = memo(function PlayerCore({
             'relative h-8 bg-muted rounded cursor-pointer select-none',
             isStillPlayer && 'hidden'
           )}
+          title="Click to scrub. Shift-drag to mark a comment range."
           onMouseDown={handleTimelineMouseDown}
           onMouseMove={handleTimelineMouseMove}
         >
@@ -623,13 +707,24 @@ export const PlayerCore = memo(function PlayerCore({
               and playheadRef. Do not bind it to React state here. */}
           <div
             ref={progressRef}
-            className="absolute left-0 top-0 h-full w-0 bg-primary/30 rounded pointer-events-none"
+            className="absolute left-0 top-0 h-full w-0 bg-lime/30 rounded pointer-events-none"
           />
 
           <div
             ref={playheadRef}
-            className="absolute top-0 left-0 h-full w-1 bg-primary rounded pointer-events-none will-change-[left]"
+            className="absolute top-0 left-0 h-full w-1 bg-lime rounded pointer-events-none will-change-[left]"
           />
+
+          {draftRange && duration > 0 && (
+            <div
+              className="absolute top-1/2 z-[9] h-2 -translate-y-1/2 rounded-full bg-lime/45 pointer-events-none"
+              style={{
+                left: `${(draftRange.start / duration) * 100}%`,
+                width: `${Math.max(((draftRange.end - draftRange.start) / duration) * 100, 0.4)}%`,
+              }}
+              aria-hidden
+            />
+          )}
 
           {/* Timecode + frame counter, shown while scrubbing and flashed on
               keyboard/button seeks. Kept mounted (only faded) so it already

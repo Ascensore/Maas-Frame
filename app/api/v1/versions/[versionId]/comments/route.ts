@@ -25,6 +25,8 @@ const COMMENT_SELECT = {
   updatedAt: true,
   author: { select: { id: true, name: true } },
   tag: { select: { id: true, name: true, color: true } },
+  source: true,
+  agentSlug: true,
 } as const;
 
 export async function GET(request: NextRequest, { params }: RouteParams) {

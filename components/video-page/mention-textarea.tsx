@@ -22,6 +22,7 @@ interface MentionTextareaProps {
   onKeyDown?: React.KeyboardEventHandler<HTMLTextAreaElement>;
   autoFocus?: boolean;
   disabled?: boolean;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 function findMentionRange(text: string, caret: number): MentionRange | null {
@@ -53,8 +54,10 @@ export function MentionTextarea({
   onKeyDown,
   autoFocus,
   disabled,
+  textareaRef: textareaRefProp,
 }: MentionTextareaProps) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const localTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const textareaRef = textareaRefProp ?? localTextareaRef;
   const [mentionRange, setMentionRange] = useState<MentionRange | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 

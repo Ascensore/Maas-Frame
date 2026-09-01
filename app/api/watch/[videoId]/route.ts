@@ -9,6 +9,8 @@ import { canDownloadProjectMedia } from '@/lib/project-download';
 import { getGuestIdentityFromRequest } from '@/lib/guest-identity';
 import { reviewWatermarkForProject } from '@/lib/review-watermark';
 import { logError } from '@/lib/logger';
+import { isAgentsFeatureEnabled } from '@/lib/feature-flags';
+import { canSignedInMemberManageAgentComment, isSignedInProjectMember } from '@/lib/comment-source';
 
 type RouteParams = { params: Promise<{ videoId: string }> };
 
@@ -58,6 +60,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                       tagId: true,
                       versionId: true,
                       guestName: true,
+                      source: true,
+                      agentSlug: true,
                       author: { select: { id: true, name: true, image: true } },
                       tag: { select: { id: true, name: true, color: true } },
                       replies: {
@@ -82,6 +86,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                           tagId: true,
                           versionId: true,
                           guestName: true,
+                          source: true,
+                          agentSlug: true,
                           author: { select: { id: true, name: true, image: true } },
                           tag: { select: { id: true, name: true, color: true } },
                         },
@@ -156,7 +162,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             : !!viewerGuestIdentityId &&
               !!comment.guestIdentityId &&
               comment.guestIdentityId === viewerGuestIdentityId;
-          const canDeleteComment = canEditComment || isProjectOwner;
+          const canDeleteComment =
+            canEditComment ||
+            isProjectOwner ||
+            canSignedInMemberManageAgentComment({
+              source: comment.source,
+              userId: viewerUserId,
+              isMember: isSignedInProjectMember(access),
+            });
           const replies = comment.replies;
           const commentData = Object.fromEntries(
             Object.entries(comment).filter(
@@ -174,7 +187,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                 : !!viewerGuestIdentityId &&
                   !!reply.guestIdentityId &&
                   reply.guestIdentityId === viewerGuestIdentityId;
-              const canDeleteReply = canEditReply || isProjectOwner;
+              const canDeleteReply =
+                canEditReply ||
+                isProjectOwner ||
+                canSignedInMemberManageAgentComment({
+                  source: reply.source,
+                  userId: viewerUserId,
+                  isMember: isSignedInProjectMember(access),
+                });
               const replyData = Object.fromEntries(
                 Object.entries(reply).filter(
                   ([key]) => key !== 'authorId' && key !== 'guestIdentityId'
@@ -225,6 +245,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       canShareVideo: access.canEdit,
       canUploadAssets,
       canDownloadAssets,
+      canManageAgentComments: isSignedInProjectMember(access),
+      agentsEnabled: isAgentsFeatureEnabled(),
     });
 
     return withCacheControl(response, 'private, no-cache');

@@ -22,13 +22,14 @@ import type {
 import { validateAnnotationStrokes } from '@/lib/validation';
 import {
   clampSeekTime,
-  getAdjacentPlaybackSpeed,
   getFrameIndexAtTime,
   getFrameStepLabel,
   getFrameStepSeconds,
   getPlayheadPercent,
+  getPlaybackSpeedBounds,
   isTypingTarget,
   normalizeFrameRate,
+  nudgePlaybackSpeed,
   resolvePlayerShortcut,
   resolveSkipAmount as resolveSkipAmountFor,
   timeFromClientX as timeFromClientXWithin,
@@ -51,11 +52,11 @@ interface UseVideoPlayerParams {
   playerRef: RefObject<YT.Player | PlayerAdapter | null>;
   formatTime: (seconds: number) => string;
   formatBunnyQualityLabel: (level: { height?: number; bitrate?: number }, index: number) => string;
-  speedOptions: number[];
   scheduleWatchProgressSaveRef: RefObject<
     (input: { progress: number; duration?: number; immediate?: boolean; force?: boolean }) => void
   >;
   setViewingAnnotation: (strokes: AnnotationStroke[] | null) => void;
+  onRangeDragCommitRef?: RefObject<(start: number, end: number) => void>;
 }
 
 export function useVideoPlayer({
@@ -75,15 +76,14 @@ export function useVideoPlayer({
   playerRef,
   formatTime,
   formatBunnyQualityLabel,
-  speedOptions,
   scheduleWatchProgressSaveRef,
   setViewingAnnotation,
+  onRangeDragCommitRef,
 }: UseVideoPlayerParams) {
   const [isApiLoaded, setIsApiLoaded] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  // Bumped every time the YouTube player loads or unloads a module. It is the only
-  // signal that `getOption('captions', ...)` will answer, so the captions hook waits
-  // on it rather than polling.
+  // Bumped every time the YouTube player loads or unloads a module. Caption
+  // discovery also polls, but onApiChange is still the prompt to re-read the list.
   const [youtubeModuleRevision, setYoutubeModuleRevision] = useState(0);
   const [bunnyPlaybackState, setBunnyPlaybackState] = useState<BunnyPlaybackState>('none');
   const [currentTime, setCurrentTime] = useState(0);
@@ -98,6 +98,7 @@ export function useVideoPlayer({
   // Scrubbing: the playhead position is driven directly via DOM (rAF) to avoid
   // per-frame React re-renders. These refs feed that loop.
   const dragTimeRef = useRef(0);
+  const rangeDragStartRef = useRef<number | null>(null);
   const dragRectRef = useRef<DOMRect | null>(null);
   const durationRef = useRef(0);
   // Live scrubbing: coalesce seeks so we never queue stale ones (keeps HLS
@@ -283,6 +284,7 @@ export function useVideoPlayer({
     setIsPlaying(false);
     setIsMuted(false);
     setEstimatedFrameRate(null);
+    setIsFrameMode(false);
     setPlaybackSpeed(1);
     setQualityOptions((prev) => (versionChanged ? [] : prev));
     setSelectedQualityLevel(bunnySourcePreference === 'original' ? -2 : -1);
@@ -1130,6 +1132,28 @@ export function useVideoPlayer({
     [currentTime, duration, flashSeekReadout, handleSeekToTimestamp, resolveSkipAmount]
   );
 
+  const playbackSpeedBounds = useMemo(
+    () => getPlaybackSpeedBounds(activeProviderId),
+    [activeProviderId]
+  );
+
+  const handleSpeedChange = useCallback(
+    (speed: number) => {
+      setPlaybackSpeed(speed);
+      playerRef.current?.setPlaybackRate(speed);
+    },
+    [playerRef]
+  );
+
+  const handleSpeedNudge = useCallback(
+    (delta: number) => {
+      const next = nudgePlaybackSpeed(playbackSpeed, delta, playbackSpeedBounds);
+      if (next === playbackSpeed) return;
+      handleSpeedChange(next);
+    },
+    [handleSpeedChange, playbackSpeed, playbackSpeedBounds]
+  );
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (document.querySelector('[data-slot="dialog-content"]')) {
@@ -1143,13 +1167,6 @@ export function useVideoPlayer({
       const shortcut = resolvePlayerShortcut(e);
       if (shortcut === null) return;
       e.preventDefault();
-
-      const stepPlaybackSpeed = (direction: 1 | -1) => {
-        const newSpeed = getAdjacentPlaybackSpeed(speedOptions, playbackSpeed, direction);
-        if (newSpeed === null) return;
-        setPlaybackSpeed(newSpeed);
-        playerRef.current?.setPlaybackRate(newSpeed);
-      };
 
       switch (shortcut) {
         case 'toggle-play':
@@ -1168,10 +1185,10 @@ export function useVideoPlayer({
           handleSkip(5);
           break;
         case 'speed-up':
-          stepPlaybackSpeed(1);
+          handleSpeedNudge(0.1);
           break;
         case 'speed-down':
-          stepPlaybackSpeed(-1);
+          handleSpeedNudge(-0.1);
           break;
         case 'toggle-mute':
           if (playerRef.current) {
@@ -1212,21 +1229,12 @@ export function useVideoPlayer({
     currentTime,
     duration,
     isMuted,
-    playbackSpeed,
-    speedOptions,
     flashSeekReadout,
     handleSkip,
+    handleSpeedNudge,
     toggleFullscreen,
     playerRef,
   ]);
-
-  const handleSpeedChange = useCallback(
-    (speed: number) => {
-      setPlaybackSpeed(speed);
-      playerRef.current?.setPlaybackRate(speed);
-    },
-    [playerRef]
-  );
 
   const handleQualityChange = useCallback(
     (level: number) => {
@@ -1287,6 +1295,7 @@ export function useVideoPlayer({
       dragRectRef.current = timelineRef.current.getBoundingClientRect();
       const newTime = timeFromClientX(e.clientX);
       dragTimeRef.current = newTime;
+      rangeDragStartRef.current = e.shiftKey ? newTime : null;
       // Freeze playback while scrubbing so the previewed frames don't fight the
       // player; resume on release if it was playing.
       wasPlayingBeforeScrubRef.current = isPlaying;
@@ -1314,6 +1323,8 @@ export function useVideoPlayer({
     if (!isDraggingRef.current) return;
     setIsDragging(false);
     const finalTime = dragTimeRef.current;
+    const rangeStart = rangeDragStartRef.current;
+    rangeDragStartRef.current = null;
     setCurrentTime(finalTime);
     const videoEl = videoRef.current;
     if (videoEl) {
@@ -1329,7 +1340,12 @@ export function useVideoPlayer({
       playerRef.current?.playVideo?.();
       wasPlayingBeforeScrubRef.current = false;
     }
-  }, [playerRef, videoRef]);
+    if (rangeStart !== null && onRangeDragCommitRef?.current) {
+      const start = Math.min(rangeStart, finalTime);
+      const end = Math.max(rangeStart, finalTime);
+      if (end - start >= 0.15) onRangeDragCommitRef.current(start, end);
+    }
+  }, [onRangeDragCommitRef, playerRef, videoRef]);
 
   const handleTimelineMouseUp = useCallback(() => {
     endScrub();
@@ -1367,6 +1383,8 @@ export function useVideoPlayer({
     isFrameMode,
     frameStepSeconds,
     frameStepLabel,
+    estimatedFrameRate,
+    playbackSpeedBounds,
     isDragging,
     showScrubReadout: isDragging || isSeekReadoutVisible,
     playbackSpeed,
@@ -1388,6 +1406,7 @@ export function useVideoPlayer({
     handleFrameModeToggle,
     handleSkip,
     handleSpeedChange,
+    handleSpeedNudge,
     handleQualityChange,
     handleTimelineMouseDown,
     handleTimelineMouseMove,

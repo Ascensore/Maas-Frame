@@ -251,7 +251,7 @@ describe('useCommentActions adding a comment', () => {
     expect(optimistic.timestamp).toBe(12);
     expect(optimistic.isResolved).toBe(false);
     expect(optimistic.author).toEqual({ id: 'current-user', name: 'Ada', image: null });
-    expect(harness.result.current.actions.commentText).toBe('');
+    expect(harness.result.current.actions.commentText).toBe('Colour is off');
     expect(harness.result.current.actions.isSubmittingComment).toBe(true);
 
     await act(async () => {
@@ -261,6 +261,7 @@ describe('useCommentActions adding a comment', () => {
 
     expect(commentIds(harness)).toEqual(['c1', 'c2', 'c-server']);
     expect(harness.result.current.actions.isSubmittingComment).toBe(false);
+    expect(harness.result.current.actions.commentText).toBe('');
   });
 
   it('posts the text, timestamp and tag to the active version', async () => {
@@ -291,6 +292,27 @@ describe('useCommentActions adding a comment', () => {
     expect(commentIds(harness)).toEqual(['c1', 'c2']);
     expect(toastError).toHaveBeenCalledWith('Failed to add comment');
     expect(harness.result.current.actions.isSubmittingComment).toBe(false);
+    expect(harness.result.current.actions.commentText).toBe('Colour is off');
+  });
+
+  it('keeps the draft when the server names a timestamp outside this version', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      json: () =>
+        Promise.resolve({ error: 'Timestamp must be less than or equal to video duration' }),
+    });
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.setCommentText('Too late in V2'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(commentIds(harness)).toEqual(['c1', 'c2']);
+    expect(toastError).toHaveBeenCalledWith(
+      'Timestamp must be less than or equal to video duration'
+    );
+    expect(harness.result.current.actions.commentText).toBe('Too late in V2');
   });
 
   // The attachment goes up before the comment does, so a full account fails on
@@ -370,6 +392,7 @@ describe('useCommentActions adding a comment', () => {
 
     expect(commentIds(harness)).toEqual(['c1', 'c2']);
     expect(toastError).toHaveBeenCalledWith('Failed to add comment');
+    expect(harness.result.current.actions.commentText).toBe('Colour is off');
   });
 
   it('leaves other versions untouched on both success and rollback', async () => {
@@ -443,10 +466,9 @@ describe('useCommentActions adding a comment', () => {
   it('sends a range comment with both ends', async () => {
     const harness = renderActions();
 
-    // First toggle opens the range at the current time, second closes it.
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeIn());
     harness.rerender({ currentTime: 30 });
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeOut());
 
     expect(harness.result.current.actions.commentRangeStart).toBe(12);
     expect(harness.result.current.actions.commentRangeEnd).toBe(30);
@@ -462,25 +484,90 @@ describe('useCommentActions adding a comment', () => {
     expect(harness.result.current.actions.commentRangeEnd).toBeNull();
   });
 
+  it('sends a point comment at In after the playhead has moved', async () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.markCommentRangeIn());
+    expect(harness.result.current.actions.commentRangeStart).toBe(12);
+    harness.rerender({ currentTime: 40 });
+    act(() => harness.result.current.actions.setCommentText('Just this frame'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    const body = bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0]);
+    expect(body.timestamp).toBe(12);
+    expect(body).not.toHaveProperty('timestampEnd');
+  });
+
+  it('sends a point comment at Out after the playhead has moved', async () => {
+    const harness = renderActions({ currentTime: 30 });
+
+    act(() => harness.result.current.actions.markCommentRangeOut());
+    harness.rerender({ currentTime: 8 });
+    act(() => harness.result.current.actions.setCommentText('Out only'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    const body = bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0]);
+    expect(body.timestamp).toBe(30);
+    expect(body).not.toHaveProperty('timestampEnd');
+  });
+
+  it('keeps Out when In is marked onto an Out-only range', async () => {
+    const harness = renderActions({ currentTime: 30 });
+
+    act(() => harness.result.current.actions.markCommentRangeOut());
+    harness.rerender({ currentTime: 12 });
+    act(() => harness.result.current.actions.markCommentRangeIn());
+    expect(harness.result.current.actions.commentRangeStart).toBe(12);
+    expect(harness.result.current.actions.commentRangeEnd).toBe(30);
+
+    harness.rerender({ currentTime: 50 });
+    act(() => harness.result.current.actions.setCommentText('Out then In'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+
+    expect(bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0])).toMatchObject({
+      timestamp: 12,
+      timestampEnd: 30,
+    });
+  });
+
   it('orders a backwards range selection low to high', () => {
     const harness = renderActions({ currentTime: 30 });
 
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeIn());
     harness.rerender({ currentTime: 10 });
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeOut());
 
     expect(harness.result.current.actions.commentRangeStart).toBe(10);
     expect(harness.result.current.actions.commentRangeEnd).toBe(30);
   });
 
-  it('restarts the range when toggled a third time', () => {
+  it('keeps Out when In is remade before it', () => {
     const harness = renderActions();
 
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeIn());
     harness.rerender({ currentTime: 30 });
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeOut());
+    harness.rerender({ currentTime: 18 });
+    act(() => harness.result.current.actions.markCommentRangeIn());
+
+    expect(harness.result.current.actions.commentRangeStart).toBe(18);
+    expect(harness.result.current.actions.commentRangeEnd).toBe(30);
+  });
+
+  it('drops Out when In is remade after it', () => {
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.markCommentRangeIn());
+    harness.rerender({ currentTime: 30 });
+    act(() => harness.result.current.actions.markCommentRangeOut());
     harness.rerender({ currentTime: 44 });
-    act(() => harness.result.current.actions.toggleCommentRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeIn());
 
     expect(harness.result.current.actions.commentRangeStart).toBe(44);
     expect(harness.result.current.actions.commentRangeEnd).toBeNull();
@@ -521,8 +608,7 @@ describe('useCommentActions replying', () => {
       expect.stringMatching(/^temp-reply-/),
     ]);
     expect(findComment(harness, 'c2')?.replies).toEqual([]);
-    expect(harness.result.current.actions.replyText).toBe('');
-    expect(harness.result.current.actions.replyingTo).toBeNull();
+    expect(harness.result.current.actions.replyText).toBe('On it');
     expect(harness.result.current.actions.isSubmittingReply).toBe(true);
 
     await act(async () => {
@@ -531,6 +617,8 @@ describe('useCommentActions replying', () => {
     });
 
     expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1', 'r-server']);
+    expect(harness.result.current.actions.replyText).toBe('');
+    expect(harness.result.current.actions.replyingTo).toBeNull();
   });
 
   it('posts the reply with its parent id', async () => {
@@ -558,6 +646,7 @@ describe('useCommentActions replying', () => {
     expect(commentIds(harness)).toEqual(['c1', 'c2']);
     expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1']);
     expect(toastError).toHaveBeenCalledWith('Failed to add reply');
+    expect(harness.result.current.actions.replyText).toBe('On it');
   });
 
   it('removes the failed reply when the request throws', async () => {
@@ -571,6 +660,7 @@ describe('useCommentActions replying', () => {
 
     expect(findComment(harness, 'c1')?.replies.map((r) => r.id)).toEqual(['r1']);
     expect(toastError).toHaveBeenCalledWith('Failed to add reply');
+    expect(harness.result.current.actions.replyText).toBe('On it');
   });
 
   it('refuses to post an empty reply', async () => {
@@ -588,13 +678,39 @@ describe('useCommentActions replying', () => {
   it('keeps its own range selection separate from the comment composer', () => {
     const harness = renderActions();
 
-    act(() => harness.result.current.actions.toggleReplyRangeSelection());
+    act(() => harness.result.current.actions.markCommentRangeIn());
+    harness.rerender({ currentTime: 20 });
+    act(() => harness.result.current.actions.markCommentRangeOut());
+    harness.rerender({ currentTime: 8 });
+    act(() => harness.result.current.actions.markReplyRangeIn());
     harness.rerender({ currentTime: 30 });
-    act(() => harness.result.current.actions.toggleReplyRangeSelection());
+    act(() => harness.result.current.actions.markReplyRangeOut());
 
-    expect(harness.result.current.actions.replyRangeStart).toBe(12);
+    expect(harness.result.current.actions.commentRangeStart).toBe(12);
+    expect(harness.result.current.actions.commentRangeEnd).toBe(20);
+    expect(harness.result.current.actions.replyRangeStart).toBe(8);
     expect(harness.result.current.actions.replyRangeEnd).toBe(30);
-    expect(harness.result.current.actions.commentRangeStart).toBeNull();
+  });
+
+  it('posts a reply range that is not the playhead', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(ok({ data: serverReply })));
+    const harness = renderActions();
+
+    act(() => harness.result.current.actions.markReplyRangeIn());
+    harness.rerender({ currentTime: 30 });
+    act(() => harness.result.current.actions.markReplyRangeOut());
+    harness.rerender({ currentTime: 50 });
+    act(() => harness.result.current.actions.setReplyText('On it'));
+    await act(async () => {
+      await harness.result.current.actions.handleReplyComment('c1');
+    });
+
+    expect(bodyOf(callsTo(`/api/versions/${ACTIVE_VERSION}/comments`, 'POST')[0])).toEqual({
+      content: 'On it',
+      timestamp: 12,
+      timestampEnd: 30,
+      parentId: 'c1',
+    });
   });
 });
 

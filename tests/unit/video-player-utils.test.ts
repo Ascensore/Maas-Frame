@@ -1,15 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import {
   clampSeekTime,
+  formatPlaybackSpeed,
   getAdjacentPlaybackSpeed,
   getFrameIndexAtTime,
   getFrameStepLabel,
   getFrameStepSeconds,
   getPlayheadPercent,
+  getPlaybackSpeedBounds,
   getSpeedOptionsForProvider,
   isTypingTarget,
   normalizeFrameRate,
   NATIVE_SPEED_OPTIONS,
+  nudgePlaybackSpeed,
+  PLAYBACK_SPEED_MAX,
+  PLAYBACK_SPEED_MIN,
   resolvePlayerShortcut,
   resolveSkipAmount,
   SILENT_ABOVE_SPEED,
@@ -219,25 +224,72 @@ describe('getAdjacentPlaybackSpeed', () => {
   });
 });
 
+describe('nudgePlaybackSpeed', () => {
+  const native = { min: PLAYBACK_SPEED_MIN, max: PLAYBACK_SPEED_MAX };
+  const youtube = getPlaybackSpeedBounds('youtube');
+
+  it('steps native playback by tenths and half-steps', () => {
+    expect(nudgePlaybackSpeed(1, 0.1, native)).toBe(1.1);
+    expect(nudgePlaybackSpeed(1, -0.1, native)).toBe(0.9);
+    expect(nudgePlaybackSpeed(1, 0.5, native)).toBe(1.5);
+    expect(nudgePlaybackSpeed(1, -0.5, native)).toBe(0.5);
+  });
+
+  it('reaches the 0.10x and 5x ends of the native range', () => {
+    expect(nudgePlaybackSpeed(0.2, -0.1, native)).toBe(0.1);
+    expect(nudgePlaybackSpeed(0.1, -0.1, native)).toBe(0.1);
+    expect(nudgePlaybackSpeed(4.6, 0.5, native)).toBe(5);
+    expect(nudgePlaybackSpeed(5, 0.1, native)).toBe(5);
+  });
+
+  it('steps YouTube along the rates its iframe API actually honours', () => {
+    expect(nudgePlaybackSpeed(1, 0.1, youtube)).toBe(1.25);
+    expect(nudgePlaybackSpeed(1, -0.1, youtube)).toBe(0.75);
+    expect(nudgePlaybackSpeed(1, 0.5, youtube)).toBe(1.5);
+    expect(nudgePlaybackSpeed(2, 0.1, youtube)).toBe(2);
+    expect(nudgePlaybackSpeed(0.25, -0.1, youtube)).toBe(0.25);
+  });
+
+  it('formats the control as two decimal places', () => {
+    expect(formatPlaybackSpeed(1)).toBe('1.00x');
+    expect(formatPlaybackSpeed(0.1)).toBe('0.10x');
+    expect(formatPlaybackSpeed(5)).toBe('5.00x');
+  });
+
+  it('reports YouTube and native bounds as literals, not as aliases of the same constants', () => {
+    expect(getPlaybackSpeedBounds('youtube')).toEqual({
+      min: 0.25,
+      max: 2,
+      snapTo: YOUTUBE_SPEED_OPTIONS,
+    });
+    expect(getPlaybackSpeedBounds('r2')).toEqual({
+      min: 0.1,
+      max: 5,
+    });
+  });
+});
+
 describe('getSpeedOptionsForProvider', () => {
   it('caps YouTube at 2x, since its iframe API ignores anything faster', () => {
     expect(getSpeedOptionsForProvider('youtube')).toBe(YOUTUBE_SPEED_OPTIONS);
     expect(Math.max(...YOUTUBE_SPEED_OPTIONS)).toBe(2);
+    expect(Math.min(...YOUTUBE_SPEED_OPTIONS)).toBe(0.25);
   });
 
-  it('lets the <video> providers run up to the browser ceiling', () => {
+  it('lets the <video> providers run from 0.10x to 5x', () => {
     for (const provider of ['bunny', 'r2', undefined, null]) {
       expect(getSpeedOptionsForProvider(provider)).toBe(NATIVE_SPEED_OPTIONS);
     }
-    expect(NATIVE_SPEED_OPTIONS).toContain(3);
-    // 16 is where Chrome and Firefox clamp `playbackRate`; anything past it throws.
-    expect(Math.max(...NATIVE_SPEED_OPTIONS)).toBe(16);
+    expect(NATIVE_SPEED_OPTIONS).toContain(0.1);
+    expect(NATIVE_SPEED_OPTIONS).toContain(5);
+    expect(Math.max(...NATIVE_SPEED_OPTIONS)).toBe(5);
+    expect(Math.min(...NATIVE_SPEED_OPTIONS)).toBe(0.1);
   });
 
   it('marks the rates the browser plays without audio', () => {
-    // Measured in the browser: 6x and 8x still carry audio, 16x is the only silent rate.
+    // The review bar tops out at 5x, below the 8x threshold where audio drops out.
     expect(SILENT_ABOVE_SPEED).toBe(8);
-    expect(NATIVE_SPEED_OPTIONS.filter((speed) => speed > SILENT_ABOVE_SPEED)).toEqual([16]);
+    expect(NATIVE_SPEED_OPTIONS.filter((speed) => speed > SILENT_ABOVE_SPEED)).toEqual([]);
     expect(YOUTUBE_SPEED_OPTIONS.every((speed) => speed <= SILENT_ABOVE_SPEED)).toBe(true);
   });
 
@@ -275,10 +327,10 @@ describe('resolvePlayerShortcut', () => {
     expect(resolvePlayerShortcut({ code: 'Period' })).toBeNull();
   });
 
-  it('claims no other key', () => {
-    for (const code of ['KeyA', 'Enter', 'Escape', 'Tab', 'Digit1', 'Slash', 'ShiftLeft']) {
-      expect(resolvePlayerShortcut({ code, shiftKey: true })).toBeNull();
-    }
+  it('ignores chords so Cmd+K can open the command palette', () => {
+    expect(resolvePlayerShortcut({ code: 'KeyK', metaKey: true })).toBeNull();
+    expect(resolvePlayerShortcut({ code: 'KeyK', ctrlKey: true })).toBeNull();
+    expect(resolvePlayerShortcut({ code: 'Space', altKey: true })).toBeNull();
   });
 });
 

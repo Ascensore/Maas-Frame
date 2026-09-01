@@ -7,7 +7,6 @@ type Params = Parameters<typeof useVideoPlayer>[0];
 
 /** Measured from the video element's metadata, so every seek clamps to it. */
 const DURATION = 60;
-const SPEED_OPTIONS = [0.25, 0.5, 1, 1.5, 2];
 /** The timeline the tests drag over: 100px wide, starting at the viewport edge. */
 const TIMELINE_LEFT = 0;
 const TIMELINE_WIDTH = 100;
@@ -108,7 +107,7 @@ function makeTimeline(): HTMLDivElement {
   return timeline;
 }
 
-function renderPlayer() {
+function renderPlayer(overrides: Partial<Params> = {}) {
   const video = createVideoStub();
   const timeline = makeTimeline();
   const readout = document.createElement('div');
@@ -131,9 +130,9 @@ function renderPlayer() {
     playerRef,
     formatTime: (seconds: number) => `${Math.floor(seconds)}s`,
     formatBunnyQualityLabel: () => 'auto',
-    speedOptions: SPEED_OPTIONS,
     scheduleWatchProgressSaveRef: { current: vi.fn() },
     setViewingAnnotation: vi.fn(),
+    ...overrides,
   };
 
   const rendered = renderHook(() => useVideoPlayer(params));
@@ -179,11 +178,18 @@ function measureFrameRate(video: VideoStub, fps: number) {
 
 function pressKey(
   code: string,
-  options: { shiftKey?: boolean; target?: EventTarget } = {}
+  options: {
+    shiftKey?: boolean;
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+    target?: EventTarget;
+  } = {}
 ): KeyboardEvent {
   const event = new KeyboardEvent('keydown', {
     code,
     shiftKey: options.shiftKey ?? false,
+    metaKey: options.metaKey ?? false,
+    ctrlKey: options.ctrlKey ?? false,
     bubbles: true,
     cancelable: true,
   });
@@ -193,8 +199,8 @@ function pressKey(
   return event;
 }
 
-function mouseEventAt(clientX: number) {
-  return { clientX } as React.MouseEvent<HTMLDivElement>;
+function mouseEventAt(clientX: number, extra: { shiftKey?: boolean } = {}) {
+  return { clientX, shiftKey: extra.shiftKey } as React.MouseEvent<HTMLDivElement>;
 }
 
 beforeEach(() => {
@@ -417,6 +423,58 @@ describe('useVideoPlayer scrubbing', () => {
     expect(readout.textContent).toBe('30s · f750');
     expect(result.current.showScrubReadout).toBe(true);
   });
+
+  it('commits a comment range when the timeline is shift-dragged', () => {
+    const onRangeDragCommit = vi.fn();
+    const { result } = renderPlayer({
+      onRangeDragCommitRef: { current: onRangeDragCommit },
+    });
+
+    act(() => result.current.handleTimelineMouseDown(mouseEventAt(10, { shiftKey: true })));
+    act(() => result.current.handleTimelineMouseMove(mouseEventAt(40)));
+    act(() => result.current.handleTimelineMouseUp());
+
+    expect(onRangeDragCommit).toHaveBeenCalledTimes(1);
+    expect(onRangeDragCommit).toHaveBeenCalledWith(6, 24);
+  });
+
+  it('orders a backwards shift-drag low to high', () => {
+    const onRangeDragCommit = vi.fn();
+    const { result } = renderPlayer({
+      onRangeDragCommitRef: { current: onRangeDragCommit },
+    });
+
+    act(() => result.current.handleTimelineMouseDown(mouseEventAt(40, { shiftKey: true })));
+    act(() => result.current.handleTimelineMouseMove(mouseEventAt(10)));
+    act(() => result.current.handleTimelineMouseUp());
+
+    expect(onRangeDragCommit).toHaveBeenCalledWith(6, 24);
+  });
+
+  it('does not mark a range on a shift-click with no drag', () => {
+    const onRangeDragCommit = vi.fn();
+    const { result } = renderPlayer({
+      onRangeDragCommitRef: { current: onRangeDragCommit },
+    });
+
+    act(() => result.current.handleTimelineMouseDown(mouseEventAt(10, { shiftKey: true })));
+    act(() => result.current.handleTimelineMouseUp());
+
+    expect(onRangeDragCommit).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a range on a plain scrub', () => {
+    const onRangeDragCommit = vi.fn();
+    const { result } = renderPlayer({
+      onRangeDragCommitRef: { current: onRangeDragCommit },
+    });
+
+    act(() => result.current.handleTimelineMouseDown(mouseEventAt(10)));
+    act(() => result.current.handleTimelineMouseMove(mouseEventAt(40)));
+    act(() => result.current.handleTimelineMouseUp());
+
+    expect(onRangeDragCommit).not.toHaveBeenCalled();
+  });
 });
 
 describe('useVideoPlayer keyboard shortcuts', () => {
@@ -439,6 +497,16 @@ describe('useVideoPlayer keyboard shortcuts', () => {
     pressKey('KeyK');
 
     expect(video.play).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat Cmd+K or Ctrl+K as play/pause', () => {
+    const { video } = renderPlayer();
+
+    pressKey('KeyK', { metaKey: true });
+    pressKey('KeyK', { ctrlKey: true });
+
+    expect(video.play).not.toHaveBeenCalled();
+    expect(video.pause).not.toHaveBeenCalled();
   });
 
   it('skips five seconds with the left and right arrows', () => {
@@ -486,30 +554,40 @@ describe('useVideoPlayer keyboard shortcuts', () => {
     expect(result.current.isMuted).toBe(false);
   });
 
-  it('steps the speed ladder with the up and down arrows, stopping at the ends', () => {
+  it('nudges speed by a tenth with the up and down arrows', () => {
     const { result, video } = renderPlayer();
 
     pressKey('ArrowUp');
-    expect(result.current.playbackSpeed).toBe(1.5);
-    expect(video.playbackRate).toBe(1.5);
+    expect(result.current.playbackSpeed).toBe(1.1);
+    expect(video.playbackRate).toBe(1.1);
 
     pressKey('ArrowUp');
-    expect(result.current.playbackSpeed).toBe(2);
-
-    // 2x is the top of the ladder: the shortcut must not wrap around.
-    pressKey('ArrowUp');
-    expect(result.current.playbackSpeed).toBe(2);
+    expect(result.current.playbackSpeed).toBe(1.2);
 
     pressKey('ArrowDown');
-    expect(result.current.playbackSpeed).toBe(1.5);
-    expect(video.playbackRate).toBe(1.5);
+    expect(result.current.playbackSpeed).toBe(1.1);
+    expect(video.playbackRate).toBe(1.1);
+  });
+
+  it('will not step native playback below 0.1x or above 5x', () => {
+    const { result, video } = renderPlayer();
+
+    act(() => result.current.handleSpeedChange(0.1));
+    pressKey('ArrowDown');
+    expect(result.current.playbackSpeed).toBe(0.1);
+    expect(video.playbackRate).toBe(0.1);
+
+    act(() => result.current.handleSpeedChange(5));
+    pressKey('ArrowUp');
+    expect(result.current.playbackSpeed).toBe(5);
+    expect(video.playbackRate).toBe(5);
   });
 
   it('steps the speed ladder with shifted comma and period', () => {
     const { result } = renderPlayer();
 
     pressKey('Period', { shiftKey: true });
-    expect(result.current.playbackSpeed).toBe(1.5);
+    expect(result.current.playbackSpeed).toBe(1.1);
 
     pressKey('Comma', { shiftKey: true });
     expect(result.current.playbackSpeed).toBe(1);

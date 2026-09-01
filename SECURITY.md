@@ -2,16 +2,16 @@
 
 ## Supported Versions
 
-OpenFrame is under active development.
+Maas-Frame is under active development.
 Security fixes are prioritized for the latest code on `master` and recent release tags (if available).
 
 ## Reporting a Vulnerability
 
 Please do not report security vulnerabilities in public issues.
 
-**Preferred:** use [GitHub private vulnerability reporting](https://github.com/yusufipk/OpenFrame/security/advisories/new) on this repository.
+**Preferred:** use [GitHub private vulnerability reporting](https://github.com/Ascensore/Maas-Frame/security/advisories/new) on this repository.
 
-**Alternative:** email info@open-frame.net if you cannot use GitHub.
+**Alternative:** email info@ascensore.media if you cannot use GitHub.
 
 Include as much detail as possible:
 

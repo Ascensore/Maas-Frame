@@ -337,6 +337,18 @@ describe('getClientIp', () => {
     ).toBe('198.51.100.7');
   });
 
+  it('trusts the first x-forwarded-for entry in vercel mode', () => {
+    vi.stubEnv('TRUSTED_PROXY_MODE', 'vercel');
+
+    expect(
+      getClientIp(
+        apiRequest('/api/anything', {
+          headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1', 'x-real-ip': '198.51.100.1' },
+        })
+      )
+    ).toBe('203.0.113.9');
+  });
+
   it('ignores proxy headers for an unrecognised mode', () => {
     vi.stubEnv('TRUSTED_PROXY_MODE', 'haproxy');
     const request = apiRequest('/api/anything', {

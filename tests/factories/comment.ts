@@ -20,6 +20,10 @@ export interface CreateCommentInput {
   voiceDuration?: number | null;
   isResolved?: boolean;
   resolvedAt?: Date | null;
+  source?: 'HUMAN' | 'AGENT';
+  agentRunId?: string | null;
+  agentSlug?: string | null;
+  agentFingerprint?: string | null;
 }
 
 export async function createComment(input: CreateCommentInput): Promise<Comment> {
@@ -45,6 +49,10 @@ export async function createComment(input: CreateCommentInput): Promise<Comment>
       voiceDuration: input.voiceDuration ?? null,
       isResolved: input.isResolved ?? false,
       resolvedAt: input.resolvedAt ?? null,
+      source: input.source,
+      agentRunId: input.agentRunId,
+      agentSlug: input.agentSlug,
+      agentFingerprint: input.agentFingerprint,
     },
   });
 }
