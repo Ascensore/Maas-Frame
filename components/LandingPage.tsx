@@ -2,12 +2,12 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
+import { BrandLockup, BrandMark } from '@/components/brand/brand-mark';
 import { CtaLink } from '@/components/marketing/cta-link';
 import { MarketingCompareLinks } from '@/components/marketing/marketing-compare-links';
 import { useEffect, useRef } from 'react';
 import { gsap } from 'gsap';
 import {
-  Video,
   MoveRight,
   Play,
   Mic,
@@ -36,7 +36,7 @@ interface LandingPageProps {
 }
 
 const controlButtonClass =
-  'group relative isolate inline-flex h-8 items-center justify-center overflow-hidden border border-border bg-background px-2.5 text-[11px] font-medium text-foreground transition-colors duration-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:h-9 sm:px-4 sm:text-xs';
+  'inline-flex h-9 items-center justify-center rounded-full bg-primary px-4 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/85';
 
 const coreWorkflowFeatures = [
   {
@@ -160,16 +160,11 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
         className="fixed inset-x-0 top-0 z-50 border-b border-transparent bg-transparent transition-colors duration-300"
       >
         <div className="mx-auto flex h-14 w-full max-w-[1200px] items-center justify-between px-4 sm:h-16 sm:px-6 lg:px-10">
-          <Link
-            href="/"
-            className="group relative isolate inline-flex items-center gap-2 overflow-hidden border border-border bg-background px-3 py-2"
-          >
-            <span className="pointer-events-none absolute inset-0 -translate-x-[101%] bg-primary/10 transition-transform duration-300 group-hover:translate-x-0" />
-            <Video className="relative z-10 h-4 w-4 text-primary" />
-            <span className="relative z-10 text-xs font-semibold tracking-[0.12em]">OPENFRAME</span>
+          <Link href="/" className="flex items-center">
+            <BrandLockup wordmark="OpenFrame" />
           </Link>
 
-          <nav className="hidden items-center gap-6 text-[11px] font-medium uppercase tracking-[0.14em] md:flex">
+          <nav className="hidden items-center gap-6 text-[13px] font-medium md:flex">
             <Link
               className="text-muted-foreground transition-colors hover:text-foreground"
               href="#features"
@@ -184,7 +179,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
             </Link>
             <a
               className="text-muted-foreground transition-colors hover:text-foreground"
-              href="https://github.com/yusufipk/OpenFrame"
+              href="https://github.com/Ascensore/Maas-Frame"
               target="_blank"
               rel="noreferrer"
             >
@@ -198,26 +193,22 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
             </a>
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {isLoggedIn ? (
               <Link href="/dashboard" className={controlButtonClass}>
-                <span className="pointer-events-none absolute inset-0 -translate-x-[101%] bg-primary/10 transition-transform duration-300 group-hover:translate-x-0" />
-                <span className="relative z-10 inline-flex items-center gap-2">
-                  Dashboard
-                  <MoveRight className="h-3.5 w-3.5" />
-                </span>
+                Dashboard
+                <MoveRight className="ml-2 h-3.5 w-3.5" />
               </Link>
             ) : (
               <>
                 <Link
                   href="/login"
-                  className="text-xs font-medium text-muted-foreground hover:text-foreground hidden sm:block mr-4"
+                  className="mr-1 hidden text-[13px] font-medium text-muted-foreground hover:text-foreground sm:block"
                 >
                   Log in
                 </Link>
                 <Link href="/register" className={controlButtonClass}>
-                  <span className="pointer-events-none absolute inset-0 -translate-x-[101%] bg-primary/10 transition-transform duration-300 group-hover:translate-x-0" />
-                  <span className="relative z-10">Get Started Free</span>
+                  Get started free
                 </Link>
               </>
             )}
@@ -233,7 +224,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
           <div className="relative z-10 mx-auto max-w-[1000px] space-y-8">
             <h1
               data-hero-copy
-              className="text-4xl font-semibold leading-[0.95] tracking-[-0.03em] sm:text-5xl md:text-6xl lg:text-7xl"
+              className="text-[44px] font-extrabold leading-[1.05] tracking-[-0.035em] sm:text-5xl md:text-6xl lg:text-[72px]"
             >
               Get Client Sign-off From One Link. <br className="hidden md:block" />
               <span className="text-muted-foreground">Stop Chasing Timecodes.</span>
@@ -254,7 +245,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
             >
               <CtaLink
                 href={hostedCtaHref}
-                className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02]"
+                className="group relative isolate inline-flex h-12 min-w-max items-center justify-center rounded-full bg-primary px-10 text-sm font-semibold whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02]"
               >
                 {hostedCtaLabel}
                 <MoveRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
@@ -265,7 +256,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
               </p>
 
               <a
-                href="https://github.com/yusufipk/OpenFrame"
+                href="https://github.com/Ascensore/Maas-Frame"
                 target="_blank"
                 rel="noreferrer"
                 className="text-xs font-medium text-muted-foreground/70 transition-colors hover:text-foreground"
@@ -276,7 +267,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
           </div>
 
           <div data-hero-copy className="relative mx-auto mt-20 w-full max-w-[1200px]">
-            <div className="relative aspect-[16/9] w-full overflow-hidden border border-border bg-card shadow-2xl rounded-lg">
+            <div className="relative aspect-[16/9] w-full overflow-hidden rounded-[20px] border border-border bg-card shadow-[0_22px_50px_-28px_rgba(20,22,26,0.4)]">
               <Image
                 src="/landing/deep-dive-dashboard-2.webp"
                 alt="Product Interface Preview"
@@ -287,8 +278,8 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
               <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-transparent to-transparent pointer-events-none" />
 
               {/* Toolbar floating UI */}
-              <div className="absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 border border-border/80 bg-background/90 p-2 backdrop-blur-md shadow-xl">
-                <button className="flex h-8 w-8 items-center justify-center bg-primary text-primary-foreground hover:bg-primary/90">
+              <div className="absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border/80 bg-background/90 p-2 shadow-xl backdrop-blur-md">
+                <button className="flex h-8 w-8 items-center justify-center rounded-full bg-lime text-lime-foreground hover:bg-lime/90">
                   <PenTool className="h-4 w-4" />
                 </button>
                 <div className="h-6 w-px bg-border" />
@@ -354,8 +345,8 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 { label: 'Mark approved and move on', icon: Check },
               ].map((step, idx, arr) => (
                 <div key={step.label} className="group relative flex flex-col items-center">
-                  <div className="flex flex-col items-center justify-center w-full min-h-[100px] md:aspect-[4/3] border border-border bg-card/20 px-4 py-6 md:p-6 text-center relative z-10 transition-all duration-300 group-hover:border-primary/40 group-hover:bg-card/40">
-                    <div className="mb-4 flex h-8 w-8 md:h-10 md:w-10 items-center justify-center bg-secondary/50 text-primary border border-border/50 transition-colors group-hover:bg-primary/10">
+                  <div className="relative z-10 flex min-h-[100px] w-full flex-col items-center justify-center rounded-2xl border border-border bg-card px-4 py-6 text-center transition-all duration-300 group-hover:border-foreground/15 group-hover:bg-card md:aspect-[4/3] md:p-6">
+                    <div className="mb-4 flex h-8 w-8 items-center justify-center rounded-xl bg-secondary text-foreground transition-colors md:h-10 md:w-10">
                       <step.icon className="h-4 w-4 md:h-5 md:w-5" />
                     </div>
                     <p className="text-sm font-medium text-foreground md:text-base leading-tight">
@@ -388,7 +379,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
           <div className="border-b border-border">
             <div className="mx-auto flex w-full max-w-[1200px] flex-col-reverse items-center justify-between gap-12 px-4 py-20 sm:px-6 lg:flex-row lg:px-8 lg:py-32">
               <div data-reveal className="w-full lg:w-1/2 relative">
-                <div className="relative aspect-[16/10] w-full border border-border/50 bg-background overflow-hidden">
+                <div className="relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-border/50 bg-background">
                   <Image
                     src="/landing/compare-v2.webp"
                     alt="Comparison Mode"
@@ -429,7 +420,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 </p>
               </div>
               <div data-reveal className="w-full lg:w-1/2">
-                <div className="border border-border bg-card p-6">
+                <div className="rounded-2xl border border-border bg-card p-6">
                   <div className="border border-border/50 bg-background p-6">
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-3">
@@ -562,7 +553,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                     <div
                       key={feat.title}
                       data-reveal
-                      className="group border border-border bg-card p-6 transition-colors hover:border-primary/50 hover:bg-card/80"
+                      className="group rounded-2xl border border-border bg-card p-6 transition-colors hover:border-foreground/15 hover:bg-card"
                     >
                       <feat.icon className="mb-4 h-6 w-6 text-primary" />
                       <h3 className="mb-2 text-lg font-medium">{feat.title}</h3>
@@ -584,7 +575,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                     <div
                       key={feat.title}
                       data-reveal
-                      className="group border border-border bg-card p-6 transition-colors hover:border-primary/50 hover:bg-card/80"
+                      className="group rounded-2xl border border-border bg-card p-6 transition-colors hover:border-foreground/15 hover:bg-card"
                     >
                       <feat.icon className="mb-4 h-6 w-6 text-primary" />
                       <h3 className="mb-2 text-lg font-medium">{feat.title}</h3>
@@ -763,7 +754,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 </ul>
 
                 <a
-                  href="https://github.com/yusufipk/OpenFrame"
+                  href="https://github.com/Ascensore/Maas-Frame"
                   target="_blank"
                   rel="noreferrer"
                   className="mt-auto group relative isolate inline-flex h-12 w-full items-center justify-center overflow-hidden border border-border/50 bg-[#0a0a0a] font-medium text-foreground transition-colors hover:bg-white/5 text-sm"
@@ -897,7 +888,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
             </div>
             <CtaLink
               href={hostedCtaHref}
-              className="group relative isolate inline-flex h-12 min-w-max items-center justify-center overflow-hidden border border-primary bg-primary px-10 text-sm font-medium whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02] md:min-w-[240px]"
+              className="group relative isolate inline-flex h-12 min-w-max items-center justify-center rounded-full bg-primary px-10 text-sm font-semibold whitespace-nowrap text-primary-foreground transition-transform duration-300 hover:scale-[1.02] md:min-w-[240px]"
             >
               {hostedCtaLabel}
             </CtaLink>
@@ -907,8 +898,8 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
 
       <footer className="border-t border-border bg-background px-4 py-8 sm:px-6 lg:px-8">
         <div className="mx-auto grid max-w-[1200px] gap-8 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="flex items-start gap-2">
-            <Video className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <div className="flex items-start gap-2.5">
+            <BrandMark size="sm" />
             <div className="flex flex-col gap-1">
               <span className="font-mono text-xs text-muted-foreground">
                 © 2026 IPEK TECH LLC. All rights reserved.
@@ -931,7 +922,7 @@ export function LandingPage({ isLoggedIn }: LandingPageProps) {
                 info@open-frame.net
               </a>
               <a
-                href="https://github.com/yusufipk/OpenFrame"
+                href="https://github.com/Ascensore/Maas-Frame"
                 className="text-xs text-muted-foreground hover:text-foreground"
               >
                 GitHub

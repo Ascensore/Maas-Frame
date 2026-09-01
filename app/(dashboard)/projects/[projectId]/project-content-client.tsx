@@ -473,7 +473,7 @@ export function ProjectContentClient({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-3xl font-bold tracking-tight">{project.name}</h1>
+            <h1 className="text-[27px] font-extrabold tracking-[-0.035em]">{project.name}</h1>
             <Badge variant="outline" className="flex items-center gap-1">
               {project.visibility === 'PUBLIC' && <Globe className="h-3 w-3" />}
               {project.visibility === 'INVITE' && <UserPlus className="h-3 w-3" />}

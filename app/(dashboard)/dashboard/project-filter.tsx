@@ -111,7 +111,7 @@ export function ProjectFilter({
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-          <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
+          <h1 className="text-[27px] font-extrabold tracking-[-0.035em]">Projects</h1>
           {workspaces.length > 0 && (
             <Select
               value={selectedWorkspace}
@@ -171,11 +171,10 @@ export function ProjectFilter({
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {projects.map((project) => (
             <Link key={project.id} href={`/projects/${project.id}`}>
-              <Card className="h-full transition-colors hover:bg-accent/50 cursor-pointer">
+              <Card className="h-full cursor-pointer rounded-2xl transition-colors hover:border-foreground/15 hover:bg-card">
                 <CardHeader>
                   <div className="flex items-start justify-between">
-                    <CardTitle className="flex items-center gap-2">
-                      <FolderOpen className="h-5 w-5 text-primary" />
+                    <CardTitle className="text-[15px] font-bold tracking-[-0.015em]">
                       {project.name}
                     </CardTitle>
                     <Badge variant="outline" className="flex items-center gap-1">

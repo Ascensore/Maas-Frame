@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Video } from 'lucide-react';
+import { BrandLockup } from '@/components/brand/brand-mark';
 import { LoginForm, LoginFormSkeleton } from './login-form';
 import { Suspense } from 'react';
 
@@ -11,9 +11,8 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center p-4 bg-background">
       <div className="w-full max-w-md">
         {/* Logo */}
-        <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <Video className="h-8 w-8 text-primary" />
-          <span className="font-bold text-2xl">OpenFrame</span>
+        <Link href="/" className="mb-8 flex items-center justify-center">
+          <BrandLockup size="lg" wordmark="OpenFrame" />
         </Link>
 
         <Suspense fallback={<LoginFormSkeleton />}>

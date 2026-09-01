@@ -575,8 +575,8 @@ export default function CompareVersionsPageClient({
 
   if (loading) {
     return (
-      <div className="h-screen flex flex-col bg-background overflow-hidden">
-        <div className="shrink-0 flex items-center justify-between h-12 px-4 border-b bg-background/50">
+      <div className="dark h-screen flex flex-col bg-[#0D0E11] overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11]">
           <div className="flex items-center gap-3">
             <Skeleton className="h-4 w-24" />
             <Separator orientation="vertical" className="h-5" />
@@ -605,7 +605,7 @@ export default function CompareVersionsPageClient({
 
   if (error || !video || video.versions.length < 2) {
     return (
-      <div className="h-screen flex items-center justify-center bg-background">
+      <div className="h-screen flex items-center justify-center bg-[#0D0E11] dark">
         <div className="text-center">
           <p className="text-muted-foreground mb-4">
             {error || 'Need at least 2 versions to compare'}
@@ -620,12 +620,12 @@ export default function CompareVersionsPageClient({
 
   return (
     <div
-      className="h-screen flex flex-col bg-background overflow-hidden"
+      className="dark h-screen flex flex-col bg-[#0D0E11] overflow-hidden"
       onMouseUp={handleTimelineMouseUp}
       onMouseLeave={() => isDragging && handleTimelineMouseUp()}
     >
       {/* Header */}
-      <div className="shrink-0 flex items-center justify-between h-12 px-4 border-b bg-background/50">
+      <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11]">
         <div className="flex items-center gap-3">
           <Link
             href={`/projects/${projectId}/videos/${videoId}`}
@@ -896,7 +896,7 @@ export default function CompareVersionsPageClient({
       </div>
 
       {/* Shared playback controls */}
-      <div className="shrink-0 px-4 py-2 bg-background border-t">
+      <div className="shrink-0 px-4 py-2 bg-[#0D0E11] border-t border-white/10">
         <div className="flex items-center gap-2 mb-2">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handlePlayPause}>
             {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}

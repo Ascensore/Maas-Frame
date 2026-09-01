@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { BrandMark } from '@/components/brand/brand-mark';
 import { toast } from 'sonner';
 import {
-  Video,
   Building2,
   FolderPlus,
   PlayCircle,
@@ -148,8 +148,8 @@ function StepWelcome({
 
   return (
     <div className="text-center space-y-8">
-      <div className="mx-auto w-24 h-24 rounded-full bg-primary/10 flex items-center justify-center">
-        <Video className="h-12 w-12 text-primary" />
+      <div className="mx-auto">
+        <BrandMark size="lg" />
       </div>
       <div className="space-y-3">
         <h2 className="text-3xl font-bold tracking-tight">
