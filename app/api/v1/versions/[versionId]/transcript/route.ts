@@ -7,8 +7,12 @@ import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { enqueueMediaJob } from '@/lib/media-jobs';
 import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
-import { importTranscriptFile } from '@/lib/transcript-import';
-import { MAX_SUBTITLE_FILE_SIZE, normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
+import {
+  importTranscriptFile,
+  MAX_TRANSCRIPT_FILE_SIZE,
+  TRANSCRIPT_UPLOAD_PROVIDER,
+} from '@/lib/transcript-import';
+import { normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
@@ -174,17 +178,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const form = await request.formData().catch(() => null);
     const file = form?.get('file');
     if (!(file instanceof File)) {
-      return apiErrors.badRequest('Upload an .srt or .vtt file');
+      return apiErrors.badRequest('Upload an .srt, .vtt, .txt, or .docx file');
     }
-    if (file.size > MAX_SUBTITLE_FILE_SIZE) {
+    if (file.size > MAX_TRANSCRIPT_FILE_SIZE) {
       return apiErrors.badRequest('Transcript file is too large');
     }
 
     const language = normalizeSubtitleLanguage(form?.get('language')) ?? 'en';
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const imported = importTranscriptFile({ fileName: file.name, bytes });
+    const imported = await importTranscriptFile({ fileName: file.name, buffer: bytes });
     if (!imported.ok) return apiErrors.badRequest(imported.error);
+
+    const searchText = imported.segments.map((segment) => segment.text).join(' ');
 
     const transcript = await db.$transaction(async (tx) => {
       const row = await tx.transcript.upsert({
@@ -192,28 +198,28 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         create: {
           versionId,
           language,
-          provider: 'upload',
+          provider: TRANSCRIPT_UPLOAD_PROVIDER,
           status: TranscriptStatus.READY,
-          searchText: imported.searchText,
+          searchText,
           error: null,
         },
         update: {
-          provider: 'upload',
+          provider: TRANSCRIPT_UPLOAD_PROVIDER,
           status: TranscriptStatus.READY,
-          searchText: imported.searchText,
+          searchText,
           error: null,
         },
       });
 
       await tx.transcriptSegment.deleteMany({ where: { transcriptId: row.id } });
       await tx.transcriptSegment.createMany({
-        data: imported.segments.map((segment) => ({
+        data: imported.segments.map((segment, position) => ({
           transcriptId: row.id,
           startSec: segment.startSec,
           endSec: segment.endSec,
           text: segment.text,
           words: segment.words as Prisma.InputJsonValue,
-          position: segment.position,
+          position,
         })),
       });
 

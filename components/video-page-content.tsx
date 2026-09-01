@@ -117,6 +117,7 @@ export function VideoPageContent({
   const [showResolved, setShowResolved] = useState(false);
   const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets'>('comments');
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [focusCommentId, setFocusCommentId] = useState<string | null>(null);
   const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null);
 
   const editAnnotationCanvasRef = useRef<AnnotationCanvasHandle>(null);
@@ -931,6 +932,25 @@ export function VideoPageContent({
     [applyCommentRange]
   );
 
+  const handleOpenTranscriptThread = useCallback((commentId: string) => {
+    setFocusCommentId(commentId);
+    setActiveSidePane('comments');
+  }, []);
+
+  const transcriptCommentMarkers = useMemo(
+    () =>
+      comments.map((comment) => ({
+        id: comment.id,
+        timestamp: comment.timestamp,
+        timestampEnd: comment.timestampEnd,
+        content: comment.content,
+        authorName: comment.author?.name || comment.guestName || 'Anonymous',
+        authorImage: comment.author?.image ?? null,
+        color: comment.tag?.color ?? null,
+      })),
+    [comments]
+  );
+
   if (loading) {
     return (
       <VideoPageLoading
@@ -977,8 +997,10 @@ export function VideoPageContent({
             versionId={activeVersionId}
             getCurrentTime={getCurrentTime}
             canManage={canManageSubtitles}
+            comments={transcriptCommentMarkers}
             onSeek={handleTranscriptSeek}
             onCommentRange={handleTranscriptCommentRange}
+            onOpenThread={handleOpenTranscriptThread}
           />
         </TranscriptSidebar>
         <div className={cn('flex-1 w-full flex flex-col min-h-0', isFullscreenMode && 'relative')}>
@@ -1217,6 +1239,8 @@ export function VideoPageContent({
           onAssetMentionClick={handleAssetMentionClick}
           activePane={activeSidePane}
           setActivePane={setActiveSidePane}
+          focusCommentId={focusCommentId}
+          onFocusCommentHandled={() => setFocusCommentId(null)}
           assetsPane={
             <AssetsPane
               videoId={videoId}
