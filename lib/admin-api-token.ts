@@ -1,12 +1,6 @@
 /**
  * A machine caller for the read-only admin endpoints.
  *
- * The growth scoreboard is read once a week by a digest script that has no
- * browser, and therefore no NextAuth session. The alternative was copying a
- * session cookie out of a browser by hand: those are JWTs with a 30-day
- * lifetime, so a scheduled job built on one stops working a month later and
- * reports nothing rather than reporting a failure.
- *
  * Off unless `OPENFRAME_ADMIN_API_TOKEN` is set, so a self-hosted instance that
  * never sets it keeps session-only admin access.
  */

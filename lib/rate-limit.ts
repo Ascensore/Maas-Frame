@@ -93,6 +93,8 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   // Email verification
   'verify-email': { windowMs: 15 * 60 * 1000, maxRequests: 20 }, // 20 per 15 min (clicked link)
   'resend-verification': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per hour
+  'set-password': { windowMs: 15 * 60 * 1000, maxRequests: 20 }, // 20 per 15 min (clicked invite)
+  'admin-invite-user': { windowMs: 60 * 60 * 1000, maxRequests: 30 }, // 30 per hour per admin
 
   // Onboarding — one-time action, very strict. Both are keyed by user id, not IP:
   // an office behind one address must not be able to lock its colleagues out of

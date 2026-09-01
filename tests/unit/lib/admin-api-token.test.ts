@@ -17,7 +17,7 @@ const TOKEN = 'zq4Xr7Tn2Vb9Kd5Mw8Hs3Lp6Cf1Gj0Ye';
 const SHORT = 'zq4Xr7Tn2Vb9Kd5Mw8Hs3Lp6Cf1Gj0Y';
 
 function requestWith(headers: Record<string, string>): Request {
-  return new Request('http://localhost:3000/api/admin/growth', { headers });
+  return new Request('http://localhost:3000/api/admin/users', { headers });
 }
 
 afterEach(() => {

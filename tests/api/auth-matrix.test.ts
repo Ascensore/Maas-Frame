@@ -45,7 +45,7 @@ import {
 } from '../factories';
 
 import * as adminFeedbackRoute from '@/app/api/admin/feedback/[feedbackId]/route';
-import * as adminGrowthRoute from '@/app/api/admin/growth/route';
+import * as adminUsersRoute from '@/app/api/admin/users/route';
 import * as adminRefreshR2Route from '@/app/api/admin/stats/refresh-r2/route';
 import * as approvalCancelRoute from '@/app/api/approvals/[requestId]/cancel/route';
 import * as approvalDecisionRoute from '@/app/api/approvals/[requestId]/decision/route';
@@ -95,6 +95,7 @@ import * as uploadImageRoute from '@/app/api/upload/image/route';
 import * as uploadSubtitleFileRoute from '@/app/api/upload/subtitle/[filename]/route';
 import * as uploadVideoFileRoute from '@/app/api/upload/video/[filename]/route';
 import * as versionApprovalsRoute from '@/app/api/versions/[versionId]/approvals/route';
+import * as versionAgentRunsRoute from '@/app/api/versions/[versionId]/agent-runs/route';
 import * as commentsExportRoute from '@/app/api/versions/[versionId]/comments/export/route';
 import * as commentsLiveRoute from '@/app/api/versions/[versionId]/comments/live/route';
 import * as versionCommentsRoute from '@/app/api/versions/[versionId]/comments/route';
@@ -104,6 +105,7 @@ import * as v1ProjectsRoute from '@/app/api/v1/projects/route';
 import * as v1ProjectVideosRoute from '@/app/api/v1/projects/[projectId]/videos/route';
 import * as v1VersionRoute from '@/app/api/v1/versions/[versionId]/route';
 import * as v1VersionCommentsRoute from '@/app/api/v1/versions/[versionId]/comments/route';
+import * as v1VersionAgentRunsRoute from '@/app/api/v1/versions/[versionId]/agent-runs/route';
 import * as v1VersionTranscriptRoute from '@/app/api/v1/versions/[versionId]/transcript/route';
 import * as v1SequenceLinkRoute from '@/app/api/v1/versions/[versionId]/sequence-link/route';
 import * as v1CommentRoute from '@/app/api/v1/comments/[commentId]/route';
@@ -167,7 +169,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 84;
+const EXPECTED_ROUTE_MODULE_COUNT = 87;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -199,6 +201,12 @@ const PUBLIC_ROUTES: ReadonlyMap<string, string> = new Map([
     // present. Rate limited by IP, and answers identically for unknown emails
     // so it cannot be used to enumerate accounts.
     'resend of the verification email, for users who cannot sign in yet',
+  ],
+  [
+    'auth/set-password/route.ts',
+    // Reached by clicking the admin-invite link in an email, before the user
+    // can sign in. Authenticated by the one-time token in the body.
+    'set-password link, authenticated by a single-use token',
   ],
   [
     'events/route.ts',
@@ -404,9 +412,10 @@ const ROUTE_CASES: readonly RouteCase[] = [
     params: (f) => ({ feedbackId: f.feedbackId }),
   },
   {
-    file: 'admin/growth/route.ts',
-    module: adminGrowthRoute,
-    url: () => '/api/admin/growth',
+    file: 'admin/users/route.ts',
+    module: adminUsersRoute,
+    url: () => '/api/admin/users',
+    body: { email: 'matrix-invite@example.com' },
   },
   {
     file: 'admin/stats/refresh-r2/route.ts',
@@ -697,6 +706,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     body: { content: 'anon note', timestamp: 1 },
   },
   {
+    file: 'v1/versions/[versionId]/agent-runs/route.ts',
+    module: v1VersionAgentRunsRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}/agent-runs`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { agentSlug: 'transcript-review' },
+  },
+  {
     file: 'v1/versions/[versionId]/transcript/route.ts',
     module: v1VersionTranscriptRoute,
     url: (f) => `/api/v1/versions/${f.versionId}/transcript`,
@@ -776,6 +792,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/versions/${f.versionId}/approvals`,
     params: (f) => ({ versionId: f.versionId }),
     body: { approverIds: ['someone'] },
+  },
+  {
+    file: 'versions/[versionId]/agent-runs/route.ts',
+    module: versionAgentRunsRoute,
+    url: (f) => `/api/versions/${f.versionId}/agent-runs`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { agentSlug: 'transcript-review' },
   },
   {
     file: 'versions/[versionId]/comments/export/route.ts',
@@ -1058,6 +1081,7 @@ describe('auth matrix', () => {
 
     beforeEach(async () => {
       signedOut();
+      vi.stubEnv('OPENFRAME_ENABLE_AGENTS', 'true');
       fixtures = await seedFixtures();
     });
 
@@ -1230,6 +1254,43 @@ describe('auth matrix', () => {
       // a handler that returned `{ ok: true }` and skipped the refresh would
       // still pass.
       expect(r2.listedBuckets).toEqual([r2.bucket]);
+    });
+
+    it('refuses POST /api/admin/users to a non-admin and creates no user', async () => {
+      signedInAs({ id: fixtures.userId, isAdmin: false });
+      const before = await db.user.count();
+
+      const response = await callRoute(
+        adminUsersRoute.POST as RouteHandler<ParamRecord>,
+        apiRequest('/api/admin/users', {
+          method: 'POST',
+          body: { email: 'not-allowed@example.com' },
+        })
+      );
+
+      expect(response.status).toBe(403);
+      expect(await db.user.count()).toBe(before);
+      expect(await db.user.count({ where: { email: 'not-allowed@example.com' } })).toBe(0);
+    });
+
+    it('lets an admin POST /api/admin/users, and the row exists', async () => {
+      signedInAs({ id: fixtures.userId, isAdmin: true, name: 'Site Admin' });
+
+      const response = await callRoute(
+        adminUsersRoute.POST as RouteHandler<ParamRecord>,
+        apiRequest('/api/admin/users', {
+          method: 'POST',
+          body: { email: 'allowed-invite@example.com', name: 'Invited Person' },
+        })
+      );
+
+      expect(response.status).toBe(201);
+      const created = await db.user.findUnique({
+        where: { email: 'allowed-invite@example.com' },
+      });
+      expect(created).not.toBeNull();
+      expect(created?.name).toBe('Invited Person');
+      expect(created?.password).toBeNull();
     });
   });
 });

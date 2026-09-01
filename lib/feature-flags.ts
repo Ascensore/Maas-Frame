@@ -130,7 +130,7 @@ export function isSignupEmailAllowed(email: string): boolean {
 
 // Acquisition attribution and funnel events. Defaults to OFF, unlike the other
 // product flags here, because the cost of the two mistakes is not symmetric: a
-// hosted instance that forgets to switch it on shows an empty growth page and is
+// hosted instance that forgets to switch it on collects no funnel rows and is
 // noticed the same day, while a self-hosted instance that gets it silently
 // switched on accumulates rows nobody asked for. Nothing is ever sent off the
 // instance either way, so this is about cost, not disclosure.
