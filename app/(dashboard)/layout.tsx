@@ -1,4 +1,4 @@
-import { Header, TrialBanner } from '@/components/layout';
+import { AppShell } from '@/components/layout/app-shell';
 import { auth } from '@/lib/auth';
 import { hasAppNavigationAccess } from '@/lib/route-access';
 import { getTrialNotice } from '@/lib/billing';
@@ -12,10 +12,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
   ]);
 
   return (
-    <div className="relative flex min-h-screen flex-col">
-      <Header user={session?.user ?? null} showAppNavigation={showAppNavigation} />
-      {trialNotice ? <TrialBanner notice={trialNotice} /> : null}
-      <main className="flex-1">{children}</main>
-    </div>
+    <AppShell
+      user={session?.user ?? null}
+      showAppNavigation={showAppNavigation}
+      trialNotice={trialNotice}
+    >
+      {children}
+    </AppShell>
   );
 }

@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import Link from 'next/link';
-import { User } from 'lucide-react';
+import { BrandMark } from '@/components/brand/brand-mark';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -21,8 +21,8 @@ export const GuestNameGate = memo(function GuestNameGate({
     <div className="h-screen flex items-center justify-center bg-background">
       <div className="w-full max-w-sm mx-auto p-6">
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 mb-4">
-            <User className="h-6 w-6 text-primary" />
+          <div className="mb-4 inline-flex items-center justify-center">
+            <BrandMark size="lg" />
           </div>
           <h1 className="text-xl font-semibold mb-1">Welcome to OpenFrame</h1>
           <p className="text-sm text-muted-foreground">

@@ -253,8 +253,8 @@ export function VideoCard({
         )}
         <Card
           className={cn(
-            'group overflow-hidden transition-colors',
-            selectionMode ? 'cursor-pointer' : 'hover:bg-accent/50 cursor-pointer',
+            'group overflow-hidden rounded-2xl border bg-card p-2 pb-3 shadow-[0_1px_2px_rgba(20,22,26,0.04)] transition-colors',
+            selectionMode ? 'cursor-pointer' : 'hover:border-foreground/15 cursor-pointer',
             selected && selectionMode && 'ring-2 ring-primary/40 border-primary/30',
             isDeleting && 'pointer-events-none opacity-70'
           )}
@@ -268,7 +268,7 @@ export function VideoCard({
           }
         >
           {selectionMode ? (
-            <div className="relative aspect-video bg-muted overflow-hidden">
+            <div className="relative aspect-[16/10] overflow-hidden rounded-[11px] bg-muted">
               {imgError ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/80">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
@@ -299,7 +299,7 @@ export function VideoCard({
           ) : (
             <Link href={`/projects/${projectId}/videos/${video.id}`}>
               {/* Thumbnail */}
-              <div className="relative aspect-video bg-muted overflow-hidden">
+              <div className="relative aspect-[16/10] overflow-hidden rounded-[11px] bg-muted">
                 {imgError ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/80">
                     <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
@@ -339,17 +339,19 @@ export function VideoCard({
             </Link>
           )}
 
-          <CardContent className="p-4">
+          <CardContent className="px-1.5 pt-3 pb-1">
             <div className="flex items-start justify-between gap-2">
               {selectionMode ? (
                 <div className="min-w-0 flex-1">
-                  <h3 className="font-medium truncate">{video.title}</h3>
-                  <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Badge variant="secondary" className="text-xs">
+                  <h3 className="truncate text-[13.5px] font-bold tracking-[-0.015em]">
+                    {video.title}
+                  </h3>
+                  <div className="mt-1.5 flex items-center gap-3 text-[11.5px] font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="secondary" className="font-mono text-[10px]">
                         v{video.currentVersion}
                       </Badge>
-                      <span className="text-xs">{video.duration}</span>
+                      <span className="font-mono text-[11px]">{video.duration}</span>
                     </span>
                     <span className="flex items-center gap-1">
                       <MessageSquare className="h-3.5 w-3.5" />
@@ -363,13 +365,15 @@ export function VideoCard({
                 </div>
               ) : (
                 <Link href={`/projects/${projectId}/videos/${video.id}`} className="min-w-0 flex-1">
-                  <h3 className="font-medium truncate">{video.title}</h3>
-                  <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Badge variant="secondary" className="text-xs">
+                  <h3 className="truncate text-[13.5px] font-bold tracking-[-0.015em]">
+                    {video.title}
+                  </h3>
+                  <div className="mt-1.5 flex items-center gap-3 text-[11.5px] font-medium text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="secondary" className="font-mono text-[10px]">
                         v{video.currentVersion}
                       </Badge>
-                      <span className="text-xs">{video.duration}</span>
+                      <span className="font-mono text-[11px]">{video.duration}</span>
                     </span>
                     <span className="flex items-center gap-1">
                       <MessageSquare className="h-3.5 w-3.5" />

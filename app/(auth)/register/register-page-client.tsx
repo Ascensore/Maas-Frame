@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Video, Loader2, KeyRound, UserPlus } from 'lucide-react';
+import { Loader2, KeyRound, UserPlus } from 'lucide-react';
 import { signIn } from 'next-auth/react';
+import { BrandLockup } from '@/components/brand/brand-mark';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -150,9 +151,8 @@ export default function RegisterPageClient({
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-background">
       <div className="w-full max-w-md">
-        <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <Video className="h-8 w-8 text-primary" />
-          <span className="font-bold text-2xl">OpenFrame</span>
+        <Link href="/" className="mb-8 flex items-center justify-center">
+          <BrandLockup size="lg" wordmark="OpenFrame" />
         </Link>
 
         <Card>

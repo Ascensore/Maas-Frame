@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Geist_Mono, JetBrains_Mono } from 'next/font/google';
+import { JetBrains_Mono, Plus_Jakarta_Sans } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ThemeProvider } from '@/components/theme-provider';
 import {
@@ -9,18 +9,20 @@ import {
 import { seoConfig } from '@/lib/seo';
 import './globals.css';
 
-const jetbrainsMono = JetBrains_Mono({
+const plusJakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
-  variable: '--font-sans',
+  variable: '--font-jakarta',
   display: 'swap',
   preload: true,
+  weight: ['400', '500', '600', '700', '800'],
 });
 
-const geistMono = Geist_Mono({
+const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
-  variable: '--font-geist-mono',
+  variable: '--font-jetbrains',
   display: 'swap',
   preload: true,
+  weight: ['400', '500', '600'],
 });
 
 export const metadata: Metadata = {
@@ -120,7 +122,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${jetbrainsMono.variable} ${geistMono.variable}`}
+      className={`${plusJakarta.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
       <body className="antialiased min-h-screen bg-background font-sans">
@@ -145,19 +147,13 @@ export default function RootLayout({
             }}
           />
         ))}
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
-          <svg aria-hidden="true" className="fixed h-0 w-0">
-            <filter id="openframe-noise">
-              <feTurbulence
-                type="fractalNoise"
-                baseFrequency="0.92"
-                numOctaves="2"
-                stitchTiles="stitch"
-              />
-            </filter>
-          </svg>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="light"
+          enableSystem
+          disableTransitionOnChange
+        >
           {children}
-          <div aria-hidden="true" className="noise-overlay" />
           <Toaster />
         </ThemeProvider>
       </body>

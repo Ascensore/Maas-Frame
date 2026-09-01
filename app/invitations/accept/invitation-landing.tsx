@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { Video, UserPlus, LogIn, MailWarning } from 'lucide-react';
+import { UserPlus, LogIn, MailWarning } from 'lucide-react';
+import { BrandLockup } from '@/components/brand/brand-mark';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import type { InvitationPreview } from '@/lib/invitations';
@@ -13,9 +14,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-background">
       <div className="w-full max-w-md">
-        <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <Video className="h-8 w-8 text-primary" />
-          <span className="font-bold text-2xl">OpenFrame</span>
+        <Link href="/" className="mb-8 flex items-center justify-center">
+          <BrandLockup size="lg" wordmark="OpenFrame" />
         </Link>
         {children}
       </div>

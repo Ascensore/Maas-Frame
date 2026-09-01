@@ -134,7 +134,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
   return (
     <div
       className={cn(
-        'shrink-0 flex items-center justify-between h-12 px-4 border-b bg-background/50 gap-3',
+        'shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11] gap-3',
         isFullscreenMode
           ? 'absolute top-0 left-0 right-0 z-50 transition-opacity duration-300'
           : '',
@@ -144,16 +144,16 @@ export const VideoPageHeader = memo(function VideoPageHeader({
       <div className="flex items-center gap-3 min-w-0 flex-1">
         <Link
           href={backHref}
-          className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+          className="inline-flex items-center text-sm text-white/60 hover:text-[#F4F4F2] transition-colors shrink-0"
         >
           <ArrowLeft className="h-4 w-4 mr-1" />
           Back
         </Link>
         <Separator orientation="vertical" className="h-5 shrink-0" />
         <div className="hidden sm:flex min-w-0 items-center gap-2">
-          <span className="text-sm font-medium truncate">{title}</span>
-          <span className="text-xs text-muted-foreground shrink-0">•</span>
-          <span className="text-xs text-muted-foreground truncate">{projectName}</span>
+          <span className="text-sm font-bold tracking-[-0.015em] truncate">{title}</span>
+          <span className="text-xs text-white/35 shrink-0">·</span>
+          <span className="text-xs text-white/45 truncate">{projectName}</span>
         </div>
       </div>
 
