@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useEffect, useState, type ReactNode, type RefObject } from 'react';
 import {
   ArrowUpRight,
   Captions,
@@ -136,6 +136,8 @@ interface CommentsPaneProps {
   setActivePane: (pane: 'comments' | 'assets' | 'transcript') => void;
   assetsPane: ReactNode;
   transcriptPane: ReactNode;
+  focusCommentId?: string | null;
+  onFocusCommentHandled?: () => void;
 }
 
 export const CommentsPane = memo(function CommentsPane({
@@ -215,6 +217,8 @@ export const CommentsPane = memo(function CommentsPane({
   setActivePane,
   assetsPane,
   transcriptPane,
+  focusCommentId = null,
+  onFocusCommentHandled,
 }: CommentsPaneProps) {
   const [isPaneDraggingOver, setIsPaneDraggingOver] = useState(false);
   const formatCommentRange = (timestamp: number, timestampEnd: number | null) => {
@@ -229,6 +233,16 @@ export const CommentsPane = memo(function CommentsPane({
         ? `${formatTime(replyRangeStart)} - ${formatTime(replyRangeEnd)}`
         : `In ${formatTime(replyRangeStart)}`
       : null;
+
+  useEffect(() => {
+    if (!focusCommentId) return;
+    const node = document.querySelector(`[data-comment-id="${CSS.escape(focusCommentId)}"]`);
+    if (node instanceof HTMLElement) {
+      node.scrollIntoView({ block: 'nearest' });
+    }
+    const timer = window.setTimeout(() => onFocusCommentHandled?.(), 2500);
+    return () => window.clearTimeout(timer);
+  }, [focusCommentId, onFocusCommentHandled]);
 
   return (
     <>
@@ -454,9 +468,11 @@ export const CommentsPane = memo(function CommentsPane({
                 return (
                   <div
                     key={comment.id}
+                    data-comment-id={comment.id}
                     className={cn(
                       'group rounded-lg border p-3 transition-colors hover:bg-accent/50',
-                      comment.isResolved && 'opacity-60'
+                      comment.isResolved && 'opacity-60',
+                      focusCommentId === comment.id && 'ring-2 ring-primary'
                     )}
                   >
                     <div className="flex items-start justify-between gap-2 mb-2">
@@ -1237,7 +1253,7 @@ export const CommentsPane = memo(function CommentsPane({
           </div>
         </div>
 
-        {activePane === 'comments' ? composer : null}
+        {activePane === 'comments' || activePane === 'transcript' ? composer : null}
       </div>
     </>
   );

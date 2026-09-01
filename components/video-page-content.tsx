@@ -111,6 +111,7 @@ export function VideoPageContent({
     toggleVoiceSpeed,
   } = useCommentMedia();
   const [showResolved, setShowResolved] = useState(false);
+  const [focusCommentId, setFocusCommentId] = useState<string | null>(null);
   const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets' | 'transcript'>(
     'comments'
   );
@@ -750,9 +751,27 @@ export function VideoPageContent({
   const handleTranscriptCommentRange = useCallback(
     (start: number, end: number, quote: string) => {
       applyCommentRange(start, end, quote);
-      setActiveSidePane('comments');
     },
     [applyCommentRange]
+  );
+
+  const handleOpenTranscriptThread = useCallback((commentId: string) => {
+    setFocusCommentId(commentId);
+    setActiveSidePane('comments');
+  }, []);
+
+  const transcriptCommentMarkers = useMemo(
+    () =>
+      comments.map((comment) => ({
+        id: comment.id,
+        timestamp: comment.timestamp,
+        timestampEnd: comment.timestampEnd,
+        content: comment.content,
+        authorName: comment.author?.name || comment.guestName || 'Anonymous',
+        authorImage: comment.author?.image ?? null,
+        color: comment.tag?.color ?? null,
+      })),
+    [comments]
   );
 
   if (loading) {
@@ -1011,6 +1030,8 @@ export function VideoPageContent({
           onAssetMentionClick={handleAssetMentionClick}
           activePane={activeSidePane}
           setActivePane={setActiveSidePane}
+          focusCommentId={focusCommentId}
+          onFocusCommentHandled={() => setFocusCommentId(null)}
           assetsPane={
             <AssetsPane
               videoId={videoId}
@@ -1038,8 +1059,10 @@ export function VideoPageContent({
               versionId={activeVersionId}
               getCurrentTime={getCurrentTime}
               canManage={canManageSubtitles}
+              comments={transcriptCommentMarkers}
               onSeek={handleTranscriptSeek}
               onCommentRange={handleTranscriptCommentRange}
+              onOpenThread={handleOpenTranscriptThread}
             />
           }
           composer={
