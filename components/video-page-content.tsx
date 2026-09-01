@@ -27,10 +27,15 @@ import { useDownloadActions } from '@/components/video-page/hooks/use-download-a
 import { useVersionDurationSync } from '@/components/video-page/hooks/use-version-duration-sync';
 import { CommentComposer } from '@/components/video-page/comment-composer';
 import { CommentsPane } from '@/components/video-page/comments-pane';
+import { ReviewCommandPalette } from '@/components/video-page/review-command-palette';
+import { KeyboardShortcutsModal } from '@/components/keyboard-shortcuts-modal';
+import { useReviewHotkeys } from '@/components/video-page/hooks/use-review-hotkeys';
+import { draftRangeSpan } from '@/lib/comment-range';
 import { AssetsPane } from '@/components/video-page/assets-pane';
 import { ApprovalRequestDialog } from '@/components/video-page/approval-request-dialog';
 import { ApprovalRequestsPanel } from '@/components/video-page/approval-requests-panel';
 import { TranscriptPane } from '@/components/video-page/transcript-pane';
+import { TranscriptSidebar } from '@/components/video-page/transcript-sidebar';
 import type {
   CommentMarker,
   PlayerAdapter,
@@ -44,7 +49,6 @@ import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
 import { useSubtitles } from '@/components/video-page/hooks/use-subtitles';
 import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
-import { getSpeedOptionsForProvider } from '@/components/video-page/hooks/video-player-utils';
 
 function formatTime(seconds: number): string {
   const totalSeconds = Math.floor(seconds);
@@ -111,10 +115,9 @@ export function VideoPageContent({
     toggleVoiceSpeed,
   } = useCommentMedia();
   const [showResolved, setShowResolved] = useState(false);
+  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets'>('comments');
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [focusCommentId, setFocusCommentId] = useState<string | null>(null);
-  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets' | 'transcript'>(
-    'comments'
-  );
   const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null);
 
   const editAnnotationCanvasRef = useRef<AnnotationCanvasHandle>(null);
@@ -124,6 +127,10 @@ export function VideoPageContent({
   const [annotationStrokes, setAnnotationStrokes] = useState<AnnotationStroke[] | null>(null);
   const [viewingAnnotation, setViewingAnnotation] = useState<AnnotationStroke[] | null>(null);
   const annotationCanvasRef = useRef<AnnotationCanvasHandle>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const rangeDragCommitRef = useRef<(start: number, end: number) => void>(() => {});
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [reviewShortcutsOpen, setReviewShortcutsOpen] = useState(false);
 
   const [guestName, setGuestName] = useState(() => {
     if (typeof window === 'undefined') return '';
@@ -255,6 +262,72 @@ export function VideoPageContent({
   const canResolveComments = !!video?.canResolveComments;
   const canRequestApproval = !!video?.canRequestApproval;
   const canShareVideo = !!video?.canShareVideo;
+  const agentsEnabled = !!video?.agentsEnabled;
+  const canManageAgentComments = !!video?.canManageAgentComments;
+  const [agentRunBusy, setAgentRunBusy] = useState(false);
+  const [agentRunError, setAgentRunError] = useState<string | null>(null);
+
+  const refreshAgentRuns = useCallback(async (versionId: string) => {
+    const res = await fetch(`/api/versions/${versionId}/agent-runs`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const payload: unknown = await res.json().catch(() => null);
+    const runs =
+      payload &&
+      typeof payload === 'object' &&
+      'data' in payload &&
+      payload.data &&
+      typeof payload.data === 'object' &&
+      'runs' in payload.data &&
+      Array.isArray(payload.data.runs)
+        ? payload.data.runs
+        : null;
+    if (!runs) return;
+    const latest = runs[0] as { status?: string; error?: string | null } | undefined;
+    if (!latest) {
+      setAgentRunBusy(false);
+      setAgentRunError(null);
+      return;
+    }
+    setAgentRunBusy(latest.status === 'PENDING' || latest.status === 'RUNNING');
+    setAgentRunError(latest.status === 'FAILED' ? (latest.error ?? 'AI review failed') : null);
+  }, []);
+
+  useEffect(() => {
+    if (!agentRunBusy || !activeVersionId) return;
+    const timer = setInterval(() => {
+      void refreshAgentRuns(activeVersionId);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [agentRunBusy, activeVersionId, refreshAgentRuns]);
+
+  const handleRunAgentReview = useCallback(async () => {
+    if (!activeVersionId) return;
+    setAgentRunError(null);
+    setAgentRunBusy(true);
+    const res = await fetch(`/api/versions/${activeVersionId}/agent-runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    if (res.status === 409) {
+      void refreshAgentRuns(activeVersionId);
+      return;
+    }
+    if (!res.ok) {
+      const payload: unknown = await res.json().catch(() => null);
+      const message =
+        payload &&
+        typeof payload === 'object' &&
+        'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Failed to start AI review';
+      setAgentRunBusy(false);
+      setAgentRunError(message);
+      return;
+    }
+    void refreshAgentRuns(activeVersionId);
+  }, [activeVersionId, refreshAgentRuns]);
 
   const {
     requests: approvalRequests,
@@ -287,7 +360,6 @@ export function VideoPageContent({
     );
   }, [video?.versions, activeVersionId]);
   const activeProviderId = activeVersion?.providerId;
-  const speedOptions = getSpeedOptionsForProvider(activeProviderId);
   // Only the providers that play through our own <video> element can carry a <track>.
   // A YouTube version is an iframe we do not control, and it brings its own captions.
   const supportsSubtitles = activeProviderId === 'bunny' || activeProviderId === 'r2';
@@ -346,8 +418,10 @@ export function VideoPageContent({
     isMuted,
     isFrameMode,
     frameStepLabel,
+    estimatedFrameRate,
     showScrubReadout,
     playbackSpeed,
+    playbackSpeedBounds,
     qualityOptions,
     selectedQualityLevel,
     isBunnyPortraitSource,
@@ -365,7 +439,7 @@ export function VideoPageContent({
     handleMuteToggle,
     handleFrameModeToggle,
     handleSkip,
-    handleSpeedChange,
+    handleSpeedNudge,
     handleQualityChange,
     handleTimelineMouseDown,
     handleTimelineMouseMove,
@@ -387,9 +461,9 @@ export function VideoPageContent({
     playerRef,
     formatTime,
     formatBunnyQualityLabel,
-    speedOptions,
     scheduleWatchProgressSaveRef,
     setViewingAnnotation,
+    onRangeDragCommitRef: rangeDragCommitRef,
   });
 
   const { youtubeCaptionTracks, activeYoutubeCaptionLanguage, selectYoutubeCaptionLanguage } =
@@ -493,7 +567,8 @@ export function VideoPageContent({
     imageFiles,
     commentRangeStart,
     commentRangeEnd,
-    toggleCommentRangeSelection,
+    markCommentRangeIn,
+    markCommentRangeOut,
     clearCommentRangeSelection,
     applyCommentRange,
     isUploadingImage,
@@ -518,7 +593,8 @@ export function VideoPageContent({
     replyImageFiles,
     replyRangeStart,
     replyRangeEnd,
-    toggleReplyRangeSelection,
+    markReplyRangeIn,
+    markReplyRangeOut,
     clearReplyRangeSelection,
     isUploadingReplyAudio,
     isUploadingReplyImage,
@@ -574,16 +650,117 @@ export function VideoPageContent({
     fetchAssets,
   });
 
+  useEffect(() => {
+    rangeDragCommitRef.current = (start, end) => {
+      applyCommentRange(start, end, '');
+    };
+  }, [applyCommentRange]);
+
   const commentMarkers = useMemo<CommentMarker[]>(() => {
     return filteredComments.map((comment) => ({
       id: comment.id,
       timestamp: comment.timestamp,
       timestampEnd: comment.timestampEnd,
       color: comment.tag?.color || (comment.isResolved ? '#22C55E' : '#22D3EE'),
-      annotationData: comment.annotationData,
       preview: `${comment.tag ? ` [${comment.tag.name}]` : ''} - ${comment.content?.substring(0, 30) || '(voice note)'}...`,
+      annotationData: comment.annotationData,
     }));
   }, [filteredComments]);
+
+  const draftRange = useMemo(
+    () =>
+      draftRangeSpan(
+        replyingTo
+          ? { start: replyRangeStart, end: replyRangeEnd }
+          : { start: commentRangeStart, end: commentRangeEnd },
+        currentTime
+      ),
+    [commentRangeEnd, commentRangeStart, currentTime, replyRangeEnd, replyRangeStart, replyingTo]
+  );
+
+  const markActiveRangeIn = useCallback(() => {
+    if (replyingTo) markReplyRangeIn();
+    else markCommentRangeIn();
+  }, [markCommentRangeIn, markReplyRangeIn, replyingTo]);
+
+  const markActiveRangeOut = useCallback(() => {
+    if (replyingTo) markReplyRangeOut();
+    else markCommentRangeOut();
+  }, [markCommentRangeOut, markReplyRangeOut, replyingTo]);
+
+  const clearActiveRange = useCallback(() => {
+    if (replyingTo) clearReplyRangeSelection();
+    else clearCommentRangeSelection();
+  }, [clearCommentRangeSelection, clearReplyRangeSelection, replyingTo]);
+
+  const focusCommentComposer = useCallback(() => {
+    setShowComments(true);
+    setIsMobileCommentsOpen(true);
+    window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+  }, [setIsMobileCommentsOpen, setShowComments]);
+
+  const runReviewCommand = useCallback(
+    (commandId: string) => {
+      switch (commandId) {
+        case 'mark-in':
+          markActiveRangeIn();
+          break;
+        case 'mark-out':
+          markActiveRangeOut();
+          break;
+        case 'clear-range':
+          clearActiveRange();
+          break;
+        case 'focus-comment':
+          focusCommentComposer();
+          break;
+        case 'toggle-play':
+          handlePlayPause();
+          break;
+        case 'toggle-mute':
+          handleMuteToggle();
+          break;
+        case 'toggle-fullscreen':
+          toggleFullscreen();
+          break;
+        case 'record-voice':
+          startRecording();
+          break;
+        case 'draw-annotation':
+          if (playerRef.current?.pauseVideo) playerRef.current.pauseVideo();
+          setIsAnnotating(true);
+          break;
+        case 'open-shortcuts-help':
+          setReviewShortcutsOpen(true);
+          break;
+        case 'toggle-transcript':
+          setTranscriptOpen((open) => !open);
+          break;
+      }
+    },
+    [
+      clearActiveRange,
+      focusCommentComposer,
+      handleMuteToggle,
+      handlePlayPause,
+      markActiveRangeIn,
+      markActiveRangeOut,
+      startRecording,
+      toggleFullscreen,
+    ]
+  );
+
+  useReviewHotkeys({
+    enabled: Boolean(video && activeVersion) && canInitializePlayer && !loading,
+    paletteOpen: commandPaletteOpen,
+    onTogglePalette: () => setCommandPaletteOpen((open) => !open),
+    onMarkIn: markActiveRangeIn,
+    onMarkOut: markActiveRangeOut,
+    onClearRange: clearActiveRange,
+    onFocusComment: focusCommentComposer,
+    onOpenShortcutsHelp: () => setReviewShortcutsOpen(true),
+    onToggleTranscript: () => setTranscriptOpen((open) => !open),
+  });
 
   const editAnnotationInitialStrokes = useMemo<AnnotationStroke[] | undefined>(() => {
     if (editAnnotationData) {
@@ -809,8 +986,23 @@ export function VideoPageContent({
   }
 
   return (
-    <div className={cn(containerHeight, 'flex flex-col bg-background overflow-hidden')}>
+    <div className={cn(containerHeight, 'dark flex flex-col bg-[#0D0E11] overflow-hidden')}>
       <div className="flex-1 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden min-h-0">
+        <TranscriptSidebar
+          open={transcriptOpen}
+          onClose={() => setTranscriptOpen(false)}
+          isFullscreen={isFullscreenMode}
+        >
+          <TranscriptPane
+            versionId={activeVersionId}
+            getCurrentTime={getCurrentTime}
+            canManage={canManageSubtitles}
+            comments={transcriptCommentMarkers}
+            onSeek={handleTranscriptSeek}
+            onCommentRange={handleTranscriptCommentRange}
+            onOpenThread={handleOpenTranscriptThread}
+          />
+        </TranscriptSidebar>
         <div className={cn('flex-1 w-full flex flex-col min-h-0', isFullscreenMode && 'relative')}>
           <VideoPageHeader
             mode={mode}
@@ -858,6 +1050,8 @@ export function VideoPageContent({
             hasPendingApprovalRequest={!!activePendingRequest}
             onOpenApprovalRequest={handleOpenApprovalRequestDialog}
             onOpenApprovalsPanel={handleOpenApprovalsPanel}
+            transcriptOpen={transcriptOpen}
+            onToggleTranscript={() => setTranscriptOpen((open) => !open)}
           />
 
           {!isFullscreenMode && (
@@ -924,6 +1118,7 @@ export function VideoPageContent({
             duration={duration}
             isFrameMode={isFrameMode}
             frameStepLabel={frameStepLabel}
+            estimatedFrameRate={estimatedFrameRate}
             handleSkip={handleSkip}
             handleFrameModeToggle={handleFrameModeToggle}
             handleMuteToggle={handleMuteToggle}
@@ -942,8 +1137,8 @@ export function VideoPageContent({
             onDeleteSubtitle={deleteSubtitle}
             isUploadingSubtitle={isUploadingSubtitle}
             playbackSpeed={playbackSpeed}
-            speedOptions={speedOptions}
-            handleSpeedChange={handleSpeedChange}
+            playbackSpeedBounds={playbackSpeedBounds}
+            handleSpeedNudge={handleSpeedNudge}
             toggleFullscreen={toggleFullscreen}
             showComments={showComments}
             setShowComments={setShowComments}
@@ -952,6 +1147,13 @@ export function VideoPageContent({
             handleTimelineMouseMove={handleTimelineMouseMove}
             handleSeekToTimestamp={handleSeekToTimestamp}
             commentMarkers={commentMarkers}
+            draftRange={draftRange}
+            commentRangeStart={replyingTo ? replyRangeStart : commentRangeStart}
+            commentRangeEnd={replyingTo ? replyRangeEnd : commentRangeEnd}
+            markCommentRangeIn={markActiveRangeIn}
+            markCommentRangeOut={markActiveRangeOut}
+            clearCommentRangeSelection={clearActiveRange}
+            onOpenCommandPalette={() => setCommandPaletteOpen(true)}
             reviewWatermark={reviewWatermark}
           />
         </div>
@@ -1007,7 +1209,14 @@ export function VideoPageContent({
           setReplyText={setReplyText}
           replyRangeStart={replyRangeStart}
           replyRangeEnd={replyRangeEnd}
-          toggleReplyRangeSelection={toggleReplyRangeSelection}
+          markReplyRangeIn={markReplyRangeIn}
+          markReplyRangeOut={markReplyRangeOut}
+          seekToReplyRangeIn={
+            replyRangeStart !== null ? () => handleSeekToTimestamp(replyRangeStart) : undefined
+          }
+          seekToReplyRangeOut={
+            replyRangeEnd !== null ? () => handleSeekToTimestamp(replyRangeEnd) : undefined
+          }
           clearReplyRangeSelection={clearReplyRangeSelection}
           handleReplyComment={commentsActions.onReplyComment}
           startReplyRecording={startReplyRecording}
@@ -1054,17 +1263,11 @@ export function VideoPageContent({
               directUploadProvider={directUploadProvider}
             />
           }
-          transcriptPane={
-            <TranscriptPane
-              versionId={activeVersionId}
-              getCurrentTime={getCurrentTime}
-              canManage={canManageSubtitles}
-              comments={transcriptCommentMarkers}
-              onSeek={handleTranscriptSeek}
-              onCommentRange={handleTranscriptCommentRange}
-              onOpenThread={handleOpenTranscriptThread}
-            />
-          }
+          agentsEnabled={agentsEnabled}
+          canManageAgentComments={canManageAgentComments}
+          agentRunBusy={agentRunBusy}
+          agentRunError={agentRunError}
+          onRunAgentReview={handleRunAgentReview}
           composer={
             <CommentComposer
               isRecording={isRecording}
@@ -1079,7 +1282,16 @@ export function VideoPageContent({
               setCommentText={setCommentText}
               commentRangeStart={commentRangeStart}
               commentRangeEnd={commentRangeEnd}
-              toggleCommentRangeSelection={toggleCommentRangeSelection}
+              markCommentRangeIn={markCommentRangeIn}
+              markCommentRangeOut={markCommentRangeOut}
+              seekToCommentRangeIn={
+                commentRangeStart !== null
+                  ? () => handleSeekToTimestamp(commentRangeStart)
+                  : undefined
+              }
+              seekToCommentRangeOut={
+                commentRangeEnd !== null ? () => handleSeekToTimestamp(commentRangeEnd) : undefined
+              }
               clearCommentRangeSelection={clearCommentRangeSelection}
               playVoice={playVoice}
               playingVoiceId={playingVoiceId}
@@ -1107,10 +1319,20 @@ export function VideoPageContent({
               projectId={projectId}
               pauseVideoForAnnotation={composerActions.onPauseVideoForAnnotation}
               assets={assets}
+              composerTextareaRef={composerTextareaRef}
             />
           }
         />
       </div>
+
+      {commandPaletteOpen ? (
+        <ReviewCommandPalette open onOpenChange={setCommandPaletteOpen} onRun={runReviewCommand} />
+      ) : null}
+      <KeyboardShortcutsModal
+        open={reviewShortcutsOpen}
+        onOpenChange={setReviewShortcutsOpen}
+        variant="review"
+      />
 
       <ImagePreviewDialog previewImage={previewImage} onClose={() => setPreviewImage(null)} />
 

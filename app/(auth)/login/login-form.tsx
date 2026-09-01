@@ -57,6 +57,7 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
   const [password, setPassword] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
   const [showVerifiedSuccess, setShowVerifiedSuccess] = useState(false);
+  const [showInvitedSuccess, setShowInvitedSuccess] = useState(false);
   const callbackUrl = getSafeCallbackUrl(searchParams.get('callbackUrl'));
   const isInvitationFlow = isInvitationCallbackUrl(callbackUrl);
   const registerHref = buildRegisterHref(callbackUrl);
@@ -67,6 +68,9 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
     }
     if (searchParams.get('verified') === 'true') {
       setShowVerifiedSuccess(true);
+    }
+    if (searchParams.get('invited') === 'true') {
+      setShowInvitedSuccess(true);
     }
     const errorCode = searchParams.get('error');
     if (errorCode) {
@@ -139,6 +143,12 @@ function LoginFormInner({ googleEnabled, githubEnabled }: LoginFormInnerProps) {
         {showVerifiedSuccess && (
           <div className="p-3 rounded-md bg-green-500/10 text-green-600 text-sm mb-4">
             Email verified successfully! You can now sign in.
+          </div>
+        )}
+
+        {showInvitedSuccess && (
+          <div className="p-3 rounded-md bg-green-500/10 text-green-600 text-sm mb-4">
+            Password set. You can sign in now.
           </div>
         )}
 

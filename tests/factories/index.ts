@@ -35,6 +35,9 @@ export type {
 export { createComment } from './comment';
 export type { CreateCommentInput } from './comment';
 
+export { createReadyTranscript } from './transcript';
+export type { CreateTranscriptInput } from './transcript';
+
 export { createShareLink } from './share';
 export type { CreateShareLinkInput } from './share';
 

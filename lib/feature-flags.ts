@@ -130,12 +130,30 @@ export function isSignupEmailAllowed(email: string): boolean {
 
 // Acquisition attribution and funnel events. Defaults to OFF, unlike the other
 // product flags here, because the cost of the two mistakes is not symmetric: a
-// hosted instance that forgets to switch it on shows an empty growth page and is
+// hosted instance that forgets to switch it on collects no funnel rows and is
 // noticed the same day, while a self-hosted instance that gets it silently
 // switched on accumulates rows nobody asked for. Nothing is ever sent off the
 // instance either way, so this is about cost, not disclosure.
 export function isProductAnalyticsEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_ANALYTICS', false);
+}
+
+/**
+ * In-product review agents. Defaults off: a non-mock model sends transcript
+ * and comment text to a third-party provider. Same caution as analytics.
+ */
+export function isAgentsFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_AGENTS', false);
+}
+
+/**
+ * Model id for agent runs. `mock` never leaves the process (tests and no-key
+ * hosts). Anything else is passed to the AI SDK (`openai/…`, `anthropic/…`,
+ * `google/…`).
+ */
+export function getAgentModelId(): string {
+  const raw = process.env.OPENFRAME_AGENT_MODEL?.trim();
+  return raw && raw.length > 0 ? raw : 'mock';
 }
 
 export function isTranscriptionFeatureEnabled() {

@@ -146,6 +146,32 @@ describe('getClientIp in nginx mode', () => {
   });
 });
 
+describe('getClientIp in vercel mode', () => {
+  beforeEach(() => {
+    vi.stubEnv('TRUSTED_PROXY_MODE', 'vercel');
+  });
+
+  it('trusts the first x-forwarded-for entry', () => {
+    expect(getClientIp(requestWith({ 'x-forwarded-for': '203.0.113.9, 10.0.0.1' }))).toBe(
+      '203.0.113.9'
+    );
+  });
+
+  it('does not trust x-real-ip, which a client can set', () => {
+    const request = requestWith({
+      'x-real-ip': '198.51.100.1',
+      'x-forwarded-for': '203.0.113.9',
+    });
+    expect(getClientIp(request)).toBe('203.0.113.9');
+  });
+
+  it('returns the loopback address when the first x-forwarded-for entry is implausible', () => {
+    expect(getClientIp(requestWith({ 'x-forwarded-for': 'bogus-host, 203.0.113.9' }))).toBe(
+      '127.0.0.1'
+    );
+  });
+});
+
 describe('rateLimitHeaders', () => {
   it('renders the limit, the remaining count and the reset as unix seconds', () => {
     const result = {
@@ -190,6 +216,13 @@ describe('RATE_LIMIT_CONFIGS', () => {
 
   it('defines the api fallback that unknown actions resolve to', () => {
     expect(RATE_LIMIT_CONFIGS.api).toEqual({ windowMs: 60_000, maxRequests: 100 });
+  });
+
+  it('caps agent-run at five requests per version per hour', () => {
+    expect(RATE_LIMIT_CONFIGS['agent-run']).toEqual({
+      windowMs: 3_600_000,
+      maxRequests: 5,
+    });
   });
 
   it('keeps auth actions stricter per minute than the general api bucket', () => {

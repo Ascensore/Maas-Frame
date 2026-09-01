@@ -31,6 +31,20 @@ services:
       - .env.docker
     restart: unless-stopped
 
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app:
+        condition: service_started
+    env_file:
+      - .env.docker
+    command: ['bun', 'run', 'agent-worker']
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     env_file:

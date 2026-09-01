@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/table';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { format } from 'date-fns';
+import { AddUserDialog } from '@/components/admin/add-user-dialog';
 
 function getBillingStatusVariant(
   status: BillingSubscriptionStatus
@@ -374,6 +375,7 @@ export default async function AdminUsersPage({
     name: true,
     email: true,
     createdAt: true,
+    password: true,
     subscriptionStatus: true,
     trialEndsAt: true,
     stripeCurrentPeriodEnd: true,
@@ -403,6 +405,7 @@ export default async function AdminUsersPage({
     name: string | null;
     email: string | null;
     createdAt: Date;
+    invitePending: boolean;
     subscriptionStatus: BillingSubscriptionStatus;
     effectiveStatus: BillingSubscriptionStatus;
     trialEndsAt: Date | null;
@@ -427,8 +430,9 @@ export default async function AdminUsersPage({
       select,
     });
 
-    paginatedUsers = users.map((user) => ({
+    paginatedUsers = users.map(({ password, ...user }) => ({
       ...user,
+      invitePending: password === null,
       effectiveStatus: getEffectiveBillingStatus(user, now),
       invitedMembersCount: user.ownedWorkspaces.reduce(
         (total, workspace) => total + workspace._count.members,
@@ -441,8 +445,9 @@ export default async function AdminUsersPage({
   } else {
     const users = await db.user.findMany({ where, select });
 
-    const usersWithMetrics = users.map((user) => ({
+    const usersWithMetrics = users.map(({ password, ...user }) => ({
       ...user,
+      invitePending: password === null,
       effectiveStatus: getEffectiveBillingStatus(user, now),
       invitedMembersCount: user.ownedWorkspaces.reduce(
         (total, workspace) => total + workspace._count.members,
@@ -537,6 +542,7 @@ export default async function AdminUsersPage({
     <div className="flex-1 space-y-4">
       <div className="flex items-center justify-between space-y-2">
         <h2 className="text-3xl font-bold tracking-tight">Users</h2>
+        <AddUserDialog />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -769,6 +775,11 @@ export default async function AdminUsersPage({
                         <div className="flex flex-col">
                           <span className="font-medium">{user.name || 'Anonymous'}</span>
                           <span className="text-xs text-muted-foreground">{user.email}</span>
+                          {user.invitePending ? (
+                            <Badge variant="outline" className="mt-1 w-fit">
+                              Invite pending
+                            </Badge>
+                          ) : null}
                         </div>
                       </TableCell>
                       {stripeBillingEnabled &&

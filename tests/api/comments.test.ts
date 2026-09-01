@@ -365,6 +365,20 @@ describe('POST /api/versions/[versionId]/comments', () => {
     expect((await db.comment.findFirstOrThrow()).timestamp).toBe(120);
   });
 
+  it('accepts a fractional timestamp that still sits inside the last stored second', async () => {
+    const scenario = await seedVersion({ duration: 120 });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      createCommentRoute,
+      apiRequest(commentsUrl(scenario.version.id), { body: { content: 'hi', timestamp: 120.9 } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    expect((await db.comment.findFirstOrThrow()).timestamp).toBe(120.9);
+  });
+
   it('rejects a timestampEnd below the timestamp', async () => {
     const scenario = await seedVersion({ duration: 120 });
     signedInAs(scenario.owner);

@@ -28,6 +28,7 @@ import {
   validateImageFile,
 } from '@/components/video-page/image-upload-utils';
 import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
+import { markRangeIn, markRangeOut, resolveCommentTimestamp } from '@/lib/comment-range';
 import { validateAnnotationStrokes } from '@/lib/validation';
 import { withWebmDuration } from '@/lib/webm-duration';
 import { ApiRequestError, apiRequestError, toastApiError } from '@/lib/client/api-error';
@@ -154,15 +155,22 @@ export function useCommentActions({
     setReplyRangeEnd(null);
   }, []);
 
-  const toggleCommentRangeSelection = useCallback(() => {
-    if (commentRangeStart === null || commentRangeEnd !== null) {
-      setCommentRangeStart(currentTime);
-      setCommentRangeEnd(null);
-      return;
-    }
+  const markCommentRangeIn = useCallback(() => {
+    const next = markRangeIn(currentTime, {
+      start: commentRangeStart,
+      end: commentRangeEnd,
+    });
+    setCommentRangeStart(next.start);
+    setCommentRangeEnd(next.end);
+  }, [commentRangeEnd, commentRangeStart, currentTime]);
 
-    setCommentRangeStart(Math.min(commentRangeStart, currentTime));
-    setCommentRangeEnd(Math.max(commentRangeStart, currentTime));
+  const markCommentRangeOut = useCallback(() => {
+    const next = markRangeOut(currentTime, {
+      start: commentRangeStart,
+      end: commentRangeEnd,
+    });
+    setCommentRangeStart(next.start);
+    setCommentRangeEnd(next.end);
   }, [commentRangeEnd, commentRangeStart, currentTime]);
 
   const applyCommentRange = useCallback((start: number, end: number, quote: string) => {
@@ -173,15 +181,22 @@ export function useCommentActions({
     }
   }, []);
 
-  const toggleReplyRangeSelection = useCallback(() => {
-    if (replyRangeStart === null || replyRangeEnd !== null) {
-      setReplyRangeStart(currentTime);
-      setReplyRangeEnd(null);
-      return;
-    }
+  const markReplyRangeIn = useCallback(() => {
+    const next = markRangeIn(currentTime, {
+      start: replyRangeStart,
+      end: replyRangeEnd,
+    });
+    setReplyRangeStart(next.start);
+    setReplyRangeEnd(next.end);
+  }, [currentTime, replyRangeEnd, replyRangeStart]);
 
-    setReplyRangeStart(Math.min(replyRangeStart, currentTime));
-    setReplyRangeEnd(Math.max(replyRangeStart, currentTime));
+  const markReplyRangeOut = useCallback(() => {
+    const next = markRangeOut(currentTime, {
+      start: replyRangeStart,
+      end: replyRangeEnd,
+    });
+    setReplyRangeStart(next.start);
+    setReplyRangeEnd(next.end);
   }, [currentTime, replyRangeEnd, replyRangeStart]);
 
   const getGuestUploadToken = useCallback(
@@ -310,14 +325,18 @@ export function useCommentActions({
       }
 
       const tempId = `temp-${Date.now()}`;
-      const commentTimestamp = commentRangeStart ?? currentTime;
+      const { timestamp: commentTimestamp, timestampEnd } = resolveCommentTimestamp(
+        commentRangeStart,
+        commentRangeEnd,
+        currentTime
+      );
       const serializedAnnotation = effectiveStrokes ? JSON.stringify(effectiveStrokes) : null;
       const hasImages = imageFiles.length > 0;
       const optimisticComment: Comment = {
         id: tempId,
         content: voiceData || hasImages ? commentText.trim() || null : commentText,
         timestamp: commentTimestamp,
-        timestampEnd: commentRangeEnd,
+        timestampEnd,
         voiceUrl: voiceData?.url ?? null,
         voiceDuration: voiceData?.duration ?? null,
         images: imageFiles.map((file, index) => ({
@@ -345,15 +364,6 @@ export function useCommentActions({
         };
       });
 
-      setCommentText('');
-      setSelectedTagId(availableTags.length > 0 ? availableTags[0].id : null);
-      setAudioBlob(null);
-      setImageFiles([]);
-      setAnnotationStrokes(null);
-      setIsAnnotating(false);
-      clearCommentRangeSelection();
-      setViewingAnnotation(effectiveStrokes || null);
-
       setIsSubmittingComment(true);
       isMutatingRef.current = true;
 
@@ -371,7 +381,7 @@ export function useCommentActions({
           body: JSON.stringify({
             content: voiceData || hasImages ? commentText.trim() || null : commentText,
             timestamp: commentTimestamp,
-            ...(commentRangeEnd !== null && { timestampEnd: commentRangeEnd }),
+            ...(timestampEnd !== null && { timestampEnd }),
             ...(voiceData && { voiceUrl: voiceData.url, voiceDuration: voiceData.duration }),
             ...(uploadedImageUrls.length > 0 && { imageUrls: uploadedImageUrls }),
             ...(isGuest && normalizedGuestName && { guestName: normalizedGuestName }),
@@ -406,6 +416,15 @@ export function useCommentActions({
           if (uploadedImageUrls.length > 0) {
             void fetchAssets();
           }
+
+          setCommentText('');
+          setSelectedTagId(availableTags.length > 0 ? availableTags[0].id : null);
+          setAudioBlob(null);
+          setImageFiles([]);
+          setAnnotationStrokes(null);
+          setIsAnnotating(false);
+          clearCommentRangeSelection();
+          setViewingAnnotation(effectiveStrokes || null);
         } else {
           setVideo((prev) => {
             if (!prev) return prev;
@@ -741,12 +760,13 @@ export function useCommentActions({
 
       const hasReplyImages = replyImageFiles.length > 0;
       const tempId = `temp-reply-${Date.now()}`;
-      const replyTimestamp = replyRangeStart ?? currentTime;
+      const { timestamp: replyTimestamp, timestampEnd: replyTimestampEnd } =
+        resolveCommentTimestamp(replyRangeStart, replyRangeEnd, currentTime);
       const optimisticReply: CommentReply = {
         id: tempId,
         content: voiceData || hasReplyImages ? replyText.trim() || null : replyText,
         timestamp: replyTimestamp,
-        timestampEnd: replyRangeEnd,
+        timestampEnd: replyTimestampEnd,
         voiceUrl: voiceData?.url ?? null,
         voiceDuration: voiceData?.duration ?? null,
         images: replyImageFiles.map((file, index) => ({
@@ -781,13 +801,6 @@ export function useCommentActions({
         };
       });
 
-      setReplyText('');
-      setReplyingTo(null);
-      setReplyAudioBlob(null);
-      setReplyRecordingTime(0);
-      setReplyImageFiles([]);
-      clearReplyRangeSelection();
-
       setIsSubmittingReply(true);
       isMutatingRef.current = true;
 
@@ -806,7 +819,7 @@ export function useCommentActions({
             content:
               voiceData || submittedImageUrls.length > 0 ? replyText.trim() || null : replyText,
             timestamp: replyTimestamp,
-            ...(replyRangeEnd !== null && { timestampEnd: replyRangeEnd }),
+            ...(replyTimestampEnd !== null && { timestampEnd: replyTimestampEnd }),
             parentId,
             ...(voiceData && { voiceUrl: voiceData.url, voiceDuration: voiceData.duration }),
             ...(submittedImageUrls.length > 0 && { imageUrls: submittedImageUrls }),
@@ -845,6 +858,13 @@ export function useCommentActions({
           if (submittedImageUrls.length > 0) {
             void fetchAssets();
           }
+
+          setReplyText('');
+          setReplyingTo(null);
+          setReplyAudioBlob(null);
+          setReplyRecordingTime(0);
+          setReplyImageFiles([]);
+          clearReplyRangeSelection();
         } else {
           setVideo((prev) => {
             if (!prev) return prev;
@@ -1332,7 +1352,8 @@ export function useCommentActions({
     setImageFiles,
     commentRangeStart,
     commentRangeEnd,
-    toggleCommentRangeSelection,
+    markCommentRangeIn,
+    markCommentRangeOut,
     clearCommentRangeSelection,
     applyCommentRange,
     isUploadingImage,
@@ -1359,7 +1380,8 @@ export function useCommentActions({
     setReplyImageFiles,
     replyRangeStart,
     replyRangeEnd,
-    toggleReplyRangeSelection,
+    markReplyRangeIn,
+    markReplyRangeOut,
     clearReplyRangeSelection,
     isUploadingReplyAudio,
     isUploadingReplyImage,

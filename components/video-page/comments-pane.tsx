@@ -3,7 +3,6 @@
 import { memo, useEffect, useState, type ReactNode, type RefObject } from 'react';
 import {
   ArrowUpRight,
-  Captions,
   CheckCircle2,
   ChevronDown,
   Circle,
@@ -20,6 +19,7 @@ import {
   Pencil,
   Play,
   Reply,
+  Sparkles,
   Tag,
   Trash2,
   X,
@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { MentionTextarea } from '@/components/video-page/mention-textarea';
+import { CommentInOutControls } from '@/components/video-page/comment-in-out-controls';
 import { CommentRichText } from '@/components/video-page/comment-rich-text';
 import {
   CommentImageGallery,
@@ -43,6 +44,7 @@ import {
 } from '@/components/video-page/image-attachments';
 import type { ImageAttachTarget } from '@/components/video-page/hooks/use-comment-actions';
 import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
+import { agentDisplayName } from '@/lib/agents/catalog';
 import type {
   Comment,
   CommentReply,
@@ -106,7 +108,10 @@ interface CommentsPaneProps {
   setReplyText: (value: string) => void;
   replyRangeStart: number | null;
   replyRangeEnd: number | null;
-  toggleReplyRangeSelection: () => void;
+  markReplyRangeIn: () => void;
+  markReplyRangeOut: () => void;
+  seekToReplyRangeIn?: () => void;
+  seekToReplyRangeOut?: () => void;
   clearReplyRangeSelection: () => void;
   handleReplyComment: (
     parentId: string,
@@ -132,10 +137,14 @@ interface CommentsPaneProps {
   composer: ReactNode;
   assets: VideoAsset[];
   onAssetMentionClick: (assetId: string) => void;
-  activePane: 'comments' | 'assets' | 'transcript';
-  setActivePane: (pane: 'comments' | 'assets' | 'transcript') => void;
+  activePane: 'comments' | 'assets';
+  setActivePane: (pane: 'comments' | 'assets') => void;
   assetsPane: ReactNode;
-  transcriptPane: ReactNode;
+  agentsEnabled?: boolean;
+  canManageAgentComments?: boolean;
+  agentRunBusy?: boolean;
+  agentRunError?: string | null;
+  onRunAgentReview?: () => void;
   focusCommentId?: string | null;
   onFocusCommentHandled?: () => void;
 }
@@ -191,7 +200,10 @@ export const CommentsPane = memo(function CommentsPane({
   setReplyText,
   replyRangeStart,
   replyRangeEnd,
-  toggleReplyRangeSelection,
+  markReplyRangeIn,
+  markReplyRangeOut,
+  seekToReplyRangeIn,
+  seekToReplyRangeOut,
   clearReplyRangeSelection,
   handleReplyComment,
   startReplyRecording,
@@ -216,7 +228,11 @@ export const CommentsPane = memo(function CommentsPane({
   activePane,
   setActivePane,
   assetsPane,
-  transcriptPane,
+  agentsEnabled = false,
+  canManageAgentComments = false,
+  agentRunBusy = false,
+  agentRunError = null,
+  onRunAgentReview,
   focusCommentId = null,
   onFocusCommentHandled,
 }: CommentsPaneProps) {
@@ -225,14 +241,21 @@ export const CommentsPane = memo(function CommentsPane({
     if (timestampEnd === null) return formatTime(timestamp);
     return `${formatTime(timestamp)} - ${formatTime(timestampEnd)}`;
   };
-  const replyRangeButtonLabel =
-    replyRangeStart === null || replyRangeEnd !== null ? 'Set In' : 'Set Out';
-  const replyRangeLabel =
-    replyRangeStart !== null
-      ? replyRangeEnd !== null
-        ? `${formatTime(replyRangeStart)} - ${formatTime(replyRangeEnd)}`
-        : `In ${formatTime(replyRangeStart)}`
-      : null;
+  const replyRangeControls = (
+    <div className="space-y-1">
+      <CommentInOutControls
+        inTime={replyRangeStart}
+        outTime={replyRangeEnd}
+        formatTime={formatTime}
+        onMarkIn={markReplyRangeIn}
+        onMarkOut={markReplyRangeOut}
+        onSeekIn={seekToReplyRangeIn}
+        onSeekOut={seekToReplyRangeOut}
+        onClear={clearReplyRangeSelection}
+      />
+      <p className="text-[11px] text-muted-foreground">I and O mark this reply.</p>
+    </div>
+  );
 
   useEffect(() => {
     if (!focusCommentId) return;
@@ -259,7 +282,7 @@ export const CommentsPane = memo(function CommentsPane({
           'bg-card flex flex-col overflow-hidden z-50 relative',
           'fixed inset-y-0 right-0 w-[85%] sm:w-[400px] shadow-2xl transition-transform duration-300 transform',
           isMobileCommentsOpen ? 'translate-x-0' : 'translate-x-full',
-          'lg:static lg:w-80 lg:shrink-0 lg:border-l lg:transition-none lg:translate-x-0 lg:shadow-none lg:z-auto',
+          'lg:static lg:w-[392px] lg:shrink-0 lg:border-l lg:border-white/10 lg:transition-none lg:translate-x-0 lg:shadow-none lg:z-auto',
           isFullscreenMode && !showComments ? 'hidden' : ''
         )}
         onDragOver={(e) => {
@@ -316,15 +339,6 @@ export const CommentsPane = memo(function CommentsPane({
                   {assets.length}
                 </Badge>
               </Button>
-              <Button
-                variant={activePane === 'transcript' ? 'default' : 'ghost'}
-                size="sm"
-                className="h-8 shrink-0"
-                onClick={() => setActivePane('transcript')}
-              >
-                <Captions className="h-4 w-4 mr-1" />
-                Transcript
-              </Button>
             </div>
             <Button
               variant="ghost"
@@ -338,6 +352,26 @@ export const CommentsPane = memo(function CommentsPane({
 
           {activePane === 'comments' && (
             <div className="flex w-full items-center justify-end gap-2 flex-wrap">
+              {agentsEnabled && !isGuest && onRunAgentReview && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 border-agent/30 bg-agent-muted text-agent-foreground hover:bg-agent/20"
+                  disabled={!activeVersion || agentRunBusy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRunAgentReview();
+                  }}
+                  title="Run AI review"
+                >
+                  {agentRunBusy ? (
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 mr-1" />
+                  )}
+                  Run AI review
+                </Button>
+              )}
               <Button
                 variant={showResolved ? 'default' : 'outline'}
                 size="sm"
@@ -428,6 +462,9 @@ export const CommentsPane = memo(function CommentsPane({
               </DropdownMenu>
             </div>
           )}
+          {activePane === 'comments' && agentRunError && (
+            <p className="text-xs text-destructive">{agentRunError}</p>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -436,13 +473,6 @@ export const CommentsPane = memo(function CommentsPane({
             aria-hidden={activePane !== 'assets'}
           >
             {assetsPane}
-          </div>
-
-          <div
-            className={cn(activePane === 'transcript' ? 'block p-4 h-full' : 'hidden')}
-            aria-hidden={activePane !== 'transcript'}
-          >
-            {transcriptPane}
           </div>
 
           <div
@@ -457,21 +487,31 @@ export const CommentsPane = memo(function CommentsPane({
               </div>
             ) : (
               sortedComments.map((comment) => {
-                const authorName = comment.author?.name || comment.guestName || 'Anonymous';
+                const isAgentComment = comment.source === 'AGENT';
+                const authorName = isAgentComment
+                  ? agentDisplayName(comment.agentSlug)
+                  : comment.author?.name || comment.guestName || 'Anonymous';
                 const isEditing = editingCommentId === comment.id;
                 const isReplying = replyingTo === comment.id;
                 const canEditComment = comment.canEdit ?? comment.author?.id === currentUserId;
                 const canDeleteComment =
                   comment.canDelete ??
-                  (comment.author?.id === currentUserId || projectOwnerId === currentUserId);
+                  (comment.author?.id === currentUserId ||
+                    projectOwnerId === currentUserId ||
+                    (isAgentComment && canManageAgentComments));
                 const canManageComment = canEditComment || canDeleteComment;
+                const canResolveThisComment =
+                  canResolveComments || (isAgentComment && canManageAgentComments);
                 return (
                   <div
                     key={comment.id}
                     data-comment-id={comment.id}
                     className={cn(
-                      'group rounded-lg border p-3 transition-colors hover:bg-accent/50',
+                      'group rounded-xl border p-3.5 transition-colors hover:bg-white/[0.04]',
                       comment.isResolved && 'opacity-60',
+                      isAgentComment
+                        ? 'border-agent/30 bg-agent-muted'
+                        : 'border-white/10 bg-white/[0.04]',
                       focusCommentId === comment.id && 'ring-2 ring-primary'
                     )}
                   >
@@ -484,6 +524,11 @@ export const CommentsPane = memo(function CommentsPane({
                           </AvatarFallback>
                         </Avatar>
                         <span className="text-sm font-medium truncate">{authorName}</span>
+                        {isAgentComment && (
+                          <Badge className="border-0 bg-agent/20 px-1.5 py-0 text-[10px] text-agent-foreground">
+                            Agent
+                          </Badge>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">
@@ -494,14 +539,14 @@ export const CommentsPane = memo(function CommentsPane({
                               timestampEnd: comment.timestampEnd,
                             })
                           }
-                          className="flex items-center gap-1 text-xs text-primary hover:underline px-1.5 py-0.5 rounded bg-primary/10 hover:bg-primary/20 transition-colors"
+                          className="flex items-center gap-1 rounded-md bg-white/8 px-1.5 py-0.5 font-mono text-xs text-white/70 transition-colors hover:bg-white/12 hover:text-[#F4F4F2]"
                           title="Jump to this timestamp"
                         >
                           <Clock className="h-3 w-3" />
                           {formatCommentRange(comment.timestamp, comment.timestampEnd)}
                           <ArrowUpRight className="h-3 w-3" />
                         </button>
-                        {canResolveComments && (
+                        {canResolveThisComment && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -771,13 +816,17 @@ export const CommentsPane = memo(function CommentsPane({
                     {comment.replies && comment.replies.length > 0 && (
                       <div className="mt-3 pl-3 border-l-2 space-y-2">
                         {comment.replies.map((reply) => {
-                          const replyAuthor = reply.author?.name || reply.guestName || 'Anonymous';
+                          const isAgentReply = reply.source === 'AGENT';
+                          const replyAuthor = isAgentReply
+                            ? agentDisplayName(reply.agentSlug)
+                            : reply.author?.name || reply.guestName || 'Anonymous';
                           const isEditingReply = editingCommentId === reply.id;
                           const canEditReply = reply.canEdit ?? reply.author?.id === currentUserId;
                           const canDeleteReply =
                             reply.canDelete ??
                             (reply.author?.id === currentUserId ||
-                              projectOwnerId === currentUserId);
+                              projectOwnerId === currentUserId ||
+                              (isAgentReply && canManageAgentComments));
                           const canManageReply = canEditReply || canDeleteReply;
                           return (
                             <div key={reply.id} className="group/reply text-sm">
@@ -789,6 +838,11 @@ export const CommentsPane = memo(function CommentsPane({
                                     </AvatarFallback>
                                   </Avatar>
                                   <span className="font-medium text-xs">{replyAuthor}</span>
+                                  {isAgentReply && (
+                                    <Badge className="border-0 bg-agent/20 px-1.5 py-0 text-[10px] text-agent-foreground">
+                                      Agent
+                                    </Badge>
+                                  )}
                                   <button
                                     onClick={() =>
                                       handleSeekToTimestamp(reply.timestamp, reply.annotationData, {
@@ -1070,29 +1124,7 @@ export const CommentsPane = memo(function CommentsPane({
                               className="resize-none text-sm"
                             />
                             <div className="flex items-center gap-2 flex-wrap">
-                              <Button
-                                size="sm"
-                                variant={replyRangeStart !== null ? 'default' : 'outline'}
-                                className="h-7 text-xs"
-                                onClick={toggleReplyRangeSelection}
-                              >
-                                {replyRangeButtonLabel}
-                              </Button>
-                              {replyRangeLabel && (
-                                <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground tabular-nums">
-                                  {replyRangeLabel}
-                                </span>
-                              )}
-                              {replyRangeStart !== null && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 text-xs"
-                                  onClick={clearReplyRangeSelection}
-                                >
-                                  Clear
-                                </Button>
-                              )}
+                              {replyRangeControls}
                             </div>
                             <div className="flex gap-1 mt-2">
                               <Button
@@ -1174,29 +1206,7 @@ export const CommentsPane = memo(function CommentsPane({
                               />
                             </div>
                             <div className="mt-2 flex items-center gap-2 flex-wrap">
-                              <Button
-                                size="sm"
-                                variant={replyRangeStart !== null ? 'default' : 'outline'}
-                                className="h-7 text-xs"
-                                onClick={toggleReplyRangeSelection}
-                              >
-                                {replyRangeButtonLabel}
-                              </Button>
-                              {replyRangeLabel && (
-                                <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground tabular-nums">
-                                  {replyRangeLabel}
-                                </span>
-                              )}
-                              {replyRangeStart !== null && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 text-xs"
-                                  onClick={clearReplyRangeSelection}
-                                >
-                                  Clear
-                                </Button>
-                              )}
+                              {replyRangeControls}
                             </div>
                             <div className="flex gap-1 mt-1">
                               <Button
@@ -1253,7 +1263,7 @@ export const CommentsPane = memo(function CommentsPane({
           </div>
         </div>
 
-        {activePane === 'comments' || activePane === 'transcript' ? composer : null}
+        {activePane === 'comments' ? composer : null}
       </div>
     </>
   );

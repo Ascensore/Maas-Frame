@@ -1,8 +1,8 @@
-# OpenFrame
+# Maas-Frame
+
+This is Ascensore’s internal review and approval deployment of the OpenFrame codebase. The GitHub repository is [Ascensore/Maas-Frame](https://github.com/Ascensore/Maas-Frame). Operational notes live in [INTERNAL.md](INTERNAL.md).
 
 OpenFrame is a fair source video review and approval platform for teams that need clear feedback, version control, and client-friendly review links in one place. It supports collaborative review workflows out of the box and can be self-hosted with the Docker setup included in this repository.
-
-Prefer not to self-host? You can try OpenFrame at [open-frame.net](https://open-frame.net) with a 7-day free trial that needs no card, then continue on the hosted plan starting at $10.
 
 ## Product Screenshot
 
@@ -116,53 +116,7 @@ The Docker template already trusts `localhost:3000` for Auth.js via `AUTH_TRUST_
 - MinIO objects are stored in the `minio-data` Docker volume.
 - After updating the repo, rebuild and restart with `docker compose up --build`.
 
-### Use The Published Image
-
-If you do not want to build OpenFrame locally, use the published Docker Hub image instead.
-
-Pull a specific version:
-
-```bash
-podman pull docker.io/yusufipk/openframe:v0.1.0
-```
-
-You can also inspect these tags on Docker Hub:
-
-- `yusufipk/openframe:v0.1.0` for a fixed release
-- `yusufipk/openframe:latest` for the newest build from the `main` branch
-- `yusufipk/openframe:sha-<commit>` for a commit-pinned image
-
-Use `latest` if you want the newest mainline build. For real deployments, prefer a fixed version tag such as `v0.1.0` instead of `latest`.
-
-To use the published image in Compose, open `docker-compose.yml` and change only the `app` service from a local `build:` block to an `image:` reference such as `docker.io/yusufipk/openframe:v0.1.0`. Keep the rest of the service and the `postgres` and `minio` services unchanged.
-
-Replace this:
-
-```yaml
-app:
-  build:
-    context: .
-    dockerfile: Dockerfile
-```
-
-With this:
-
-```yaml
-app:
-  image: docker.io/yusufipk/openframe:v0.1.0
-```
-
-If the `build:` block is still present, `podman compose up -d` will try to build locally from the current directory instead of pulling the published image.
-
-Then start the stack normally:
-
-```bash
-podman compose up -d
-```
-
-Open `http://localhost:3000/login` after the containers become healthy.
-
-To verify a published image manually, point your Compose app service at a fixed image tag such as `docker.io/yusufipk/openframe:v0.1.0`, start the stack with `podman compose up -d`, and open `http://localhost:3000/login` after the containers become healthy.
+This deployment does not publish a Docker Hub image. Build the `app` service from this repository (`docker compose up --build`). After updating the repo, rebuild and restart the same way.
 
 ### Optional Integrations And Feature Flags
 
@@ -180,7 +134,7 @@ Behavior when disabled:
 - `OPENFRAME_ENABLE_BUNNY_UPLOADS=false` hides Bunny direct-upload entry points. URL-based providers such as YouTube remain available. When enabling it, set `BUNNY_CDN_URL` (not only `NEXT_PUBLIC_BUNNY_CDN_URL`): it is read at request time, so a published image picks up the playback host without a rebuild.
 - `OPENFRAME_ENABLE_S3_VIDEO_UPLOADS=true` (with `R2_*` configured) enables presigned uploads to your own S3-compatible storage. Set `OPENFRAME_ENABLE_BUNNY_UPLOADS=false` — only one direct-upload backend can be active. The bucket must allow CORS `PUT` from your app origin (for example `http://localhost:3000` in dev and your production URL). For Docker + MinIO, keep `R2_ENDPOINT=http://minio:9000` (app-internal) and set `R2_PRESIGN_ENDPOINT` to the browser-reachable MinIO origin (for example `http://localhost:9000` locally, or `https://minio.example.com` when MinIO is behind a reverse proxy). Use the origin only — no path suffix. The app's Content-Security-Policy is generated from runtime env at request time, so published Docker images pick up custom `R2_PRESIGN_ENDPOINT` values without rebuilding or editing `next.config.ts`.
 - `OPENFRAME_REQUIRE_INVITE_CODE=false` allows open registration while keeping invitation-link registration intact.
-- `OPENFRAME_ENABLE_ANALYTICS=true` records first-touch attribution and funnel events into your own database, readable on `/admin/growth`, or as JSON on `/api/admin/growth` by a script sending `Authorization: Bearer $OPENFRAME_ADMIN_API_TOKEN` (at least 32 characters, unset by default, in which case an admin session is the only way in). Off by default, and nothing leaves the instance either way.
+- `OPENFRAME_ENABLE_ANALYTICS=true` records first-touch attribution and funnel events into your own database. Off by default, and nothing leaves the instance either way.
 
 For self-hosted MinIO behind a reverse proxy, choose one of these browser-facing layouts:
 
@@ -193,7 +147,7 @@ These integrations remain optional for self-hosted deployments and can be enable
 
 - Stripe billing
 - Bunny direct uploads (hosted) or S3 video uploads via `OPENFRAME_ENABLE_S3_VIDEO_UPLOADS` (self-hosted)
-- SMTP for invitation and notification delivery
+- SMTP or Resend (`RESEND_API_KEY`) for invitation and notification delivery
 - Telegram notifications
 - External S3-compatible storage such as Cloudflare R2 or another compatible provider instead of bundled MinIO
 - Google and GitHub OAuth

@@ -12,6 +12,27 @@ interface ShortcutGroup {
   shortcuts: ShortcutItem[];
 }
 
+const reviewShortcutGroups: ShortcutGroup[] = [
+  {
+    title: 'Comments',
+    shortcuts: [
+      { keys: ['I'], description: 'Mark In at the playhead' },
+      { keys: ['O'], description: 'Mark Out at the playhead' },
+      { keys: ['⇧', 'Drag'], description: 'Mark a range on the timeline' },
+      { keys: ['C'], description: 'Focus the comment box' },
+      { keys: ['Esc'], description: 'Clear In / Out' },
+    ],
+  },
+  {
+    title: 'Actions',
+    shortcuts: [
+      { keys: ['⌘', 'K'], description: 'Open the command palette' },
+      { keys: ['T'], description: 'Show / hide transcript' },
+      { keys: ['?'], description: 'This list' },
+    ],
+  },
+];
+
 const shortcutGroups: ShortcutGroup[] = [
   {
     title: 'Navigation',
@@ -47,9 +68,19 @@ const shortcutGroups: ShortcutGroup[] = [
 interface KeyboardShortcutsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  variant?: 'app' | 'review';
 }
 
-export function KeyboardShortcutsModal({ open, onOpenChange }: KeyboardShortcutsModalProps) {
+export function KeyboardShortcutsModal({
+  open,
+  onOpenChange,
+  variant = 'app',
+}: KeyboardShortcutsModalProps) {
+  const groups =
+    variant === 'review'
+      ? [...reviewShortcutGroups, ...shortcutGroups.filter((group) => group.title !== 'Navigation')]
+      : shortcutGroups;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -57,7 +88,7 @@ export function KeyboardShortcutsModal({ open, onOpenChange }: KeyboardShortcuts
           <DialogTitle className="text-base">Keyboard Shortcuts</DialogTitle>
         </DialogHeader>
         <div className="space-y-5 mt-1">
-          {shortcutGroups.map((group) => (
+          {groups.map((group) => (
             <div key={group.title}>
               <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2.5">
                 {group.title}

@@ -11,6 +11,8 @@ import { logError } from '@/lib/logger';
 import { canDownloadProjectMedia } from '@/lib/project-download';
 import { parseVideoMetadata } from '@/lib/video-metadata';
 import { reviewWatermarkForProject } from '@/lib/review-watermark';
+import { isAgentsFeatureEnabled } from '@/lib/feature-flags';
+import { isSignedInProjectMember } from '@/lib/comment-source';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
 
@@ -59,6 +61,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                       tagId: true,
                       versionId: true,
                       guestName: true,
+                      source: true,
+                      agentSlug: true,
                       // guestEmail excluded for privacy
                       author: { select: { id: true, name: true, image: true } },
                       tag: { select: { id: true, name: true, color: true } },
@@ -88,6 +92,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
                                 tagId: true,
                                 versionId: true,
                                 guestName: true,
+                                source: true,
+                                agentSlug: true,
                                 // guestEmail excluded for privacy
                                 author: { select: { id: true, name: true, image: true } },
                                 tag: { select: { id: true, name: true, color: true } },
@@ -148,6 +154,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       canShareVideo: access.canEdit,
       canUploadAssets: access.hasAccess,
       canDownloadAssets: canDownload,
+      canManageAgentComments: isSignedInProjectMember(access),
+      agentsEnabled: isAgentsFeatureEnabled(),
     });
 
     return withCacheControl(response, 'private, no-cache');

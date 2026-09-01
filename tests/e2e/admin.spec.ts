@@ -73,7 +73,7 @@ anonTest.describe('the admin area', () => {
 
     for (const route of ['/admin', '/admin/users', '/admin/feedback']) {
       await page.goto(route);
-      // app/admin/layout.tsx sends a non-admin to the marketing root.
+      // app/(dashboard)/admin/layout.tsx sends a non-admin to the marketing root.
       await expect(page).toHaveURL(/\/$/);
       await expect(page.getByRole('heading', { name: 'Dashboard Overview' })).toHaveCount(0);
     }
@@ -103,6 +103,15 @@ anonTest.describe('the admin area', () => {
       await page.goto('/admin');
       await expect(page).toHaveURL(/\/admin$/);
       await expect(page.getByRole('heading', { name: 'Dashboard Overview' })).toBeVisible();
+
+      // The ordinary app sidebar has to stay put. A second admin-only chrome used
+      // to replace it with a top bar, which is the regression this assertion is
+      // for: those links live in the side nav, not in a header strip.
+      const sidebar = page.locator('aside');
+      await expect(sidebar.getByRole('link', { name: 'Projects' })).toBeVisible();
+      await expect(sidebar.getByRole('link', { name: 'Workspaces' })).toBeVisible();
+      await expect(sidebar.getByRole('link', { name: 'Admin' })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Growth' })).toHaveCount(0);
 
       // The dashboard is not a static shell: it counts rows, and the count has to
       // be at least the two accounts this test created.

@@ -31,7 +31,7 @@ function readSecret(): string | null {
 
   // Not thrown. The proxy runs on every request and the pages render for every
   // visitor; failing those to protect a funnel chart would be the wrong trade.
-  // Analytics simply records nothing, which is visible on /admin/growth the same
+  // Analytics simply records nothing, which is noticed the same day when the
   // day, and it is announced once per process rather than per request.
   if (!warnedAboutMissingSecret) {
     warnedAboutMissingSecret = true;

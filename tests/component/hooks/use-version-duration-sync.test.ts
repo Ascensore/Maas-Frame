@@ -92,11 +92,11 @@ describe('useVersionDurationSync', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/projects/proj1/videos/vid1/versions/ver1');
     expect(init.method).toBe('PATCH');
-    expect(JSON.parse(init.body as string)).toEqual({ duration: 42 });
+    expect(JSON.parse(init.body as string)).toEqual({ duration: 43 });
   });
 
-  it('rounds to the nearest second rather than truncating', async () => {
-    renderHook(() => useVersionDurationSync(baseParams({ videoDuration: 42.6 })));
+  it('ceils a fractional duration so a comment on the last frame stays in range', async () => {
+    renderHook(() => useVersionDurationSync(baseParams({ videoDuration: 42.1 })));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ duration: 43 });
@@ -108,7 +108,7 @@ describe('useVersionDurationSync', () => {
     renderHook(() => useVersionDurationSync(baseParams({ videoDuration: 42.4, setVideo })));
 
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    expect(store.current?.versions[0].duration).toBe(42);
+    expect(store.current?.versions[0].duration).toBe(43);
     expect(store.current?.versions[1].duration).toBe(999);
   });
 
@@ -145,9 +145,24 @@ describe('useVersionDurationSync', () => {
     expect(setVideo).not.toHaveBeenCalled();
   });
 
-  it('skips the write when the version already has a stored duration', () => {
+  it('skips the write when the stored duration already covers the measurement', () => {
     const setVideo = vi.fn();
-    renderHook(() => useVersionDurationSync(baseParams({ activeVersionDuration: 41, setVideo })));
+    renderHook(() => useVersionDurationSync(baseParams({ activeVersionDuration: 43, setVideo })));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setVideo).not.toHaveBeenCalled();
+  });
+
+  it('extends a stored duration that is shorter than what the player measured', async () => {
+    renderHook(() => useVersionDurationSync(baseParams({ activeVersionDuration: 41 })));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ duration: 43 });
+  });
+
+  it('does not shrink a stored duration that is longer than the measurement', () => {
+    const setVideo = vi.fn();
+    renderHook(() => useVersionDurationSync(baseParams({ activeVersionDuration: 99, setVideo })));
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setVideo).not.toHaveBeenCalled();
@@ -157,6 +172,7 @@ describe('useVersionDurationSync', () => {
     renderHook(() => useVersionDurationSync(baseParams({ activeVersionDuration: 0 })));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ duration: 43 });
   });
 
   it('still updates local state when the PATCH fails', async () => {
@@ -166,7 +182,7 @@ describe('useVersionDurationSync', () => {
     renderHook(() => useVersionDurationSync(baseParams({ setVideo })));
 
     await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    expect(store.current?.versions[0].duration).toBe(42);
+    expect(store.current?.versions[0].duration).toBe(43);
   });
 
   it('writes once per measurement, not on every re-render', async () => {

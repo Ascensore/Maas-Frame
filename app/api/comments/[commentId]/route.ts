@@ -20,6 +20,7 @@ import {
 } from '@/lib/storage-quota';
 import { logError } from '@/lib/logger';
 import { notifyCommentChanged } from '@/lib/comment-live';
+import { canSignedInMemberManageAgentComment, isSignedInProjectMember } from '@/lib/comment-source';
 
 const CLEANUP_DELETE_CONCURRENCY = 5;
 
@@ -51,6 +52,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         tagId: true,
         versionId: true,
         guestName: true,
+        source: true,
+        agentSlug: true,
         author: { select: { id: true, name: true, image: true } },
         tag: { select: { id: true, name: true, color: true } },
         replies: {
@@ -73,6 +76,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             tagId: true,
             versionId: true,
             guestName: true,
+            source: true,
+            agentSlug: true,
             author: { select: { id: true, name: true, image: true } },
             tag: { select: { id: true, name: true, color: true } },
           },
@@ -159,7 +164,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       !!comment.guestIdentityId &&
       guestIdentityId === comment.guestIdentityId;
     const canEditOwnContent = isAuthor || isGuestAuthor;
-    const canResolveComment = access.canEdit;
+    const canResolveComment =
+      access.canEdit ||
+      canSignedInMemberManageAgentComment({
+        source: comment.source,
+        userId,
+        isMember: isSignedInProjectMember(access),
+      });
 
     if (!userId && !isGuestAuthor) {
       const shareSession = getShareSessionFromRequest(request, comment.version.video.id);
@@ -437,7 +448,14 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     const access = userId ? await checkProjectAccess(project, userId) : null;
     const isPrivilegedUser = !!access?.canEdit;
 
-    let canDelete = isAuthor || isPrivilegedUser;
+    let canDelete =
+      isAuthor ||
+      isPrivilegedUser ||
+      canSignedInMemberManageAgentComment({
+        source: comment.source,
+        userId,
+        isMember: access ? isSignedInProjectMember(access) : false,
+      });
     if (!canDelete && !userId) {
       const guestIdentityId = getGuestIdentityFromRequest(request);
       const isGuestAuthor =

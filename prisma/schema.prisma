@@ -56,6 +56,7 @@ model User {
   analyticsEvents           AnalyticsEvent[]
   apiTokens                 ApiToken[]
   c2cConnections            C2cConnection[]
+  triggeredAgentRuns        AgentRun[]   @relation("AgentRunsTriggeredBy")
 
   @@map("users")
 }
@@ -435,6 +436,7 @@ model VideoVersion {
   subtitles       VideoSubtitle[]
   transcripts     Transcript[]
   mediaJobs       MediaJob[]
+  agentRuns       AgentRun[]
   
   @@unique([videoParentId, versionNumber])
   @@index([videoParentId])
@@ -539,6 +541,14 @@ model Comment {
   guestName     String?
   guestEmail    String?
   guestIdentityId String?
+
+  // Agent authorship. HUMAN is the default so existing rows stay human.
+  // Agents are not Users; they stamp source/agentSlug/agentRunId instead.
+  source            CommentSource @default(HUMAN)
+  agentRunId        String?
+  agentRun          AgentRun?     @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  agentSlug         String?
+  agentFingerprint  String?
   
   // Video version relation
   versionId     String
@@ -562,6 +572,8 @@ model Comment {
   @@unique([voiceUrl])
   @@index([versionId, isResolved, timestamp])
   @@index([versionId, parentId, createdAt])
+  @@index([agentRunId])
+  @@unique([agentRunId, agentFingerprint])
   @@map("comments")
 }
 
@@ -955,6 +967,24 @@ model AnalyticsEvent {
   @@map("analytics_events")
 }
 
+enum CommentSource {
+  HUMAN
+  AGENT
+}
+
+enum AgentRunKind {
+  REVIEW
+  EDIT
+}
+
+enum AgentRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
 enum MediaJobKind {
   PROBE_MEDIA
   EXTRACT_AUDIO
@@ -1048,6 +1078,31 @@ model MediaJob {
   @@index([status, createdAt])
   @@index([versionId, kind])
   @@map("media_jobs")
+}
+
+model AgentRun {
+  id            String         @id @default(cuid())
+  versionId     String         @map("version_id")
+  version       VideoVersion   @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  kind          AgentRunKind
+  agentSlug     String         @map("agent_slug")
+  status        AgentRunStatus @default(PENDING)
+  model         String
+  triggeredById String?        @map("triggered_by_id")
+  triggeredBy   User?          @relation("AgentRunsTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  payload       Json?
+  result        Json?
+  error         String?        @db.Text
+  attempts      Int            @default(0)
+  startedAt     DateTime?      @map("started_at")
+  finishedAt    DateTime?      @map("finished_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  comments      Comment[]
+
+  @@index([status, createdAt])
+  @@index([versionId, status])
+  @@map("agent_runs")
 }
 
 model Transcript {

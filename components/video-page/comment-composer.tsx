@@ -15,6 +15,7 @@ import type { AnnotationStroke } from '@/components/annotation-canvas';
 import { ImageAttachmentStrip } from '@/components/video-page/image-attachments';
 import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
 import { MentionTextarea } from '@/components/video-page/mention-textarea';
+import { CommentInOutControls } from '@/components/video-page/comment-in-out-controls';
 import type { CommentTag, VideoAsset } from '@/components/video-page/types';
 
 interface CommentComposerProps {
@@ -30,7 +31,10 @@ interface CommentComposerProps {
   setCommentText: (value: string) => void;
   commentRangeStart: number | null;
   commentRangeEnd: number | null;
-  toggleCommentRangeSelection: () => void;
+  markCommentRangeIn: () => void;
+  markCommentRangeOut: () => void;
+  seekToCommentRangeIn?: () => void;
+  seekToCommentRangeOut?: () => void;
   clearCommentRangeSelection: () => void;
   playVoice: (commentId: string, voiceUrl: string, knownDuration?: number) => void;
   playingVoiceId: string | null;
@@ -58,6 +62,7 @@ interface CommentComposerProps {
   projectId?: string;
   pauseVideoForAnnotation: () => void;
   assets: VideoAsset[];
+  composerTextareaRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 export const CommentComposer = memo(function CommentComposer({
@@ -73,7 +78,10 @@ export const CommentComposer = memo(function CommentComposer({
   setCommentText,
   commentRangeStart,
   commentRangeEnd,
-  toggleCommentRangeSelection,
+  markCommentRangeIn,
+  markCommentRangeOut,
+  seekToCommentRangeIn,
+  seekToCommentRangeOut,
   clearCommentRangeSelection,
   playVoice,
   playingVoiceId,
@@ -101,16 +109,29 @@ export const CommentComposer = memo(function CommentComposer({
   projectId,
   pauseVideoForAnnotation,
   assets,
+  composerTextareaRef,
 }: CommentComposerProps) {
-  const rangeButtonLabel =
-    commentRangeStart === null || commentRangeEnd !== null ? 'Set In' : 'Set Out';
-  const hasCommentRange = commentRangeStart !== null;
-  const commentRangeLabel =
-    commentRangeStart !== null
-      ? commentRangeEnd !== null
-        ? `${formatTime(commentRangeStart)} - ${formatTime(commentRangeEnd)}`
-        : `In ${formatTime(commentRangeStart)}`
-      : null;
+  const rangeControls = (
+    <div className="space-y-1">
+      <CommentInOutControls
+        inTime={commentRangeStart}
+        outTime={commentRangeEnd}
+        formatTime={formatTime}
+        onMarkIn={markCommentRangeIn}
+        onMarkOut={markCommentRangeOut}
+        onSeekIn={seekToCommentRangeIn}
+        onSeekOut={seekToCommentRangeOut}
+        onClear={clearCommentRangeSelection}
+      />
+      <p className="text-[11px] text-muted-foreground">
+        {commentRangeStart !== null &&
+        commentRangeEnd !== null &&
+        commentRangeEnd > commentRangeStart
+          ? `This comment covers ${formatTime(commentRangeStart)}–${formatTime(commentRangeEnd)}.`
+          : 'Point comment at the playhead. Mark a span with I / O, or Shift-drag the timeline.'}
+      </p>
+    </div>
+  );
 
   return (
     <div className="shrink-0 p-4 border-t bg-background">
@@ -180,31 +201,7 @@ export const CommentComposer = memo(function CommentComposer({
             rows={1}
             className="resize-none text-sm"
           />
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant={hasCommentRange ? 'default' : 'outline'}
-              className="h-7 text-xs"
-              onClick={toggleCommentRangeSelection}
-            >
-              {rangeButtonLabel}
-            </Button>
-            {commentRangeLabel && (
-              <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground tabular-nums">
-                {commentRangeLabel}
-              </span>
-            )}
-            {hasCommentRange && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={clearCommentRangeSelection}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
+          <div className="flex items-center gap-2 flex-wrap">{rangeControls}</div>
           <Button
             size="sm"
             onClick={submitCommentWithMedia}
@@ -242,31 +239,7 @@ export const CommentComposer = memo(function CommentComposer({
             </div>
           )}
           <ImageAttachmentStrip files={imageFiles} onRemoveFile={removeImageFile} />
-          <div className="mb-2 flex items-center gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant={hasCommentRange ? 'default' : 'outline'}
-              className="h-7 text-xs"
-              onClick={toggleCommentRangeSelection}
-            >
-              {rangeButtonLabel}
-            </Button>
-            {commentRangeLabel && (
-              <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground tabular-nums">
-                {commentRangeLabel}
-              </span>
-            )}
-            {hasCommentRange && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={clearCommentRangeSelection}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
+          <div className="mb-2 flex items-center gap-2 flex-wrap">{rangeControls}</div>
           <div className="flex gap-2 items-stretch">
             <div className="flex-1 min-w-0">
               <MentionTextarea
@@ -276,6 +249,7 @@ export const CommentComposer = memo(function CommentComposer({
                 assets={assets}
                 rows={6}
                 className="resize-none text-sm min-h-[180px] w-full"
+                textareaRef={composerTextareaRef}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                     handleAddComment();
@@ -302,7 +276,7 @@ export const CommentComposer = memo(function CommentComposer({
               </Button>
               <Button
                 size="icon"
-                variant="outline"
+                variant="lime"
                 onClick={startRecording}
                 title="Record voice comment"
               >

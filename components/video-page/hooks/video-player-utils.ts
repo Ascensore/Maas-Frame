@@ -95,22 +95,81 @@ export function timeFromClientX(
   return percentage * duration;
 }
 
-// Speed ladders. YouTube is played through its iframe API, which silently
-// ignores any rate outside the list `getAvailablePlaybackRates()` returns, so
-// 2x is the ceiling there. Bunny and R2 are plain <video> elements, where the
-// ceiling is the browser's: Chrome and Firefox both clamp `playbackRate` at 16,
-// and setting more throws, so 16x is the top of the ladder.
+// Speed range. YouTube is played through its iframe API, which silently ignores
+// any rate outside the list `getAvailablePlaybackRates()` returns, so 0.25–2x
+// is the reachable range there. Bunny and R2 are plain <video> elements; the
+// review bar offers 0.10x–5x, which every current browser will actually play.
+export const PLAYBACK_SPEED_MIN = 0.1;
+export const PLAYBACK_SPEED_MAX = 5;
+export const YOUTUBE_PLAYBACK_SPEED_MIN = 0.25;
+export const YOUTUBE_PLAYBACK_SPEED_MAX = 2;
 export const YOUTUBE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-export const NATIVE_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 6, 8, 16];
+export const NATIVE_SPEED_OPTIONS = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
 
 // The browsers keep the audio track well past the point where they stop
-// pitch-correcting: playback is still audible at 8x, and only the 16x clamp is
-// silent. The video plays either way, so the rate stays on the ladder and the
-// picker labels it rather than letting a silent 16x read as a broken file.
+// pitch-correcting: playback is still audible at 8x. Nothing on the current
+// native range is silent; the marker stays so a future ceiling past 8x can
+// still label those rates rather than letting a mute 16x read as a broken file.
 export const SILENT_ABOVE_SPEED = 8;
 
 export function getSpeedOptionsForProvider(providerId: string | null | undefined): number[] {
   return providerId === 'youtube' ? YOUTUBE_SPEED_OPTIONS : NATIVE_SPEED_OPTIONS;
+}
+
+export function getPlaybackSpeedBounds(providerId: string | null | undefined): {
+  min: number;
+  max: number;
+  snapTo?: number[];
+} {
+  if (providerId === 'youtube') {
+    return {
+      min: YOUTUBE_PLAYBACK_SPEED_MIN,
+      max: YOUTUBE_PLAYBACK_SPEED_MAX,
+      snapTo: YOUTUBE_SPEED_OPTIONS,
+    };
+  }
+  return { min: PLAYBACK_SPEED_MIN, max: PLAYBACK_SPEED_MAX };
+}
+
+function roundToTenth(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/**
+ * Shift the current rate by `delta` (typically ±0.1 or ±0.5) and clamp to the
+ * provider's range. YouTube only honours its discrete ladder, so a 0.1 nudge
+ * there steps to the next listed rate rather than inventing 1.1x.
+ */
+export function nudgePlaybackSpeed(
+  currentSpeed: number,
+  delta: number,
+  bounds: { min: number; max: number; snapTo?: number[] }
+): number {
+  const { min, max, snapTo } = bounds;
+  if (snapTo && snapTo.length > 0) {
+    const isCoarse = Math.abs(Math.abs(delta) - 0.5) < 1e-9;
+    if (isCoarse) {
+      const target = Math.min(max, Math.max(min, roundToTenth(currentSpeed + delta)));
+      let nearest = snapTo[0];
+      let nearestDistance = Math.abs(snapTo[0] - target);
+      for (const rate of snapTo) {
+        const distance = Math.abs(rate - target);
+        if (distance < nearestDistance) {
+          nearest = rate;
+          nearestDistance = distance;
+        }
+      }
+      return nearest;
+    }
+    const direction: 1 | -1 = delta >= 0 ? 1 : -1;
+    return getAdjacentPlaybackSpeed(snapTo, currentSpeed, direction) ?? currentSpeed;
+  }
+
+  return Math.min(max, Math.max(min, roundToTenth(currentSpeed + delta)));
+}
+
+export function formatPlaybackSpeed(speed: number): string {
+  return `${speed.toFixed(2)}x`;
 }
 
 /**
@@ -151,7 +210,12 @@ export type PlayerShortcut =
 export function resolvePlayerShortcut(event: {
   code: string;
   shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
 }): PlayerShortcut | null {
+  if (event.metaKey || event.ctrlKey || event.altKey) return null;
+
   switch (event.code) {
     case 'Space':
     case 'KeyK':
