@@ -42,6 +42,19 @@ that matter for this fork:
 | `OPENFRAME_TRANSCRIPTION_PROVIDER`          | `whisper-local` (default), `deepgram`, or `openai` | Pluggable. Cloud providers need their API keys.                                                            |
 | `OPENFRAME_ENABLE_PROXY_TRANSCODE`          | `true`                                             | After probe, transcode ProRes/DNx/HEVC/etc. to an H.264 AAC MP4 the browser can play.                      |
 
+On Vercel, `DATABASE_URL` must use the Supabase **session pooler** (IPv4), not
+the direct `db.<ref>.supabase.co` host. That host is IPv6-only, so serverless
+functions cannot reach it (`P1001`). Session pooler is
+`postgres.<ref>@aws-1-eu-west-1.pooler.supabase.com:5432` with
+`sslmode=no-verify`. Transaction mode (`:6543`) breaks `LISTEN`/`NOTIFY` used
+by live comments.
+
+The session pooler admits only `pool_size` clients at once (15 on the current
+compute). Each Vercel isolate therefore opens **one** pooled connection and
+drops it after 5 idle seconds (`lib/db-pool.ts`). A pool of 20 per isolate
+exceeds that cap immediately (`EMAXCONNSESSION`) and takes down the dashboard
+and video player together.
+
 ## Services
 
 `docker compose up --build` starts:

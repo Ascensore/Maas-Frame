@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool, PoolConfig } from 'pg';
+import { dbPoolIdleTimeoutMillis, dbPoolMax } from '@/lib/db-pool';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -20,9 +21,10 @@ function createPool(connectionString: string): Pool {
 
   const poolConfig: PoolConfig = {
     connectionString,
-    max: 20, // Maximum number of connections
-    idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
+    max: dbPoolMax(),
+    idleTimeoutMillis: dbPoolIdleTimeoutMillis(),
     connectionTimeoutMillis: 5000, // Return error after 5 seconds if can't connect
+    allowExitOnIdle: process.env.VERCEL === '1',
   };
 
   const pool = new Pool(poolConfig);
@@ -43,10 +45,9 @@ function createPool(connectionString: string): Pool {
     });
   }
 
-  // Store pool globally to prevent multiple instances during development
-  if (process.env.NODE_ENV !== 'production') {
-    globalForPool.pgPool = pool;
-  }
+  // Reuse across HMR and serverless isolate reuse. In production this is what
+  // lets SIGTERM actually close the pooler session instead of leaking it.
+  globalForPool.pgPool = pool;
 
   return pool;
 }
@@ -76,10 +77,7 @@ function createPrismaClient() {
 }
 
 export const db = globalForPrisma.prisma ?? createPrismaClient();
-
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = db;
-}
+globalForPrisma.prisma = db;
 
 export async function disconnectDb(): Promise<void> {
   if (globalForPool.pgPool) {
@@ -96,8 +94,14 @@ async function shutdown() {
   console.log('Database connections closed');
 }
 
-// Register shutdown handlers
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
 export default db;
+
+const globalForShutdown = globalThis as unknown as {
+  dbShutdownRegistered?: boolean;
+};
+
+if (!globalForShutdown.dbShutdownRegistered) {
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  globalForShutdown.dbShutdownRegistered = true;
+}
