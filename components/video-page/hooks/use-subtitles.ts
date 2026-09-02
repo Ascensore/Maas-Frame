@@ -6,6 +6,8 @@ import {
   writeStoredSubtitleLanguage,
 } from '@/components/video-page/hooks/subtitle-preference';
 import type { Subtitle } from '@/components/video-page/types';
+import { getSubtitleExtension } from '@/lib/subtitle-validation';
+import { getTranscriptUploadExtension } from '@/lib/transcript-import';
 
 interface UseSubtitlesParams {
   videoId: string;
@@ -13,6 +15,17 @@ interface UseSubtitlesParams {
   videoRef: RefObject<HTMLVideoElement | null>;
   /** Only the providers we play through our own element can carry a track. */
   supportsSubtitles: boolean;
+}
+
+function readClientApiError(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return fallback;
 }
 
 /**
@@ -32,6 +45,9 @@ export function useSubtitles({
   const [canManageSubtitles, setCanManageSubtitles] = useState(false);
   const [activeLanguage, setActiveLanguage] = useState<string | null>(null);
   const [isUploadingSubtitle, setIsUploadingSubtitle] = useState(false);
+  const [isGeneratingSubtitles, setIsGeneratingSubtitles] = useState(false);
+  const pendingGenerateLanguageRef = useRef<string | null>(null);
+  const generateInFlightRef = useRef(false);
 
   // Bumped to remount the <track> elements when something empties them. See the effect
   // below for what does that and why remounting is the fix.
@@ -46,10 +62,13 @@ export function useSubtitles({
   useEffect(() => {
     loadedLanguagesRef.current.clear();
     repairCountRef.current = 0;
+    pendingGenerateLanguageRef.current = null;
+    generateInFlightRef.current = false;
+    setIsGeneratingSubtitles(false);
   }, [versionId]);
 
   const refresh = useCallback(async () => {
-    if (!versionId || !supportsSubtitles) {
+    if (!versionId) {
       setSubtitles([]);
       setCanManageSubtitles(false);
       return;
@@ -70,7 +89,7 @@ export function useSubtitles({
     } catch {
       // A failed list leaves the player without tracks, which is the same as having none.
     }
-  }, [supportsSubtitles, versionId, videoId]);
+  }, [versionId, videoId]);
 
   useEffect(() => {
     void refresh();
@@ -108,6 +127,7 @@ export function useSubtitles({
    * track element under a new key is what makes it fetch again.
    */
   useEffect(() => {
+    if (!supportsSubtitles) return;
     const videoEl = videoRef.current;
     if (!videoEl) return;
 
@@ -180,7 +200,7 @@ export function useSubtitles({
       videoEl.removeEventListener('loadeddata', repairIfEmptied);
       videoEl.removeEventListener('timeupdate', repairIfEmptied);
     };
-  }, [activeLanguage, subtitles, trackEpoch, videoRef, versionId]);
+  }, [activeLanguage, subtitles, supportsSubtitles, trackEpoch, videoRef, versionId]);
 
   const selectSubtitleLanguage = useCallback(
     (language: string | null) => {
@@ -195,34 +215,125 @@ export function useSubtitles({
     async (file: File, language: string, label: string): Promise<string | null> => {
       if (!versionId) return 'No version selected';
 
+      const captionExt = getSubtitleExtension(file.name);
+      const transcriptExt = getTranscriptUploadExtension(file.name);
+      if (!captionExt && !transcriptExt) {
+        return 'Upload a .srt, .vtt, .txt, or .docx file';
+      }
+
       setIsUploadingSubtitle(true);
       try {
-        const formData = new FormData();
-        formData.append('subtitle', file);
-        formData.append('versionId', versionId);
-        formData.append('language', language);
-        formData.append('label', label);
+        if (captionExt) {
+          const formData = new FormData();
+          formData.append('subtitle', file);
+          formData.append('versionId', versionId);
+          formData.append('language', language);
+          formData.append('label', label);
 
-        const res = await fetch(`/api/videos/${videoId}/subtitles`, {
-          method: 'POST',
-          body: formData,
-        });
-        const payload = await res.json().catch(() => null);
-        if (!res.ok) {
-          return payload?.error?.message || payload?.error || 'Failed to upload subtitle';
+          const res = await fetch(`/api/videos/${videoId}/subtitles`, {
+            method: 'POST',
+            body: formData,
+          });
+          const payload = await res.json().catch(() => null);
+          if (!res.ok) {
+            return readClientApiError(payload, 'Failed to upload subtitle');
+          }
+        } else {
+          const form = new FormData();
+          form.append('transcript', file);
+          form.append('language', language);
+          const res = await fetch(`/api/versions/${versionId}/transcript/upload`, {
+            method: 'POST',
+            body: form,
+          });
+          const payload = await res.json().catch(() => null);
+          if (!res.ok) {
+            return readClientApiError(payload, 'Failed to upload transcript');
+          }
         }
 
         await refresh();
-        selectSubtitleLanguage(language.toLowerCase());
+        if (captionExt) {
+          selectSubtitleLanguage(language.toLowerCase());
+        }
         return null;
       } catch {
-        return 'Failed to upload subtitle';
+        return captionExt ? 'Failed to upload subtitle' : 'Failed to upload transcript';
       } finally {
         setIsUploadingSubtitle(false);
       }
     },
     [refresh, selectSubtitleLanguage, versionId, videoId]
   );
+
+  const generateSubtitles = useCallback(
+    async (language: string): Promise<string | null> => {
+      if (!versionId) return 'No version selected';
+      if (generateInFlightRef.current || isGeneratingSubtitles) {
+        return 'Subtitle generation is already running';
+      }
+
+      generateInFlightRef.current = true;
+      try {
+        const res = await fetch(`/api/versions/${versionId}/transcript`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ language }),
+        });
+        const payload = await res.json().catch(() => null);
+        if (!res.ok) {
+          generateInFlightRef.current = false;
+          return readClientApiError(payload, 'Failed to start AI subtitles');
+        }
+        pendingGenerateLanguageRef.current = language.toLowerCase();
+        setIsGeneratingSubtitles(true);
+        return null;
+      } catch {
+        generateInFlightRef.current = false;
+        return 'Failed to start AI subtitles';
+      }
+    },
+    [isGeneratingSubtitles, versionId]
+  );
+
+  useEffect(() => {
+    if (!isGeneratingSubtitles || !versionId) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/versions/${versionId}/transcript`, { cache: 'no-store' });
+        const payload = await res.json().catch(() => null);
+        if (cancelled) return;
+        const status = payload?.data?.transcript?.status as string | undefined;
+        if (status === 'READY') {
+          const language = pendingGenerateLanguageRef.current;
+          pendingGenerateLanguageRef.current = null;
+          generateInFlightRef.current = false;
+          setIsGeneratingSubtitles(false);
+          await refresh();
+          if (language) selectSubtitleLanguage(language);
+          return;
+        }
+        if (status === 'FAILED') {
+          pendingGenerateLanguageRef.current = null;
+          generateInFlightRef.current = false;
+          setIsGeneratingSubtitles(false);
+        }
+      } catch {
+        // The next interval retries; a single failed poll is not the job failing.
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isGeneratingSubtitles, refresh, selectSubtitleLanguage, versionId]);
 
   const deleteSubtitle = useCallback(
     async (subtitleId: string): Promise<string | null> => {
@@ -252,13 +363,17 @@ export function useSubtitles({
       selectSubtitleLanguage,
       uploadSubtitle,
       deleteSubtitle,
+      generateSubtitles,
       isUploadingSubtitle,
+      isGeneratingSubtitles,
       refreshSubtitles: refresh,
     }),
     [
       activeLanguage,
       canManageSubtitles,
       deleteSubtitle,
+      generateSubtitles,
+      isGeneratingSubtitles,
       isUploadingSubtitle,
       refresh,
       selectSubtitleLanguage,

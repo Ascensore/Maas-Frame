@@ -58,7 +58,7 @@ export const DownloadControls = memo(function DownloadControls({
             size={compact ? 'icon' : 'sm'}
             className={cn(
               compact && 'h-8 w-8',
-              'transition-opacity duration-300',
+              'border-white/20 bg-white/5 text-[#F4F4F2] hover:bg-white/10 hover:text-white transition-opacity duration-300',
               isDownloading && 'opacity-50 pointer-events-none'
             )}
             disabled={!isVideoDownloadAvailable || isDownloading}
@@ -118,7 +118,7 @@ export const DownloadControls = memo(function DownloadControls({
             variant="outline"
             size="icon"
             className={cn(
-              'h-8 w-8 transition-opacity duration-300',
+              'h-8 w-8 border-white/20 bg-white/5 text-[#F4F4F2] hover:bg-white/10 hover:text-white transition-opacity duration-300',
               isDownloading && 'opacity-50 pointer-events-none'
             )}
             disabled={!isVideoDownloadAvailable || isDownloading}
@@ -155,7 +155,7 @@ export const DownloadControls = memo(function DownloadControls({
       variant="outline"
       size="sm"
       className={cn(
-        'transition-opacity duration-300',
+        'border-white/20 bg-white/5 text-[#F4F4F2] hover:bg-white/10 hover:text-white transition-opacity duration-300',
         isDownloading && 'opacity-50 pointer-events-none'
       )}
       onClick={() => onDownload()}

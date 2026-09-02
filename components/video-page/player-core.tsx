@@ -45,6 +45,10 @@ import { reviewPlayerMode, type ReviewKind } from '@/lib/review-kind';
 import { ReviewWatermarkOverlay } from '@/components/video-page/review-watermark-overlay';
 import { CommentInOutControls } from '@/components/video-page/comment-in-out-controls';
 
+/** Ghost controls on the near-black bar. Semantic tokens stay light-theme unless `.dark` is an ancestor. */
+const chromeIconButtonClass = 'h-8 w-8 text-[#F4F4F2] hover:text-white hover:bg-white/10';
+const chromeTextButtonClass = 'h-8 gap-1 text-xs text-[#F4F4F2] hover:text-white hover:bg-white/10';
+
 interface PlayerCoreProps {
   activeVersionId: string | null;
   activeProviderId: string | undefined;
@@ -113,9 +117,12 @@ interface PlayerCoreProps {
   activeSubtitleLanguage: string | null;
   onSelectSubtitleLanguage: (language: string | null) => void;
   canManageSubtitles: boolean;
+  canGenerateSubtitles: boolean;
   onUploadSubtitle: (file: File, language: string, label: string) => Promise<string | null>;
   onDeleteSubtitle: (subtitleId: string) => Promise<string | null>;
+  onGenerateSubtitles: (language: string) => Promise<string | null>;
   isUploadingSubtitle: boolean;
+  isGeneratingSubtitles: boolean;
   playbackSpeed: number;
   playbackSpeedBounds: { min: number; max: number; snapTo?: number[] };
   handleSpeedNudge: (delta: number) => void;
@@ -200,9 +207,12 @@ export const PlayerCore = memo(function PlayerCore({
   activeSubtitleLanguage,
   onSelectSubtitleLanguage,
   canManageSubtitles,
+  canGenerateSubtitles,
   onUploadSubtitle,
   onDeleteSubtitle,
+  onGenerateSubtitles,
   isUploadingSubtitle,
+  isGeneratingSubtitles,
   playbackSpeed,
   playbackSpeedBounds,
   handleSpeedNudge,
@@ -451,9 +461,9 @@ export const PlayerCore = memo(function PlayerCore({
 
       <div
         className={cn(
-          'shrink-0 px-4 py-2 bg-background border-t',
+          'shrink-0 px-4 py-2 bg-[#0D0E11] text-[#F4F4F2] border-t border-white/15',
           isFullscreenMode
-            ? 'absolute bottom-0 left-0 right-0 z-50 transition-opacity duration-300'
+            ? 'absolute bottom-0 left-0 right-0 z-50 bg-[#0D0E11]/95 backdrop-blur-sm transition-opacity duration-300'
             : '',
           isFullscreenMode && cursorIdle && isPlaying && 'opacity-0 pointer-events-none'
         )}
@@ -461,14 +471,19 @@ export const PlayerCore = memo(function PlayerCore({
         <div className="flex items-center gap-1 mb-2">
           {!isStillPlayer && (
             <>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handlePlayPause}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={chromeIconButtonClass}
+                onClick={handlePlayPause}
+              >
                 {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
               </Button>
 
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className={chromeIconButtonClass}
                 onClick={() => handleSkip(-10)}
                 title={isFrameMode ? `Back ${frameStepLabel}` : 'Back 10s'}
               >
@@ -478,18 +493,23 @@ export const PlayerCore = memo(function PlayerCore({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className={chromeIconButtonClass}
                 onClick={() => handleSkip(10)}
                 title={isFrameMode ? `Forward ${frameStepLabel}` : 'Forward 10s'}
               >
                 <SkipForward className="h-4 w-4" />
               </Button>
 
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleMuteToggle}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={chromeIconButtonClass}
+                onClick={handleMuteToggle}
+              >
                 {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
               </Button>
 
-              <span className="text-xs text-muted-foreground ml-1 tabular-nums">
+              <span className="text-xs text-[#F4F4F2]/80 ml-1 tabular-nums">
                 {formatTime(currentTime)} / {formatTime(duration)}
               </span>
 
@@ -513,6 +533,7 @@ export const PlayerCore = memo(function PlayerCore({
                     }
                     onClear={clearCommentRangeSelection}
                     compact
+                    onDark
                   />
                 </div>
               )}
@@ -526,7 +547,7 @@ export const PlayerCore = memo(function PlayerCore({
                   <Button
                     variant={isFrameMode ? 'default' : 'ghost'}
                     size="sm"
-                    className="h-8 gap-1 text-xs"
+                    className={isFrameMode ? 'h-8 gap-1 text-xs' : chromeTextButtonClass}
                     disabled={!estimatedFrameRate}
                     onClick={handleFrameModeToggle}
                     title={
@@ -542,7 +563,7 @@ export const PlayerCore = memo(function PlayerCore({
                 {activeProviderId === 'bunny' && (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs">
+                      <Button variant="ghost" size="sm" className={chromeTextButtonClass}>
                         Quality {selectedQualityLabel}
                       </Button>
                     </DropdownMenuTrigger>
@@ -575,18 +596,19 @@ export const PlayerCore = memo(function PlayerCore({
                   </DropdownMenu>
                 )}
 
-                {activeProviderId && activeProviderId !== 'direct' && (
-                  <SubtitleControls
-                    subtitles={subtitleTracks}
-                    activeSubtitleLanguage={activeSubtitleLanguage}
-                    onSelectSubtitleLanguage={onSelectSubtitleLanguage}
-                    canManageSubtitles={activeProviderId === 'youtube' ? false : canManageSubtitles}
-                    alwaysShow={activeProviderId === 'youtube'}
-                    onUploadSubtitle={onUploadSubtitle}
-                    onDeleteSubtitle={onDeleteSubtitle}
-                    isUploadingSubtitle={isUploadingSubtitle}
-                  />
-                )}
+                <SubtitleControls
+                  subtitles={subtitleTracks}
+                  activeSubtitleLanguage={activeSubtitleLanguage}
+                  onSelectSubtitleLanguage={onSelectSubtitleLanguage}
+                  canManageSubtitles={canManageSubtitles}
+                  canGenerateSubtitles={canGenerateSubtitles}
+                  alwaysShow
+                  onUploadSubtitle={onUploadSubtitle}
+                  onDeleteSubtitle={onDeleteSubtitle}
+                  onGenerateSubtitles={onGenerateSubtitles}
+                  isUploadingSubtitle={isUploadingSubtitle}
+                  isGeneratingSubtitles={isGeneratingSubtitles}
+                />
 
                 <div className="flex items-center">
                   {(
@@ -599,7 +621,7 @@ export const PlayerCore = memo(function PlayerCore({
                       key={label}
                       variant="ghost"
                       size="sm"
-                      className="h-8 px-1.5 text-[11px] tabular-nums"
+                      className="h-8 px-1.5 text-[11px] tabular-nums text-[#F4F4F2] hover:text-white hover:bg-white/10"
                       disabled={
                         nudgePlaybackSpeed(playbackSpeed, delta, playbackSpeedBounds) ===
                         playbackSpeed
@@ -610,7 +632,7 @@ export const PlayerCore = memo(function PlayerCore({
                       {label}
                     </Button>
                   ))}
-                  <span className="min-w-[3.25rem] px-0.5 text-center text-xs tabular-nums">
+                  <span className="min-w-[3.25rem] px-0.5 text-center text-xs tabular-nums text-[#F4F4F2]">
                     {formatPlaybackSpeed(playbackSpeed)}
                   </span>
                   {(
@@ -623,7 +645,7 @@ export const PlayerCore = memo(function PlayerCore({
                       key={label}
                       variant="ghost"
                       size="sm"
-                      className="h-8 px-1.5 text-[11px] tabular-nums"
+                      className="h-8 px-1.5 text-[11px] tabular-nums text-[#F4F4F2] hover:text-white hover:bg-white/10"
                       disabled={
                         nudgePlaybackSpeed(playbackSpeed, delta, playbackSpeedBounds) ===
                         playbackSpeed
@@ -642,7 +664,7 @@ export const PlayerCore = memo(function PlayerCore({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 gap-1 text-[11px] text-muted-foreground hidden sm:inline-flex"
+                className="h-8 gap-1 text-[11px] text-[#F4F4F2]/80 hidden sm:inline-flex"
                 onClick={onOpenCommandPalette}
                 title="Command palette (⌘K)"
               >
@@ -653,7 +675,7 @@ export const PlayerCore = memo(function PlayerCore({
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className={chromeIconButtonClass}
               onClick={toggleFullscreen}
               title={isFullscreenMode ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
             >
@@ -668,7 +690,7 @@ export const PlayerCore = memo(function PlayerCore({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className={chromeIconButtonClass}
                 onClick={() => setShowComments(!showComments)}
                 title={showComments ? 'Hide comments' : 'Show comments'}
               >
@@ -682,7 +704,7 @@ export const PlayerCore = memo(function PlayerCore({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 lg:hidden"
+                className={cn(chromeIconButtonClass, 'lg:hidden')}
                 onClick={() => setIsMobileCommentsOpen(true)}
                 title="Show comments"
               >
@@ -695,7 +717,7 @@ export const PlayerCore = memo(function PlayerCore({
         <div
           ref={timelineRef}
           className={cn(
-            'relative h-8 bg-muted rounded cursor-pointer select-none',
+            'relative h-8 bg-white/20 rounded cursor-pointer select-none',
             isStillPlayer && 'hidden'
           )}
           title="Click to scrub. Shift-drag to mark a comment range."

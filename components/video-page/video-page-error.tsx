@@ -19,7 +19,12 @@ export const VideoPageError = memo(function VideoPageError({
   projectId,
 }: VideoPageErrorProps) {
   return (
-    <div className={cn(containerHeight, 'dark flex items-center justify-center bg-[#0D0E11]')}>
+    <div
+      className={cn(
+        containerHeight,
+        'dark flex items-center justify-center bg-[#0D0E11] text-foreground'
+      )}
+    >
       <div className="text-center">
         <p className="text-muted-foreground mb-4">{error || 'Video not found'}</p>
         <Button asChild variant="outline">

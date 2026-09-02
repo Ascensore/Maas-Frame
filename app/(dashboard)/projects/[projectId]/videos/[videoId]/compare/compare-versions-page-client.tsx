@@ -575,8 +575,8 @@ export default function CompareVersionsPageClient({
 
   if (loading) {
     return (
-      <div className="dark h-screen flex flex-col bg-[#0D0E11] overflow-hidden">
-        <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11]">
+      <div className="dark h-screen flex flex-col bg-[#0D0E11] text-foreground overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11] text-[#F4F4F2]">
           <div className="flex items-center gap-3">
             <Skeleton className="h-4 w-24" />
             <Separator orientation="vertical" className="h-5" />
@@ -605,7 +605,7 @@ export default function CompareVersionsPageClient({
 
   if (error || !video || video.versions.length < 2) {
     return (
-      <div className="h-screen flex items-center justify-center bg-[#0D0E11] dark">
+      <div className="h-screen flex items-center justify-center bg-[#0D0E11] text-foreground dark">
         <div className="text-center">
           <p className="text-muted-foreground mb-4">
             {error || 'Need at least 2 versions to compare'}
@@ -620,25 +620,25 @@ export default function CompareVersionsPageClient({
 
   return (
     <div
-      className="dark h-screen flex flex-col bg-[#0D0E11] overflow-hidden"
+      className="dark h-screen flex flex-col bg-[#0D0E11] text-foreground overflow-hidden"
       onMouseUp={handleTimelineMouseUp}
       onMouseLeave={() => isDragging && handleTimelineMouseUp()}
     >
       {/* Header */}
-      <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11]">
+      <div className="shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11] text-[#F4F4F2]">
         <div className="flex items-center gap-3">
           <Link
             href={`/projects/${projectId}/videos/${videoId}`}
-            className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex items-center text-sm text-white/60 hover:text-[#F4F4F2] transition-colors"
           >
             <ArrowLeft className="h-4 w-4 mr-1" />
             Back
           </Link>
           <Separator orientation="vertical" className="h-5" />
           <div className="flex items-center gap-2">
-            <GitCompareArrows className="h-4 w-4 text-muted-foreground" />
+            <GitCompareArrows className="h-4 w-4 text-white/50" />
             <span className="text-sm font-medium">Compare Versions</span>
-            <span className="text-xs text-muted-foreground hidden sm:inline">• {video.title}</span>
+            <span className="text-xs text-white/45 hidden sm:inline">• {video.title}</span>
           </div>
         </div>
       </div>
@@ -694,7 +694,7 @@ export default function CompareVersionsPageClient({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7"
+                    className="h-7 w-7 text-[#F4F4F2] hover:text-white hover:bg-white/10"
                     onClick={() => {
                       const player = playersRef.current.get(versionId);
                       if (!player) return;
@@ -729,7 +729,11 @@ export default function CompareVersionsPageClient({
                   <Button
                     variant={isCommentsOpen ? 'secondary' : 'ghost'}
                     size="sm"
-                    className="gap-1.5 text-xs"
+                    className={
+                      isCommentsOpen
+                        ? 'gap-1.5 text-xs'
+                        : 'gap-1.5 text-xs text-[#F4F4F2] hover:text-white hover:bg-white/10'
+                    }
                     onClick={() => toggleComments(versionId)}
                   >
                     <MessageSquare className="h-3.5 w-3.5" />
@@ -896,19 +900,24 @@ export default function CompareVersionsPageClient({
       </div>
 
       {/* Shared playback controls */}
-      <div className="shrink-0 px-4 py-2 bg-[#0D0E11] border-t border-white/10">
+      <div className="shrink-0 px-4 py-2 bg-[#0D0E11] text-[#F4F4F2] border-t border-white/10">
         <div className="flex items-center gap-2 mb-2">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handlePlayPause}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-[#F4F4F2] hover:text-white hover:bg-white/10"
+            onClick={handlePlayPause}
+          >
             {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
           </Button>
-          <span ref={timecodeRef} className="text-xs text-muted-foreground tabular-nums">
+          <span ref={timecodeRef} className="text-xs text-[#F4F4F2]/80 tabular-nums">
             {formatTime(currentTime)} / {formatTime(duration)}
           </span>
         </div>
 
         <div
           ref={timelineRef}
-          className="relative h-8 bg-muted rounded cursor-pointer select-none"
+          className="relative h-8 bg-white/20 rounded cursor-pointer select-none"
           onMouseDown={handleTimelineMouseDown}
           onMouseMove={handleTimelineMouseMove}
         >

@@ -454,7 +454,7 @@ export const TranscriptPane = memo(function TranscriptPane({
               ) : (
                 <Upload className="h-4 w-4" />
               )}
-              <span className="ml-1">Upload</span>
+              <span className="ml-1">Upload file</span>
             </Button>
             <Button
               size="sm"
@@ -467,7 +467,7 @@ export const TranscriptPane = memo(function TranscriptPane({
               ) : (
                 <Captions className="h-4 w-4" />
               )}
-              <span className="ml-1">{transcript ? 'Re-run' : 'Transcribe'}</span>
+              <span className="ml-1">{transcript ? 'Re-run AI' : 'Generate with AI'}</span>
             </Button>
           </>
         )}

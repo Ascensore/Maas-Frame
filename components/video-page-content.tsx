@@ -371,13 +371,17 @@ export function VideoPageContent({
     selectSubtitleLanguage,
     uploadSubtitle,
     deleteSubtitle,
+    generateSubtitles,
     isUploadingSubtitle,
+    isGeneratingSubtitles,
   } = useSubtitles({
     videoId,
     versionId: activeVersionId,
     videoRef,
     supportsSubtitles,
   });
+  const canManageCaptions = canShareVideo || canManageSubtitles;
+  const canGenerateCaptions = supportsSubtitles && canManageCaptions;
   const activeVersionDuration = activeVersion?.duration;
   const bunnyCdnHostname = useMemo(() => resolvePublicBunnyCdnHostname(), []);
   const embedUrl = useMemo(() => {
@@ -986,7 +990,12 @@ export function VideoPageContent({
   }
 
   return (
-    <div className={cn(containerHeight, 'dark flex flex-col bg-[#0D0E11] overflow-hidden')}>
+    <div
+      className={cn(
+        containerHeight,
+        'dark flex flex-col bg-[#0D0E11] text-foreground overflow-hidden'
+      )}
+    >
       <div className="flex-1 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden min-h-0">
         <TranscriptSidebar
           open={transcriptOpen}
@@ -996,7 +1005,7 @@ export function VideoPageContent({
           <TranscriptPane
             versionId={activeVersionId}
             getCurrentTime={getCurrentTime}
-            canManage={canManageSubtitles}
+            canManage={canManageCaptions}
             comments={transcriptCommentMarkers}
             onSeek={handleTranscriptSeek}
             onCommentRange={handleTranscriptCommentRange}
@@ -1132,10 +1141,13 @@ export function VideoPageContent({
             subtitleTrackKey={subtitleTrackKey}
             activeSubtitleLanguage={activeCaptionLanguage}
             onSelectSubtitleLanguage={selectCaptionLanguage}
-            canManageSubtitles={canManageSubtitles}
+            canManageSubtitles={canManageCaptions}
+            canGenerateSubtitles={canGenerateCaptions}
             onUploadSubtitle={uploadSubtitle}
             onDeleteSubtitle={deleteSubtitle}
+            onGenerateSubtitles={generateSubtitles}
             isUploadingSubtitle={isUploadingSubtitle}
+            isGeneratingSubtitles={isGeneratingSubtitles}
             playbackSpeed={playbackSpeed}
             playbackSpeedBounds={playbackSpeedBounds}
             handleSpeedNudge={handleSpeedNudge}
