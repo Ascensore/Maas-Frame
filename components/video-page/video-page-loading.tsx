@@ -23,7 +23,12 @@ export const VideoPageLoading = memo(function VideoPageLoading({
   showComments,
 }: VideoPageLoadingProps) {
   return (
-    <div className={cn(containerHeight, 'dark flex flex-col bg-[#0D0E11] overflow-hidden')}>
+    <div
+      className={cn(
+        containerHeight,
+        'dark flex flex-col bg-[#0D0E11] text-foreground overflow-hidden'
+      )}
+    >
       <div className="flex-1 flex overflow-hidden min-h-0">
         <div
           className={cn(
@@ -56,7 +61,7 @@ export const VideoPageLoading = memo(function VideoPageLoading({
           <div className="flex-1 bg-black min-h-0" />
           <div
             className={cn(
-              'shrink-0 px-4 py-2 bg-background border-t',
+              'shrink-0 px-4 py-2 bg-[#0D0E11] text-[#F4F4F2] border-t border-white/15',
               isFullscreenMode &&
                 cursorIdle &&
                 isPlaying &&

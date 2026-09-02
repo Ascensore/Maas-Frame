@@ -14,6 +14,8 @@ interface CommentInOutControlsProps {
   onSeekOut?: () => void;
   onClear: () => void;
   compact?: boolean;
+  /** Light text/borders for the near-black player bar. */
+  onDark?: boolean;
 }
 
 function RangeChip({
@@ -24,6 +26,7 @@ function RangeChip({
   onMark,
   onSeek,
   compact,
+  onDark,
 }: {
   label: string;
   shortcut: string;
@@ -32,13 +35,20 @@ function RangeChip({
   onMark: () => void;
   onSeek?: () => void;
   compact?: boolean;
+  onDark?: boolean;
 }) {
   const marked = time !== null;
   return (
     <div
       className={cn(
         'inline-flex items-stretch overflow-hidden rounded-md border',
-        marked ? 'border-primary/40 bg-primary/10' : 'border-border'
+        marked
+          ? onDark
+            ? 'border-white/35 bg-white/10'
+            : 'border-primary/40 bg-primary/10'
+          : onDark
+            ? 'border-white/25'
+            : 'border-border'
       )}
     >
       <button
@@ -46,12 +56,22 @@ function RangeChip({
         onClick={onMark}
         title={`${label} at playhead (${shortcut})`}
         className={cn(
-          'px-2 font-semibold tracking-wide text-muted-foreground hover:bg-accent hover:text-foreground',
-          compact ? 'h-7 text-[10px]' : 'h-8 text-[11px]'
+          'px-2 font-semibold tracking-wide',
+          compact ? 'h-7 text-[10px]' : 'h-8 text-[11px]',
+          onDark
+            ? 'text-[#F4F4F2]/80 hover:bg-white/10 hover:text-white'
+            : 'text-muted-foreground hover:bg-accent hover:text-foreground'
         )}
       >
         {label}
-        <span className="ml-1 font-mono font-normal text-muted-foreground/80">{shortcut}</span>
+        <span
+          className={cn(
+            'ml-1 font-mono font-normal',
+            onDark ? 'text-[#F4F4F2]/55' : 'text-muted-foreground/80'
+          )}
+        >
+          {shortcut}
+        </span>
       </button>
       <button
         type="button"
@@ -60,7 +80,13 @@ function RangeChip({
         className={cn(
           'border-l px-2 font-mono tabular-nums',
           compact ? 'h-7 min-w-[3.25rem] text-[11px]' : 'h-8 min-w-[3.75rem] text-xs',
-          marked ? 'text-foreground' : 'text-muted-foreground'
+          marked
+            ? onDark
+              ? 'text-[#F4F4F2]'
+              : 'text-foreground'
+            : onDark
+              ? 'text-[#F4F4F2]/55'
+              : 'text-muted-foreground'
         )}
       >
         {marked ? formatTime(time) : '––:––'}
@@ -79,6 +105,7 @@ export function CommentInOutControls({
   onSeekOut,
   onClear,
   compact = false,
+  onDark = false,
 }: CommentInOutControlsProps) {
   const hasRange = inTime !== null || outTime !== null;
 
@@ -92,6 +119,7 @@ export function CommentInOutControls({
         onMark={onMarkIn}
         onSeek={onSeekIn}
         compact={compact}
+        onDark={onDark}
       />
       <RangeChip
         label="OUT"
@@ -101,13 +129,18 @@ export function CommentInOutControls({
         onMark={onMarkOut}
         onSeek={onSeekOut}
         compact={compact}
+        onDark={onDark}
       />
       {hasRange && (
         <Button
           type="button"
           size="sm"
           variant="ghost"
-          className={cn('px-2 text-xs', compact ? 'h-7' : 'h-8')}
+          className={cn(
+            'px-2 text-xs',
+            compact ? 'h-7' : 'h-8',
+            onDark && 'text-[#F4F4F2] hover:text-white hover:bg-white/10'
+          )}
           onClick={onClear}
           title="Clear In/Out (Esc)"
         >

@@ -35,6 +35,9 @@ import type {
 } from '@/components/video-page/types';
 import type { VideoSource } from '@/lib/video-providers';
 
+const headerOutlineButtonClass =
+  'border-white/20 bg-white/5 text-[#F4F4F2] hover:bg-white/10 hover:text-white';
+
 interface VideoPageHeaderProps {
   mode: 'dashboard' | 'watch';
   backHref: string;
@@ -139,7 +142,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
   return (
     <div
       className={cn(
-        'shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11] gap-3',
+        'shrink-0 flex items-center justify-between h-14 px-5 border-b border-white/10 bg-[#0D0E11] text-[#F4F4F2] gap-3',
         isFullscreenMode
           ? 'absolute top-0 left-0 right-0 z-50 transition-opacity duration-300'
           : '',
@@ -165,7 +168,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
       <div className="flex items-center gap-1.5 shrink-0">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" className={headerOutlineButtonClass}>
               <Badge variant="secondary" className="mr-2">
                 v{activeVersion.versionNumber}
               </Badge>
@@ -227,7 +230,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
                 variant="outline"
                 size="sm"
                 onClick={() => setShowVersionDialog(true)}
-                className="hidden sm:inline-flex"
+                className={cn('hidden sm:inline-flex', headerOutlineButtonClass)}
               >
                 <Plus className="h-4 w-4 mr-1" />
                 New Version
@@ -238,7 +241,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
               variant="outline"
               size="sm"
               onClick={onOpenApprovalsPanel}
-              className="hidden sm:inline-flex"
+              className={cn('hidden sm:inline-flex', headerOutlineButtonClass)}
             >
               <ListChecks className="h-4 w-4 mr-1" />
               Approvals
@@ -255,7 +258,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
           variant={transcriptOpen ? 'secondary' : 'outline'}
           size="sm"
           onClick={onToggleTranscript}
-          className="inline-flex"
+          className={cn('inline-flex', transcriptOpen ? '' : headerOutlineButtonClass)}
           title={transcriptOpen ? 'Hide transcript (T)' : 'Show transcript (T)'}
         >
           <Captions className="h-4 w-4 sm:mr-1" />
@@ -269,7 +272,7 @@ export const VideoPageHeader = memo(function VideoPageHeader({
                 variant="outline"
                 size="sm"
                 onClick={onOpenCompare}
-                className="hidden sm:inline-flex"
+                className={cn('hidden sm:inline-flex', headerOutlineButtonClass)}
               >
                 <GitCompareArrows className="h-4 w-4 mr-1" />
                 Compare
@@ -305,7 +308,11 @@ export const VideoPageHeader = memo(function VideoPageHeader({
               <div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" className="w-7 px-0 self-center">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={cn('w-7 px-0 self-center', headerOutlineButtonClass)}
+                    >
                       <MoreVertical className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
