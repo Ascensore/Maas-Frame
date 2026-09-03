@@ -36,6 +36,7 @@ export type TranscriptPayload = {
   language: string;
   provider: string;
   status: 'PENDING' | 'RUNNING' | 'READY' | 'FAILED';
+  error?: string | null;
   segments: TranscriptSegment[];
 } | null;
 
@@ -531,7 +532,9 @@ export const TranscriptPane = memo(function TranscriptPane({
       ) : transcript?.status === 'PENDING' || transcript?.status === 'RUNNING' ? (
         <p className="text-sm text-muted-foreground">Transcription in progress…</p>
       ) : transcript?.status === 'FAILED' ? (
-        <p className="text-sm text-destructive">Transcription failed. Try again.</p>
+        <p className="text-sm text-destructive">
+          {transcript.error?.trim() ? transcript.error : 'Transcription failed. Try again.'}
+        </p>
       ) : !showList ? (
         <p className="text-sm text-muted-foreground">
           {query

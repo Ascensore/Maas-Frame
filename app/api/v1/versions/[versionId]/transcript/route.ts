@@ -7,6 +7,8 @@ import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { enqueueMediaJob } from '@/lib/media-jobs';
 import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
+import { saveFailedTranscript, saveReadyTranscript } from '@/lib/transcript-persist';
+import { fetchYoutubeTranscript, YOUTUBE_TRANSCRIPT_PROVIDER } from '@/lib/transcription/youtube';
 import {
   importTranscriptFile,
   MAX_TRANSCRIPT_FILE_SIZE,
@@ -57,6 +59,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
           language: transcript.language,
           provider: transcript.provider,
           status: transcript.status,
+          error: transcript.error,
           segments: segments.map((segment) => ({
             id: segment.id,
             startSec: segment.startSec,
@@ -96,6 +99,30 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const body = await request.json().catch(() => null);
     const language = typeof body?.language === 'string' ? body.language.trim().toLowerCase() : 'en';
 
+    if (loaded.version.providerId === 'youtube') {
+      const imported = await fetchYoutubeTranscript(loaded.version.videoId, language);
+      if (!imported.ok) {
+        await saveFailedTranscript({
+          versionId,
+          language,
+          provider: YOUTUBE_TRANSCRIPT_PROVIDER,
+          error: imported.error,
+        });
+        return apiErrors.badRequest(imported.error);
+      }
+
+      const transcript = await saveReadyTranscript({
+        versionId,
+        language,
+        provider: YOUTUBE_TRANSCRIPT_PROVIDER,
+        segments: imported.segments,
+      });
+      return withCacheControl(
+        successResponse({ transcript: shapeTranscript(transcript) }),
+        'private, no-store'
+      );
+    }
+
     const transcript = await db.transcript.upsert({
       where: { versionId_language: { versionId, language } },
       create: {
@@ -130,6 +157,7 @@ function shapeTranscript(transcript: {
   language: string;
   provider: string;
   status: TranscriptStatus;
+  error: string | null;
   segments: Array<{
     id: string;
     startSec: number;
@@ -146,6 +174,7 @@ function shapeTranscript(transcript: {
     language: transcript.language,
     provider: transcript.provider,
     status: transcript.status,
+    error: transcript.error,
     segments: transcript.segments.map((segment) => ({
       id: segment.id,
       startSec: segment.startSec,
