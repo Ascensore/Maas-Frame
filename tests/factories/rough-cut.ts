@@ -1,4 +1,4 @@
-import type { RoughCut, RoughCutProfile, RoughCutStatus } from '@prisma/client';
+import type { RoughCut, RoughCutLayout, RoughCutProfile, RoughCutStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { BUILTIN_ROUGH_CUT_PROFILE, snapshotFromProfile } from '@/lib/rough-cut/profile';
 import { nextSeq } from './seq';
@@ -46,6 +46,7 @@ export interface CreateRoughCutInput {
   folderId?: string | null;
   profileId?: string | null;
   status?: RoughCutStatus;
+  layout?: RoughCutLayout;
   decisions?: object | null;
 }
 
@@ -57,6 +58,7 @@ export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughC
       folderId: input.folderId ?? null,
       profileId: input.profileId ?? null,
       status: input.status ?? 'PENDING',
+      layout: input.layout ?? 'MULTICAM',
       profileSnapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
       decisions: input.decisions ?? undefined,
     },

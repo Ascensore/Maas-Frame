@@ -142,15 +142,26 @@ async function probeMedia(versionId: string): Promise<void> {
         : null;
     const durationFrames = rate && duration ? Math.round((duration * rate.num) / rate.den) : null;
     const dropFrame = Boolean(rate && ((rate.num === 30000 && rate.den === 1001) || (rate.num === 60000 && rate.den === 1001)));
-    const { readEmbeddedTimecode } = await import('../lib/rough-cut/probe-timecode');
+    const { readEmbeddedTimecode, readEmbeddedCreationTime } = await import('../lib/rough-cut/probe-timecode');
     const startTimecode = readEmbeddedTimecode(parsed);
+    const recordedAt = readEmbeddedCreationTime(parsed);
 
     await pool.query(
       `UPDATE video_versions
        SET frame_rate_num = $2, frame_rate_den = $3, drop_frame = $4, duration_frames = $5,
-           duration = COALESCE(duration, $6), start_timecode = COALESCE($7, start_timecode)
+           duration = COALESCE(duration, $6), start_timecode = COALESCE($7, start_timecode),
+           recorded_at = COALESCE($8, recorded_at)
        WHERE id = $1`,
-      [versionId, rate?.num ?? null, rate?.den ?? null, dropFrame, durationFrames, duration ? Math.round(duration) : null, startTimecode]
+      [
+        versionId,
+        rate?.num ?? null,
+        rate?.den ?? null,
+        dropFrame,
+        durationFrames,
+        duration ? Math.round(duration) : null,
+        startTimecode,
+        recordedAt,
+      ]
     );
 
     await maybeEnqueueReviewProxy(versionId, {

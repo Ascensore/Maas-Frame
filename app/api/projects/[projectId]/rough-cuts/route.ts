@@ -7,10 +7,16 @@ import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
 import { snapshotFromProfile } from '@/lib/rough-cut/profile';
 import {
+  guessRoughCutLayout,
+  minimumClipsForLayout,
+  parseRoughCutLayout,
+} from '@/lib/rough-cut/layout';
+import {
   isFileBackedProvider,
   loadFolderVideos,
   loadResolvedProfile,
   previewCameraRoles,
+  toLayoutGuessClips,
 } from '@/lib/rough-cut/load';
 import { enqueueAssembleRoughCut, shapeRoughCut } from '@/lib/rough-cut/serialize';
 
@@ -112,9 +118,27 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       const version = video.versions[0];
       return version && isFileBackedProvider(version.providerId);
     });
-    if (fileBacked.length < 2) {
+
+    const requestedLayout = parseRoughCutLayout(body?.layout);
+    if (body && Object.prototype.hasOwnProperty.call(body, 'layout') && requestedLayout === null) {
+      return apiErrors.badRequest('layout must be MULTICAM, SEQUENTIAL, or LINEAR');
+    }
+
+    const profile = await loadResolvedProfile({
+      workspaceId: project.workspaceId,
+      projectId,
+      folderId,
+      profileId: requestedProfileId,
+    });
+    const guess = guessRoughCutLayout(toLayoutGuessClips(fileBacked), {
+      cameraRoleMetadataKey: profile.cameraRoleMetadataKey,
+    });
+    const layout = requestedLayout ?? guess.layout;
+    if (fileBacked.length < minimumClipsForLayout(layout)) {
       return apiErrors.badRequest(
-        'A rough cut needs at least two file-backed videos in this folder'
+        layout === 'MULTICAM'
+          ? 'A multicam rough cut needs at least two file-backed videos in this folder'
+          : 'A rough cut needs at least one file-backed video in this folder'
       );
     }
 
@@ -130,17 +154,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.conflict('A rough cut is already running for this folder');
     }
 
-    const profile = await loadResolvedProfile({
-      workspaceId: project.workspaceId,
-      projectId,
-      folderId,
-      profileId: requestedProfileId,
-    });
     const cameras = previewCameraRoles(fileBacked, profile.cameraRoleMetadataKey);
-    const referenceVersionId = cameras.find((camera) => camera.versionId)?.versionId;
+    const orderIds = new Set(guess.orderedIds);
+    const orderedCameras = [
+      ...guess.orderedIds
+        .map((id) => cameras.find((camera) => camera.videoId === id))
+        .filter((camera): camera is (typeof cameras)[number] => Boolean(camera)),
+      ...cameras.filter((camera) => !orderIds.has(camera.videoId)),
+    ];
+    const referenceVersionId =
+      orderedCameras.find((camera) => camera.versionId)?.versionId ??
+      cameras.find((camera) => camera.versionId)?.versionId;
     if (!referenceVersionId) {
       return apiErrors.badRequest(
-        'A rough cut needs at least two file-backed videos in this folder'
+        'A rough cut needs at least one file-backed video in this folder'
       );
     }
 
@@ -150,6 +177,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         folderId,
         profileId: profile.id,
         requestedById: session.user.id,
+        layout,
         profileSnapshot: snapshotFromProfile(profile),
       },
     });
@@ -160,7 +188,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     });
 
     return withCacheControl(
-      successResponse({ roughCut: shapeRoughCut(created), cameras }, HttpStatus.CREATED),
+      successResponse(
+        {
+          roughCut: shapeRoughCut(created),
+          cameras: orderedCameras,
+          layout,
+          guessedLayout: guess.layout,
+          guessReason: guess.reason,
+        },
+        HttpStatus.CREATED
+      ),
       'private, no-store'
     );
   } catch (error) {

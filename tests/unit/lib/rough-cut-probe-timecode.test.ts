@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readEmbeddedTimecode } from '@/lib/rough-cut/probe-timecode';
+import { readEmbeddedCreationTime, readEmbeddedTimecode } from '@/lib/rough-cut/probe-timecode';
 
 describe('readEmbeddedTimecode', () => {
   it('prefers the format-level timecode tag', () => {
@@ -43,6 +43,24 @@ describe('readEmbeddedTimecode', () => {
     expect(
       readEmbeddedTimecode({
         format: { tags: { timecode: 'not-a-timecode' } },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('readEmbeddedCreationTime', () => {
+  it('reads format.tags.creation_time', () => {
+    expect(
+      readEmbeddedCreationTime({
+        format: { tags: { creation_time: '2026-03-15T14:22:01.000000Z' } },
+      })?.toISOString()
+    ).toBe('2026-03-15T14:22:01.000Z');
+  });
+
+  it('ignores SMPTE timecode masquerading as creation_time', () => {
+    expect(
+      readEmbeddedCreationTime({
+        format: { tags: { creation_time: '01:00:00:00' } },
       })
     ).toBeNull();
   });

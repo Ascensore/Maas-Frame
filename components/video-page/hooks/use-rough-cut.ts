@@ -28,6 +28,7 @@ export type RoughCutRecord = {
   folderId: string | null;
   profileId: string | null;
   requestedById: string;
+  layout?: string;
   warnings: RoughCutWarning[] | null;
   error: string | null;
   hasDecisions: boolean;
@@ -79,6 +80,7 @@ function parseRoughCut(value: unknown): RoughCutRecord | null {
     folderId: typeof row.folderId === 'string' ? row.folderId : null,
     profileId: typeof row.profileId === 'string' ? row.profileId : null,
     requestedById: typeof row.requestedById === 'string' ? row.requestedById : '',
+    layout: typeof row.layout === 'string' ? row.layout : undefined,
     warnings: parseWarnings(row.warnings),
     error: typeof row.error === 'string' ? row.error : null,
     hasDecisions: row.hasDecisions === true,
@@ -166,7 +168,12 @@ export function useRoughCut() {
   }, [stopPolling]);
 
   const start = useCallback(
-    async (options: { projectId: string; folderId: string | null; profileId?: string | null }) => {
+    async (options: {
+      projectId: string;
+      folderId: string | null;
+      profileId?: string | null;
+      layout?: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR' | null;
+    }) => {
       if (isStarting) return 'A rough cut is already running';
       setIsStarting(true);
       setError(null);
@@ -177,6 +184,7 @@ export function useRoughCut() {
           body: JSON.stringify({
             folderId: options.folderId,
             ...(options.profileId ? { profileId: options.profileId } : {}),
+            ...(options.layout ? { layout: options.layout } : {}),
           }),
         });
         const payload = await response.json().catch(() => null);

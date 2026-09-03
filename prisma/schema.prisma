@@ -421,6 +421,7 @@ model VideoVersion {
   frameRateDen    Int?     @map("frame_rate_den")
   dropFrame       Boolean  @default(false) @map("drop_frame")
   startTimecode   String?  @map("start_timecode")
+  recordedAt      DateTime? @map("recorded_at")
   durationFrames  Int?     @map("duration_frames")
   // H.264 AAC MP4 derived from a camera master so the browser player can play it.
   proxyStatus     VideoProxyStatus @default(NONE) @map("proxy_status")
@@ -1020,6 +1021,12 @@ enum RoughCutSyncStrategy {
   WAVEFORM
 }
 
+enum RoughCutLayout {
+  MULTICAM
+  SEQUENTIAL
+  LINEAR
+}
+
 model RoughCutProfile {
   id                    String               @id @default(cuid())
   name                  String
@@ -1056,6 +1063,7 @@ model RoughCut {
   profile          RoughCutProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
   requestedById    String          @map("requested_by_id")
   requestedBy      User            @relation("RoughCutsRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  layout           RoughCutLayout  @default(MULTICAM)
   frameRateNum     Int?            @map("frame_rate_num")
   frameRateDen     Int?            @map("frame_rate_den")
   dropFrame        Boolean         @default(false) @map("drop_frame")

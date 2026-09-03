@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { inferCameraRole, metadataStringRecord } from '@/lib/rough-cut/camera-roles';
+import type { LayoutGuessClip } from '@/lib/rough-cut/layout';
 import {
   BUILTIN_ROUGH_CUT_PROFILE,
   resolveEffectiveProfile,
@@ -53,6 +54,7 @@ export async function loadFolderVideos(projectId: string, folderId: string | nul
       title: true,
       position: true,
       metadata: true,
+      createdAt: true,
       versions: {
         orderBy: { versionNumber: 'desc' },
         take: 1,
@@ -67,6 +69,7 @@ export async function loadFolderVideos(projectId: string, folderId: string | nul
           frameRateDen: true,
           dropFrame: true,
           startTimecode: true,
+          recordedAt: true,
         },
       },
     },
@@ -90,6 +93,24 @@ export function previewCameraRoles(
       role: inferCameraRole(video.title, metadataStringRecord(video.metadata), metadataKey),
       providerId: version?.providerId ?? null,
       fileBacked: version ? isFileBackedProvider(version.providerId) : false,
+    };
+  });
+}
+
+export function toLayoutGuessClips(
+  videos: Awaited<ReturnType<typeof loadFolderVideos>>
+): LayoutGuessClip[] {
+  return videos.map((video) => {
+    const version = video.versions[0];
+    return {
+      id: video.id,
+      title: video.title,
+      position: video.position,
+      durationSeconds: typeof version?.duration === 'number' ? version.duration : 0,
+      startTimecode: version?.startTimecode ?? null,
+      recordedAt: version?.recordedAt ? version.recordedAt.toISOString() : null,
+      createdAt: video.createdAt.toISOString(),
+      metadata: metadataStringRecord(video.metadata),
     };
   });
 }

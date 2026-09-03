@@ -140,12 +140,45 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
     expect(stored.requestedById).toBe(scenario.owner.id);
     expect(stored.projectId).toBe(scenario.project.id);
+    expect(stored.layout).toBe('MULTICAM');
     expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
     const job = await db.mediaJob.findFirstOrThrow({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } });
     expect(job.payload).toEqual({ roughCutId: payload.roughCut.id });
   });
 
-  it('returns 400 when the folder has fewer than two file-backed videos', async () => {
+  it('creates a LINEAR cut for a single file-backed video', async () => {
+    const scenario = await seedProject();
+    const only = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Interview',
+    });
+    await createVersion({
+      videoParentId: only.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string };
+      layout: string;
+      guessedLayout: string;
+    }>(response);
+    expect(payload.layout).toBe('LINEAR');
+    expect(payload.guessedLayout).toBe('LINEAR');
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.layout).toBe('LINEAR');
+    expect(stored.requestedById).toBe(scenario.owner.id);
+  });
+
+  it('returns 400 when MULTICAM is requested with a single video and writes no row', async () => {
     const scenario = await seedProject();
     const only = await createVideo({
       projectId: scenario.project.id,
@@ -162,7 +195,84 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
 
     const response = await callRoute(
       createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, layout: 'MULTICAM' } }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+  });
+
+  it('guesses SEQUENTIAL from numbered filenames and stores that layout', async () => {
+    const scenario = await seedProject();
+    const second = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Clip_002',
+      position: 0,
+    });
+    const first = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Clip_001',
+      position: 1,
+    });
+    await createVersion({
+      videoParentId: second.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    await createVersion({
+      videoParentId: first.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
       apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string };
+      layout: string;
+      guessedLayout: string;
+      cameras: Array<{ videoId: string; title: string }>;
+    }>(response);
+    expect(payload.layout).toBe('SEQUENTIAL');
+    expect(payload.guessedLayout).toBe('SEQUENTIAL');
+    expect(payload.cameras.map((camera) => camera.title)).toEqual(['Clip_001', 'Clip_002']);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.layout).toBe('SEQUENTIAL');
+  });
+
+  it('stores an explicit SEQUENTIAL layout even when cameras look like multicam', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'SEQUENTIAL' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string }; layout: string }>(response);
+    expect(payload.layout).toBe('SEQUENTIAL');
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.layout).toBe('SEQUENTIAL');
+  });
+
+  it('returns 400 for an unknown layout and writes no row', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, layout: 'stacked' } }),
       { projectId: scenario.project.id }
     );
     expect(response.status).toBe(400);

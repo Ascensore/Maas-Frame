@@ -215,3 +215,80 @@ export function computeRoughCutDecisions(
   );
   return toEditDecisions(maxApplied, clips);
 }
+
+/**
+ * Single-track / sequential edit: keep speech, drop silence and takes shorter
+ * than minShotSeconds, and concatenate what remains onto a tight program.
+ * `turns` are source-local (file time), not timeline time.
+ */
+export function computeLinearDecisions(
+  clips: CameraClip[],
+  turns: AttributedTurn[],
+  options: { minShotSeconds: number }
+): EditDecision[] {
+  if (clips.length === 0) return [];
+
+  const islands: Array<{ versionId: string; inSeconds: number; outSeconds: number; role: string }> =
+    [];
+
+  for (const clip of clips) {
+    const raw = turns
+      .filter((turn) => turn.versionId === clip.versionId)
+      .map((turn) => ({
+        start: Math.max(0, Math.min(clip.durationSeconds, turn.start)),
+        end: Math.max(0, Math.min(clip.durationSeconds, turn.end)),
+      }))
+      .filter((turn) => turn.end - turn.start > EPSILON)
+      .sort((a, b) => a.start - b.start);
+
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const turn of raw) {
+      const last = merged[merged.length - 1];
+      if (last && turn.start <= last.end + EPSILON) {
+        last.end = Math.max(last.end, turn.end);
+      } else {
+        merged.push({ start: turn.start, end: turn.end });
+      }
+    }
+
+    for (const island of merged) {
+      if (island.end - island.start + EPSILON < options.minShotSeconds) continue;
+      islands.push({
+        versionId: clip.versionId,
+        inSeconds: island.start,
+        outSeconds: island.end,
+        role: clip.role,
+      });
+    }
+  }
+
+  const kept =
+    islands.length > 0
+      ? islands
+      : clips
+          .filter((clip) => clip.durationSeconds > EPSILON)
+          .map((clip) => ({
+            versionId: clip.versionId,
+            inSeconds: 0,
+            outSeconds: clip.durationSeconds,
+            role: clip.role,
+          }));
+
+  let cursor = 0;
+  const edits: EditDecision[] = [];
+  for (const island of kept) {
+    const duration = island.outSeconds - island.inSeconds;
+    if (duration <= EPSILON) continue;
+    edits.push({
+      timelineStartSeconds: cursor,
+      timelineEndSeconds: cursor + duration,
+      inSeconds: island.inSeconds,
+      outSeconds: island.outSeconds,
+      sourceVersionId: island.versionId,
+      cameraRole: island.role,
+      targetTrack: 1,
+    });
+    cursor += duration;
+  }
+  return edits;
+}

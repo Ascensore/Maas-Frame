@@ -20,11 +20,22 @@ import {
 } from '@/components/ui/select';
 import { useRoughCut } from '@/components/video-page/hooks/use-rough-cut';
 import { inferCameraRole, metadataStringRecord } from '@/lib/rough-cut/camera-roles';
+import {
+  guessRoughCutLayout,
+  type LayoutGuessClip,
+  type LayoutGuessReason,
+} from '@/lib/rough-cut/layout';
+import type { RoughCutLayout } from '@/lib/rough-cut/types';
 
 export type RoughCutDialogVideo = {
   id: string;
   title: string;
   metadata?: unknown;
+  position?: number;
+  durationSeconds?: number | null;
+  startTimecode?: string | null;
+  recordedAt?: string | null;
+  createdAt?: string | null;
 };
 
 export type RoughCutDialogProfile = {
@@ -47,6 +58,54 @@ interface RoughCutDialogProps {
   videos: RoughCutDialogVideo[];
 }
 
+function guessReasonLabel(
+  reason: LayoutGuessReason,
+  effectiveLayout: RoughCutLayout,
+  override: RoughCutLayout | null
+): string {
+  if (override) {
+    return effectiveLayout === 'SEQUENTIAL'
+      ? 'Using your sequential order. Silence and short takes are dropped.'
+      : effectiveLayout === 'LINEAR'
+        ? 'Using a single-track linear edit. Silence and short takes are dropped.'
+        : 'Using multicam switching from speaker and camera roles.';
+  }
+  if (reason === 'single-clip') {
+    return 'Guessed a single-clip linear edit.';
+  }
+  if (reason === 'overlapping-timecode') {
+    return 'Guessed multicam from overlapping start timecode.';
+  }
+  if (reason === 'overlapping-recorded-at') {
+    return 'Guessed multicam from overlapping recorded-at timestamps.';
+  }
+  if (reason === 'distinct-camera-metadata') {
+    return 'Guessed multicam from camera metadata.';
+  }
+  if (reason === 'sequential-timecode') {
+    return 'Guessed sequential clips from non-overlapping start timecode.';
+  }
+  if (reason === 'sequential-recorded-at') {
+    return 'Guessed sequential clips from recorded-at metadata.';
+  }
+  if (reason === 'sequential-filenames') {
+    return 'Guessed sequential clips from numbered filenames.';
+  }
+  if (reason === 'distinct-camera-roles') {
+    return 'Guessed multicam from camera names in the filenames.';
+  }
+  return 'Guessed multicam. Switch to sequential if these files are one camera in order.';
+}
+
+function orderPreviewCameras<T extends { id: string }>(cameras: T[], orderedIds: string[]): T[] {
+  const byId = new Map(cameras.map((camera) => [camera.id, camera]));
+  const ordered = orderedIds
+    .map((id) => byId.get(id))
+    .filter((camera): camera is T => Boolean(camera));
+  const seen = new Set(ordered.map((camera) => camera.id));
+  return [...ordered, ...cameras.filter((camera) => !seen.has(camera.id))];
+}
+
 export function RoughCutDialog({
   open,
   onOpenChange,
@@ -62,6 +121,25 @@ export function RoughCutDialog({
   const [profiles, setProfiles] = useState<RoughCutDialogProfile[]>([]);
   const [profileId, setProfileId] = useState<string>('default');
   const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [layout, setLayout] = useState<RoughCutLayout | null>(null);
+
+  const guessClips: LayoutGuessClip[] = useMemo(
+    () =>
+      videos.map((video, index) => ({
+        id: video.id,
+        title: video.title,
+        position: video.position ?? index,
+        durationSeconds: video.durationSeconds ?? 0,
+        startTimecode: video.startTimecode ?? null,
+        recordedAt: video.recordedAt ?? null,
+        createdAt: video.createdAt ?? null,
+        metadata: metadataStringRecord(video.metadata),
+      })),
+    [videos]
+  );
+  const guess = useMemo(() => guessRoughCutLayout(guessClips), [guessClips]);
+  const effectiveLayout: RoughCutLayout =
+    layout ?? (videos.length > 0 ? guess.layout : videoCount <= 1 ? 'LINEAR' : 'MULTICAM');
 
   useEffect(() => {
     if (!open) {
@@ -118,41 +196,85 @@ export function RoughCutDialog({
       projectId,
       folderId,
       profileId: profileId === 'default' ? null : profileId,
+      layout: effectiveLayout,
     });
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setLayout(null);
+        onOpenChange(next);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Generate rough cut</DialogTitle>
           <DialogDescription>
             Build an OTIO and Premiere XML timeline from the {videoCount} video
-            {videoCount === 1 ? '' : 's'} in {folderLabel}. Analysis runs in the media worker;
-            downloads are generated from the saved edit list.
+            {videoCount === 1 ? '' : 's'} in {folderLabel}. Choose whether these files are
+            simultaneous cameras, sequential takes, or a single clip. Analysis runs in the media
+            worker; downloads are generated from the saved edit list.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
-          {previewCameras.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">How these files relate</p>
+            <Select
+              value={effectiveLayout}
+              onValueChange={(value) => setLayout(value as RoughCutLayout)}
+              disabled={busy || !!status}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="MULTICAM">Multicam (same moment, different cameras)</SelectItem>
+                <SelectItem value="SEQUENTIAL">Sequential clips (one after another)</SelectItem>
+                <SelectItem value="LINEAR">Single clip (drop silence and short takes)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {guessReasonLabel(guess.reason, effectiveLayout, layout)}
+            </p>
+          </div>
+
+          {effectiveLayout !== 'LINEAR' && previewCameras.length > 1 ? (
             <div>
-              <p className="text-sm font-medium mb-2">Detected camera roles</p>
+              <p className="text-sm font-medium mb-2">
+                {effectiveLayout === 'SEQUENTIAL' ? 'Chronological order' : 'Detected camera roles'}
+              </p>
               <ul className="rounded-md border divide-y max-h-40 overflow-y-auto">
-                {previewCameras.map((camera) => (
+                {(effectiveLayout === 'SEQUENTIAL'
+                  ? orderPreviewCameras(previewCameras, guess.orderedIds)
+                  : previewCameras
+                ).map((camera, index) => (
                   <li
                     key={camera.id}
                     className="flex items-center justify-between px-3 py-2 text-sm"
                   >
-                    <span className="truncate pr-3">{camera.title}</span>
+                    <span className="truncate pr-3">
+                      {effectiveLayout === 'SEQUENTIAL'
+                        ? `${index + 1}. ${camera.title}`
+                        : camera.title}
+                    </span>
                     <span className="text-muted-foreground shrink-0">{camera.role}</span>
                   </li>
                 ))}
               </ul>
             </div>
+          ) : previewCameras.length === 1 ? (
+            <p className="text-sm text-muted-foreground">
+              One file-backed clip. Silence and takes shorter than the profile minimum shot are
+              dropped.
+            </p>
           ) : (
             <p className="text-sm text-muted-foreground">
               Uses every file-backed video in this folder. Camera roles come from the{' '}
-              <code>camera</code> metadata field, then the filename.
+              <code>camera</code> metadata field, then the filename. Sequential order prefers start
+              timecode, then recorded-at metadata, then the filename.
             </p>
           )}
 
@@ -233,7 +355,10 @@ export function RoughCutDialog({
               </Button>
             </>
           ) : (
-            <Button onClick={() => void handleGenerate()} disabled={busy || videoCount < 2}>
+            <Button
+              onClick={() => void handleGenerate()}
+              disabled={busy || (effectiveLayout === 'MULTICAM' ? videoCount < 2 : videoCount < 1)}
+            >
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Generate
             </Button>

@@ -1,8 +1,10 @@
 export const ROUGH_CUT_OVERLAP = ['WIDE', 'HOLD', 'SPEAKER'] as const;
 export const ROUGH_CUT_SYNC = ['AUTO', 'TIMECODE', 'WAVEFORM'] as const;
+export const ROUGH_CUT_LAYOUTS = ['MULTICAM', 'SEQUENTIAL', 'LINEAR'] as const;
 
 export type RoughCutOverlapBehaviour = (typeof ROUGH_CUT_OVERLAP)[number];
 export type RoughCutSyncStrategy = (typeof ROUGH_CUT_SYNC)[number];
+export type RoughCutLayout = (typeof ROUGH_CUT_LAYOUTS)[number];
 
 export type ResolvedRoughCutProfile = {
   id: string | null;
@@ -31,6 +33,8 @@ export type CameraClip = {
   frameRateDen: number;
   dropFrame: boolean;
   startTimecode: string | null;
+  recordedAt?: string | null;
+  createdAt?: string | null;
   originalUrl: string;
   versionNumber: number;
   versionLabel: string | null;
@@ -84,7 +88,7 @@ export type SyncReport = {
   clips: Array<{
     versionId: string;
     offsetSeconds: number;
-    method: 'timecode' | 'waveform' | 'none';
+    method: 'timecode' | 'waveform' | 'none' | 'sequence';
     confidence: number;
   }>;
 };

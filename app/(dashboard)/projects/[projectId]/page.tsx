@@ -176,6 +176,11 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
       currentVersion: video._count.versions,
       commentCount: activeVersion?._count.comments || 0,
       duration: formatDuration(activeVersion?.duration),
+      durationSeconds: activeVersion?.duration ?? null,
+      startTimecode: activeVersion?.startTimecode ?? null,
+      recordedAt: activeVersion?.recordedAt ? activeVersion.recordedAt.toISOString() : null,
+      createdAt: video.createdAt.toISOString(),
+      position: video.position,
       lastUpdated: formatRelativeTime(video.updatedAt),
       updatedAt: video.updatedAt.toISOString(),
     };
