@@ -73,8 +73,10 @@ anonTest.describe('the admin area', () => {
 
     for (const route of ['/admin', '/admin/users', '/admin/feedback']) {
       await page.goto(route);
-      // app/(dashboard)/admin/layout.tsx sends a non-admin to the marketing root.
-      await expect(page).toHaveURL(/\/$/);
+      // layout.tsx redirects a non-admin to `/`, and a signed-in visitor is
+      // then sent to /dashboard. Either hop is a refusal; landing on /admin is
+      // the only failure.
+      await expect(page).toHaveURL(/\/(dashboard)?$/);
       await expect(page.getByRole('heading', { name: 'Dashboard Overview' })).toHaveCount(0);
     }
 

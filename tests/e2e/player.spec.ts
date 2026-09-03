@@ -82,10 +82,10 @@ test('the timeline, the arrow keys and frame mode all move the video element', a
   await expect(page.getByText(`0:00 / 0:0${SAMPLE_DURATION_SECONDS}`)).toBeVisible();
 
   // --- scrubbing ------------------------------------------------------------
-  // The scrub bar carries no role, no label and no id, so it is located by the
-  // class list it is built with in player-core.tsx. Reported rather than worked
-  // around: a keyboard user cannot reach this control at all.
-  const timeline = page.locator('div.h-8.bg-muted.cursor-pointer');
+  // The scrub bar carries no role, no label and no id. Locate it by the title
+  // player-core.tsx sets; a class-list selector broke when the bar moved off
+  // bg-muted onto the dark chrome.
+  const timeline = page.locator('[title="Click to scrub. Shift-drag to mark a comment range."]');
   await expect(timeline).toBeVisible();
   const box = await timeline.boundingBox();
   if (!box) throw new Error('The scrub bar has no layout box.');

@@ -16,7 +16,7 @@ test('a project can be created, renamed, made public and deleted', async ({
 
   // --- create -------------------------------------------------------------
   await page.goto('/dashboard');
-  await page.getByRole('link', { name: 'New Project' }).click();
+  await page.getByRole('link', { name: 'New Project', exact: true }).click();
 
   await expect(page.getByText('Create New Project')).toBeVisible();
 

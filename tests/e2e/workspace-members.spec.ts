@@ -112,7 +112,10 @@ test('an invited member accepts, is promoted, and is removed, and their own page
     // COMMENTATOR is the role that was sent, so the management controls must
     // not be there.
     await expect(memberPage.getByRole('link', { name: 'Members' })).toHaveCount(0);
-    await expect(memberPage.getByRole('link', { name: 'Settings' })).toHaveCount(0);
+    // exact: the account sidebar also contains a Settings link whose accessible
+    // name is "<user> Settings". The workspace Settings button is named exactly
+    // "Settings" and is the control COMMENTATOR must not see.
+    await expect(memberPage.getByRole('link', { name: 'Settings', exact: true })).toHaveCount(0);
 
     // And the page behind that button is refused, not merely unlinked.
     await memberPage.goto(`/workspaces/${workspace.id}/members`);
