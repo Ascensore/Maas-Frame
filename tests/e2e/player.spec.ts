@@ -15,9 +15,12 @@
 // form video-upload.spec.ts drives, against the MinIO service in
 // docker-compose.test.yml.
 //
-// tests/fixtures/sample.mp4 is 2.0 seconds at 10 fps. Those two numbers are
+// tests/fixtures/sample.mp4 is 2.0 seconds at 24 fps. Those two numbers are
 // hardcoded in the expectations below on purpose: deriving them from the file
-// at runtime would let a broken seek agree with a broken measurement.
+// at runtime would let a broken seek agree with a broken measurement. 24 fps
+// is load-bearing for frame mode: the toggle stays disabled until playback
+// measures a rate, and normalizeFrameRate rejects anything under 12, so a
+// 10 fps file could never enable the control.
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
@@ -25,6 +28,8 @@ import { REPO_ROOT } from '../helpers/env';
 
 const SAMPLE_VIDEO = path.join(REPO_ROOT, 'tests', 'fixtures', 'sample.mp4');
 const SAMPLE_DURATION_SECONDS = 2;
+const SAMPLE_FPS = 24;
+const FRAME_STEP_SECONDS = 1 / SAMPLE_FPS;
 
 // One upload, three network round trips and a MinIO PUT before the first
 // assertion.
@@ -111,20 +116,34 @@ test('the timeline, the arrow keys and frame mode all move the video element', a
   await expect.poll(() => currentTime(page)).toEqual(0);
 
   // --- frame mode -----------------------------------------------------------
-  // No frame rate has been measured yet (that only happens during playback), so
-  // one step is one second, and the button labels say so. The point of the
-  // assertion is the *difference* from the 10s and 5s jumps above: a step that
-  // lands on 1.0 could not have come from either.
+  // The idle label is "Frame step", and the control is disabled until playback
+  // has measured a frame rate. Play until it enables, pause, then return to
+  // zero. One step is 1/24s — not the 5s/10s jumps above.
   await expect(page.getByRole('button', { name: 'Forward 10s' })).toBeVisible();
-  await page.getByRole('button', { name: /^Frame / }).click();
-  const forwardOneStep = page.getByRole('button', { name: 'Forward 1s' });
-  await expect(forwardOneStep).toBeVisible();
+  const frameStep = page.getByRole('button', { name: 'Frame step' });
+  await expect(frameStep).toBeVisible();
+  await expect(frameStep).toBeDisabled();
 
-  await forwardOneStep.click();
-  await expect.poll(() => currentTime(page)).toBeGreaterThan(0.9);
-  expect(await currentTime(page)).toBeLessThan(1.2);
+  // Space is 'toggle-play'. Clicking the <video> is intercepted by the idle
+  // play overlay that covers it, and that overlay has no accessible name.
+  await page.keyboard.press('Space');
+  await expect(frameStep).toBeEnabled();
+  await page.locator('video').evaluate((el) => {
+    (el as HTMLVideoElement).pause();
+  });
 
-  await page.getByRole('button', { name: 'Back 1s' }).click();
+  await page.keyboard.press('ArrowLeft');
+  await expect.poll(() => currentTime(page)).toEqual(0);
+
+  await frameStep.click();
+  const forwardOneFrame = page.getByRole('button', { name: 'Forward 1f' });
+  await expect(forwardOneFrame).toBeVisible();
+
+  await forwardOneFrame.click();
+  await expect.poll(() => currentTime(page)).toBeGreaterThan(FRAME_STEP_SECONDS * 0.5);
+  expect(await currentTime(page)).toBeLessThan(FRAME_STEP_SECONDS * 2);
+
+  await page.getByRole('button', { name: 'Back 1f' }).click();
   await expect.poll(() => currentTime(page)).toEqual(0);
 });
 

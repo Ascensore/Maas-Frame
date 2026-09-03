@@ -112,7 +112,10 @@ anonTest.describe('the admin area', () => {
       const sidebar = page.locator('aside');
       await expect(sidebar.getByRole('link', { name: 'Projects' })).toBeVisible();
       await expect(sidebar.getByRole('link', { name: 'Workspaces' })).toBeVisible();
-      await expect(sidebar.getByRole('link', { name: 'Admin' })).toBeVisible();
+      // exact: the account Settings link's accessible name includes this user's
+      // name ("E2E Admin"), so `{ name: 'Admin' }` matches that link as well as
+      // the Admin nav item.
+      await expect(sidebar.getByRole('link', { name: 'Admin', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Growth' })).toHaveCount(0);
 
       // The dashboard is not a static shell: it counts rows, and the count has to
