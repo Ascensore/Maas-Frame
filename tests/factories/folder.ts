@@ -7,6 +7,7 @@ export interface CreateFolderInput {
   name?: string;
   parentId?: string | null;
   position?: number;
+  roughCutProfileId?: string | null;
 }
 
 export async function createFolder(input: CreateFolderInput): Promise<Folder> {
@@ -17,6 +18,7 @@ export async function createFolder(input: CreateFolderInput): Promise<Folder> {
       name: input.name ?? `Folder ${seq}`,
       parentId: input.parentId ?? null,
       position: input.position ?? 0,
+      roughCutProfileId: input.roughCutProfileId ?? null,
     },
   });
 }

@@ -57,6 +57,7 @@ model User {
   apiTokens                 ApiToken[]
   c2cConnections            C2cConnection[]
   triggeredAgentRuns        AgentRun[]   @relation("AgentRunsTriggeredBy")
+  requestedRoughCuts        RoughCut[]   @relation("RoughCutsRequestedBy")
 
   @@map("users")
 }
@@ -193,6 +194,7 @@ model Workspace {
   members     WorkspaceMember[]
   projects    Project[]
   invitations Invitation[]
+  roughCutProfiles RoughCutProfile[]
   
   @@index([ownerId])
   @@index([slug])
@@ -259,6 +261,7 @@ model Project {
   invitations Invitation[]
   folders     Folder[]
   c2cConnections C2cConnection[]
+  roughCuts   RoughCut[]
   
   @@index([ownerId])
   @@index([slug])
@@ -386,11 +389,15 @@ model Folder {
   children  Folder[] @relation("FolderTree")
   videos    Video[]
   c2cConnections C2cConnection[]
+  roughCutProfileId String? @map("rough_cut_profile_id")
+  roughCutProfile   RoughCutProfile? @relation(fields: [roughCutProfileId], references: [id], onDelete: SetNull)
+  roughCuts RoughCut[]
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([projectId])
   @@index([parentId])
+  @@index([roughCutProfileId])
   @@map("folders")
 }
 
@@ -990,6 +997,79 @@ enum MediaJobKind {
   EXTRACT_AUDIO
   TRANSCRIBE
   TRANSCODE_PROXY
+  DIARIZE
+  ASSEMBLE_ROUGH_CUT
+}
+
+enum RoughCutStatus {
+  PENDING
+  RUNNING
+  READY
+  FAILED
+}
+
+enum RoughCutOverlap {
+  WIDE
+  HOLD
+  SPEAKER
+}
+
+enum RoughCutSyncStrategy {
+  AUTO
+  TIMECODE
+  WAVEFORM
+}
+
+model RoughCutProfile {
+  id                    String               @id @default(cuid())
+  name                  String
+  workspaceId           String               @map("workspace_id")
+  workspace             Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  minShotSeconds        Float                @default(1.5) @map("min_shot_seconds")
+  safetyPauseSeconds    Float                @default(2.0) @map("safety_pause_seconds")
+  maxShotSeconds        Float?               @map("max_shot_seconds")
+  overlapBehaviour      RoughCutOverlap      @default(WIDE) @map("overlap_behaviour")
+  handleFrames          Int                  @default(0) @map("handle_frames")
+  wideCameraRole        String               @default("WIDE") @map("wide_camera_role")
+  cameraRoleMetadataKey String               @default("camera") @map("camera_role_metadata_key")
+  syncStrategy          RoughCutSyncStrategy @default(AUTO) @map("sync_strategy")
+  mediaPathPrefix       String               @default("./media/") @map("media_path_prefix")
+  isDefault             Boolean              @default(false) @map("is_default")
+  createdAt             DateTime             @default(now()) @map("created_at")
+  updatedAt             DateTime             @updatedAt @map("updated_at")
+  folders               Folder[]
+  roughCuts             RoughCut[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@map("rough_cut_profiles")
+}
+
+model RoughCut {
+  id               String          @id @default(cuid())
+  status           RoughCutStatus  @default(PENDING)
+  projectId        String          @map("project_id")
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  folderId         String?         @map("folder_id")
+  folder           Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  profileId        String?         @map("profile_id")
+  profile          RoughCutProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  requestedById    String          @map("requested_by_id")
+  requestedBy      User            @relation("RoughCutsRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  frameRateNum     Int?            @map("frame_rate_num")
+  frameRateDen     Int?            @map("frame_rate_den")
+  dropFrame        Boolean         @default(false) @map("drop_frame")
+  profileSnapshot  Json            @map("profile_snapshot")
+  syncReport       Json?
+  decisions        Json?
+  warnings         Json?
+  error            String?         @db.Text
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  @@index([projectId, folderId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("rough_cuts")
 }
 
 enum MediaJobStatus {

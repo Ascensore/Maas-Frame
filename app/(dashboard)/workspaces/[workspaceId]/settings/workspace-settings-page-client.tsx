@@ -21,6 +21,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { RoughCutProfilesCard } from '@/components/rough-cut-profiles-card';
 
 interface WorkspaceData {
   id: string;
@@ -33,9 +34,11 @@ interface WorkspaceData {
 export default function WorkspaceSettingsPageClient({
   workspaceId,
   canDelete,
+  roughCutEnabled,
 }: {
   workspaceId: string;
   canDelete: boolean;
+  roughCutEnabled: boolean;
 }) {
   const router = useRouter();
 
@@ -205,6 +208,8 @@ export default function WorkspaceSettingsPageClient({
           </form>
         </CardContent>
       </Card>
+
+      {roughCutEnabled ? <RoughCutProfilesCard workspaceId={workspaceId} /> : null}
 
       {canDelete ? (
         <>

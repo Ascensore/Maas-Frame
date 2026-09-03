@@ -14,6 +14,15 @@
 // object-storage version, which is video-upload.spec.ts's territory.
 import { test, expect } from './fixtures';
 
+/**
+ * Comment text is mounted twice (desktop pane + off-screen mobile drawer), so
+ * a bare getByText() is a strict-mode violation. First visible match is the
+ * pane the user actually sees on Chromium desktop.
+ */
+function commentText(page: import('@playwright/test').Page, text: string) {
+  return page.getByText(text, { exact: true }).first();
+}
+
 test('a comment is posted and rendered with its author and timecode', async ({
   page,
   seed,
@@ -33,20 +42,20 @@ test('a comment is posted and rendered with its author and timecode', async ({
   // documented shortcut and the composer prints it under the field.
   await composer.press('Control+Enter');
 
-  await expect(page.getByText(body)).toBeVisible();
-  await expect(page.getByText(seededUser.name ?? '')).toBeVisible();
+  await expect(commentText(page, body)).toBeVisible();
+  await expect(page.getByText(seededUser.name ?? '').first()).toBeVisible();
   await expect(page.getByText('No comments yet')).toHaveCount(0);
 
   // Every comment carries a jump-to-timestamp control, and the playhead is at
   // the start because the player never initialised (see the note above).
-  const timecode = page.getByTitle('Jump to this timestamp');
+  const timecode = page.getByTitle('Jump to this timestamp').first();
   await expect(timecode).toBeVisible();
   await expect(timecode).toContainText('0:00');
   await timecode.click();
 
   // Survives a reload, i.e. it was persisted and not only inserted optimistically.
   await page.reload();
-  await expect(page.getByText(body)).toBeVisible();
+  await expect(commentText(page, body)).toBeVisible();
 });
 
 test('an annotation drawn on the video is stored with the comment', async ({
@@ -83,12 +92,12 @@ test('an annotation drawn on the video is stored with the comment', async ({
   await composer.fill(body);
   await composer.press('Control+Enter');
 
-  await expect(page.getByText(body)).toBeVisible();
-  await expect(page.getByText('Annotated')).toBeVisible();
+  await expect(commentText(page, body)).toBeVisible();
+  await expect(page.getByText('Annotated').first()).toBeVisible();
 
   await page.reload();
-  await expect(page.getByText(body)).toBeVisible();
-  await expect(page.getByText('Annotated')).toBeVisible();
+  await expect(commentText(page, body)).toBeVisible();
+  await expect(page.getByText('Annotated').first()).toBeVisible();
 });
 
 test('a comment can be replied to and resolved', async ({ page, seed, seededUser }) => {
@@ -104,29 +113,30 @@ test('a comment can be replied to and resolved', async ({ page, seed, seededUser
   });
 
   await page.goto(`/projects/${seeded.project.id}/videos/${seeded.videoId}`);
-  await expect(page.getByText(original)).toBeVisible();
+  await expect(commentText(page, original)).toBeVisible();
 
   // --- reply --------------------------------------------------------------
-  await page.getByRole('button', { name: 'Reply' }).click();
+  await page.getByRole('button', { name: 'Reply' }).first().click();
   const replyBox = page.getByPlaceholder('Write a reply...');
   await expect(replyBox).toBeVisible();
   await replyBox.fill(reply);
   await replyBox.press('Control+Enter');
 
-  await expect(page.getByText(reply)).toBeVisible();
+  await expect(commentText(page, reply)).toBeVisible();
 
   // --- resolve ------------------------------------------------------------
   // The resolve control is the unnamed icon button that sits beside the
   // timecode in the comment's own header row.
   await page
     .getByTitle('Jump to this timestamp')
+    .first()
     .locator('xpath=following-sibling::button[1]')
     .click();
 
   // Resolved comments drop out of the default list.
-  await expect(page.getByText(original)).toHaveCount(0);
+  await expect(page.getByText(original, { exact: true })).toHaveCount(0);
 
   // And come back when the filter asks for them.
-  await page.getByRole('button', { name: 'Resolved' }).click();
-  await expect(page.getByText(original)).toBeVisible();
+  await page.getByRole('button', { name: 'Resolved' }).first().click();
+  await expect(commentText(page, original)).toBeVisible();
 });

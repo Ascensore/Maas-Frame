@@ -7,6 +7,7 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3
 import PgBoss from 'pg-boss';
 import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
+import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
 
 const { Pool } = pg;
 
@@ -119,14 +120,16 @@ async function probeMedia(versionId: string): Promise<void> {
     ]);
     if (probed.code !== 0) throw new Error(probed.stderr || 'ffprobe failed');
     const parsed = JSON.parse(probed.stdout) as {
-      format?: { format_name?: string; duration?: string };
+      format?: { format_name?: string; duration?: string; tags?: Record<string, string | undefined> };
       streams?: Array<{
         codec_type?: string;
         codec_name?: string;
+        codec_tag_string?: string;
         r_frame_rate?: string;
         avg_frame_rate?: string;
         duration?: string;
         nb_frames?: string;
+        tags?: Record<string, string | undefined>;
       }>;
     };
     const videoStream = parsed.streams?.find((stream) => stream.codec_type === 'video');
@@ -139,13 +142,15 @@ async function probeMedia(versionId: string): Promise<void> {
         : null;
     const durationFrames = rate && duration ? Math.round((duration * rate.num) / rate.den) : null;
     const dropFrame = Boolean(rate && ((rate.num === 30000 && rate.den === 1001) || (rate.num === 60000 && rate.den === 1001)));
+    const { readEmbeddedTimecode } = await import('../lib/rough-cut/probe-timecode');
+    const startTimecode = readEmbeddedTimecode(parsed);
 
     await pool.query(
       `UPDATE video_versions
        SET frame_rate_num = $2, frame_rate_den = $3, drop_frame = $4, duration_frames = $5,
-           duration = COALESCE(duration, $6)
+           duration = COALESCE(duration, $6), start_timecode = COALESCE($7, start_timecode)
        WHERE id = $1`,
-      [versionId, rate?.num ?? null, rate?.den ?? null, dropFrame, durationFrames, duration ? Math.round(duration) : null]
+      [versionId, rate?.num ?? null, rate?.den ?? null, dropFrame, durationFrames, duration ? Math.round(duration) : null, startTimecode]
     );
 
     await maybeEnqueueReviewProxy(versionId, {
@@ -401,6 +406,8 @@ const QUEUE = {
   EXTRACT_AUDIO: 'extract-audio',
   TRANSCRIBE: 'transcribe',
   TRANSCODE_PROXY: 'transcode-proxy',
+  DIARIZE: 'diarize',
+  ASSEMBLE_ROUGH_CUT: 'assemble-rough-cut',
 } as const;
 
 type MediaJobData = {
@@ -414,6 +421,8 @@ function queueForKind(kind: string): string {
   if (kind === 'EXTRACT_AUDIO') return QUEUE.EXTRACT_AUDIO;
   if (kind === 'TRANSCRIBE') return QUEUE.TRANSCRIBE;
   if (kind === 'TRANSCODE_PROXY') return QUEUE.TRANSCODE_PROXY;
+  if (kind === 'DIARIZE') return QUEUE.DIARIZE;
+  if (kind === 'ASSEMBLE_ROUGH_CUT') return QUEUE.ASSEMBLE_ROUGH_CUT;
   throw new Error(`Unknown job kind ${kind}`);
 }
 
@@ -450,6 +459,35 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
       await transcribe(data.versionId, (data.payload as { language?: string; transcriptId?: string } | null) ?? null);
     } else if (kind === 'TRANSCODE_PROXY') {
       await transcodeProxy(data.versionId);
+    } else if (kind === 'DIARIZE') {
+      await fillTranscriptSpeakers(
+        {
+          pool,
+          run,
+          downloadObject,
+          objectKeyFromProvider,
+          extractAudio,
+          scriptDir: join(import.meta.dir, '..'),
+        },
+        data.versionId
+      );
+    } else if (kind === 'ASSEMBLE_ROUGH_CUT') {
+      const roughCutId =
+        data.payload && typeof data.payload === 'object' && 'roughCutId' in data.payload
+          ? String((data.payload as { roughCutId?: unknown }).roughCutId ?? '')
+          : '';
+      if (!roughCutId) throw new Error('ASSEMBLE_ROUGH_CUT payload is missing roughCutId');
+      await assembleRoughCut(
+        {
+          pool,
+          run,
+          downloadObject,
+          objectKeyFromProvider,
+          extractAudio,
+          scriptDir: join(import.meta.dir, '..'),
+        },
+        roughCutId
+      );
     } else {
       throw new Error(`Unknown job kind ${kind}`);
     }
@@ -540,6 +578,16 @@ async function start(): Promise<void> {
   await boss.work(QUEUE.TRANSCODE_PROXY, async (jobs) => {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'TRANSCODE_PROXY');
+    }
+  });
+  await boss.work(QUEUE.DIARIZE, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'DIARIZE');
+    }
+  });
+  await boss.work(QUEUE.ASSEMBLE_ROUGH_CUT, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'ASSEMBLE_ROUGH_CUT');
     }
   });
 

@@ -225,6 +225,13 @@ describe('RATE_LIMIT_CONFIGS', () => {
     });
   });
 
+  it('caps rough-cut at ten requests per caller per hour', () => {
+    expect(RATE_LIMIT_CONFIGS['rough-cut']).toEqual({
+      windowMs: 3_600_000,
+      maxRequests: 10,
+    });
+  });
+
   it('keeps auth actions stricter per minute than the general api bucket', () => {
     const perMinute = (action: string) =>
       (RATE_LIMIT_CONFIGS[action].maxRequests / RATE_LIMIT_CONFIGS[action].windowMs) * 60_000;

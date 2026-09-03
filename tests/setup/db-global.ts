@@ -78,6 +78,7 @@ const REVIEWED_MIGRATIONS = [
   '20260829120000_project_watermark_reviews',
   '20260829200000_c2c_connections',
   '20260901000000_agent_runs',
+  '20260903220000_rough_cuts',
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */

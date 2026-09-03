@@ -1,0 +1,175 @@
+import { describe, expect, it } from 'vitest';
+import { computeRoughCutDecisions } from '@/lib/rough-cut/decisions';
+import type { AttributedTurn, CameraClip } from '@/lib/rough-cut/types';
+
+function clip(overrides: Partial<CameraClip> & Pick<CameraClip, 'versionId' | 'role'>): CameraClip {
+  return {
+    videoId: `video-${overrides.versionId}`,
+    title: overrides.role,
+    position: 0,
+    offsetSeconds: 0,
+    durationSeconds: 30,
+    frameRateNum: 24,
+    frameRateDen: 1,
+    dropFrame: false,
+    startTimecode: null,
+    originalUrl: '/api/upload/video/clip.mp4',
+    versionNumber: 1,
+    versionLabel: null,
+    ...overrides,
+  };
+}
+
+function turn(start: number, end: number, versionId: string): AttributedTurn {
+  return { start, end, versionId, speaker: null, confidence: 1 };
+}
+
+const CAM_A = 'ver-a';
+const CAM_B = 'ver-b';
+const WIDE = 'ver-wide';
+
+const CLIPS = [
+  clip({ versionId: CAM_A, role: 'A', position: 0 }),
+  clip({ versionId: CAM_B, role: 'B', position: 1 }),
+  clip({ versionId: WIDE, role: 'WIDE', position: 2 }),
+];
+
+const PROFILE = {
+  minShotSeconds: 1.5,
+  safetyPauseSeconds: 2,
+  maxShotSeconds: null as number | null,
+  overlapBehaviour: 'WIDE' as const,
+  wideVersionId: WIDE,
+};
+
+function cameraAt(edits: ReturnType<typeof computeRoughCutDecisions>, time: number): string | null {
+  const hit = edits.find(
+    (edit) => edit.timelineStartSeconds <= time + 1e-6 && time < edit.timelineEndSeconds
+  );
+  return hit?.sourceVersionId ?? null;
+}
+
+describe('computeRoughCutDecisions', () => {
+  it('cuts to the camera of the active speaker', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(2, 8, CAM_A), turn(8, 14, CAM_B)], PROFILE);
+
+    const live = edits.filter((edit) => edit.timelineStartSeconds >= 2);
+    expect(live[0]).toMatchObject({
+      sourceVersionId: CAM_A,
+      inSeconds: 2,
+      outSeconds: 8,
+      targetTrack: 1,
+    });
+    expect(live[1]).toMatchObject({
+      sourceVersionId: CAM_B,
+      inSeconds: 8,
+      outSeconds: 14,
+    });
+  });
+
+  it('cuts to the wide during a pause longer than safetyPauseSeconds', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 3, CAM_A), turn(8, 12, CAM_B)], PROFILE);
+
+    const pause = edits.find(
+      (edit) => edit.timelineStartSeconds >= 3 - 1e-6 && edit.timelineStartSeconds < 8
+    );
+    expect(pause?.sourceVersionId).toBe(WIDE);
+    expect(pause?.timelineEndSeconds).toBe(8);
+  });
+
+  it('holds the previous camera during a pause shorter than safetyPauseSeconds', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 4, CAM_A), turn(5, 9, CAM_B)], {
+      ...PROFILE,
+      minShotSeconds: 0.5,
+    });
+
+    expect(cameraAt(edits, 4.5)).toBe(CAM_A);
+  });
+
+  it('cuts to the wide when two speakers overlap and overlapBehaviour is WIDE', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 10, CAM_A), turn(4, 8, CAM_B)], {
+      ...PROFILE,
+      minShotSeconds: 0.5,
+    });
+
+    expect(cameraAt(edits, 6)).toBe(WIDE);
+  });
+
+  it('holds the previous camera when overlapBehaviour is HOLD', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 10, CAM_A), turn(4, 8, CAM_B)], {
+      ...PROFILE,
+      overlapBehaviour: 'HOLD',
+      minShotSeconds: 0.5,
+    });
+
+    expect(cameraAt(edits, 6)).toBe(CAM_A);
+  });
+
+  it('stays on the first active speaker when overlapBehaviour is SPEAKER', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 10, CAM_A), turn(4, 8, CAM_B)], {
+      ...PROFILE,
+      overlapBehaviour: 'SPEAKER',
+      minShotSeconds: 0.5,
+    });
+
+    expect(cameraAt(edits, 6)).toBe(CAM_A);
+    expect(cameraAt(edits, 6)).not.toBe(WIDE);
+  });
+
+  it('merges a shot shorter than minShotSeconds into the previous shot', () => {
+    const edits = computeRoughCutDecisions(
+      CLIPS,
+      [turn(0, 5, CAM_A), turn(5, 5.4, CAM_B), turn(5.4, 10, CAM_A)],
+      { ...PROFILE, minShotSeconds: 1.5, safetyPauseSeconds: 10 }
+    );
+
+    expect(edits.some((edit) => edit.sourceVersionId === CAM_B)).toBe(false);
+    expect(edits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceVersionId: CAM_A,
+          timelineStartSeconds: 0,
+          timelineEndSeconds: 10,
+        }),
+      ])
+    );
+  });
+
+  it('splits a shot longer than maxShotSeconds and inserts a wide cutaway', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 20, CAM_A)], {
+      ...PROFILE,
+      minShotSeconds: 1.5,
+      maxShotSeconds: 8,
+      safetyPauseSeconds: 10,
+    });
+
+    expect(edits.length).toBeGreaterThan(1);
+    expect(edits[0]).toMatchObject({ sourceVersionId: CAM_A, timelineStartSeconds: 0 });
+    expect(edits[0]!.timelineEndSeconds).toBe(8);
+    expect(edits[1]?.sourceVersionId).toBe(WIDE);
+    expect(edits[1]!.timelineEndSeconds - edits[1]!.timelineStartSeconds).toBe(1.5);
+  });
+
+  it('maps source in/out relative to a clip offset', () => {
+    const offsetClips = [
+      clip({ versionId: CAM_A, role: 'A', position: 0, offsetSeconds: 2, durationSeconds: 20 }),
+      clip({ versionId: WIDE, role: 'WIDE', position: 2, durationSeconds: 30 }),
+    ];
+    const edits = computeRoughCutDecisions(offsetClips, [turn(2, 8, CAM_A)], {
+      ...PROFILE,
+      minShotSeconds: 0.5,
+      safetyPauseSeconds: 10,
+    });
+    const live = edits.find((edit) => edit.sourceVersionId === CAM_A);
+    expect(live).toMatchObject({
+      timelineStartSeconds: 2,
+      timelineEndSeconds: 8,
+      inSeconds: 0,
+      outSeconds: 6,
+    });
+  });
+
+  it('returns no edits when there are no clips', () => {
+    expect(computeRoughCutDecisions([], [turn(0, 2, CAM_A)], PROFILE)).toEqual([]);
+  });
+});

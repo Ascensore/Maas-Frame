@@ -73,8 +73,10 @@ anonTest.describe('the admin area', () => {
 
     for (const route of ['/admin', '/admin/users', '/admin/feedback']) {
       await page.goto(route);
-      // app/(dashboard)/admin/layout.tsx sends a non-admin to the marketing root.
-      await expect(page).toHaveURL(/\/$/);
+      // layout.tsx redirects a non-admin to `/`, and a signed-in visitor is
+      // then sent to /dashboard. Either hop is a refusal; landing on /admin is
+      // the only failure.
+      await expect(page).toHaveURL(/\/(dashboard)?$/);
       await expect(page.getByRole('heading', { name: 'Dashboard Overview' })).toHaveCount(0);
     }
 
@@ -110,7 +112,10 @@ anonTest.describe('the admin area', () => {
       const sidebar = page.locator('aside');
       await expect(sidebar.getByRole('link', { name: 'Projects' })).toBeVisible();
       await expect(sidebar.getByRole('link', { name: 'Workspaces' })).toBeVisible();
-      await expect(sidebar.getByRole('link', { name: 'Admin' })).toBeVisible();
+      // exact: the account Settings link's accessible name includes this user's
+      // name ("E2E Admin"), so `{ name: 'Admin' }` matches that link as well as
+      // the Admin nav item.
+      await expect(sidebar.getByRole('link', { name: 'Admin', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Growth' })).toHaveCount(0);
 
       // The dashboard is not a static shell: it counts rows, and the count has to
