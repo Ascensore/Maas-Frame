@@ -19,6 +19,9 @@ import {
   isProxyTranscodeEnabled,
   isAgentsFeatureEnabled,
   getAgentModelId,
+  isRoughCutFeatureEnabled,
+  isDiarizationFeatureEnabled,
+  getDiarizationModelId,
 } from '@/lib/feature-flags';
 
 const MIB = BigInt(1024) * BigInt(1024);
@@ -31,6 +34,9 @@ const MANAGED_ENV = [
   'OPENFRAME_ENABLE_PROXY_TRANSCODE',
   'OPENFRAME_ENABLE_AGENTS',
   'OPENFRAME_AGENT_MODEL',
+  'OPENFRAME_ENABLE_ROUGH_CUT',
+  'OPENFRAME_ENABLE_DIARIZATION',
+  'OPENFRAME_DIARIZATION_MODEL',
   'OPENFRAME_REQUIRE_INVITE_CODE',
   'OPENFRAME_ALLOWED_SIGNUP_EMAILS',
   'OPENFRAME_MAX_VIDEO_UPLOAD_BYTES',
@@ -130,6 +136,21 @@ describe('boolean feature flags', () => {
     vi.stubEnv('OPENFRAME_AGENT_MODEL', 'anthropic/claude-sonnet-4.5');
     expect(isAgentsFeatureEnabled()).toBe(true);
     expect(getAgentModelId()).toBe('anthropic/claude-sonnet-4.5');
+  });
+
+  it('defaults rough cuts and diarization to off', () => {
+    expect(isRoughCutFeatureEnabled()).toBe(false);
+    expect(isDiarizationFeatureEnabled()).toBe(false);
+    expect(getDiarizationModelId()).toBe('pyannote/speaker-diarization-3.1');
+  });
+
+  it('reads OPENFRAME_ENABLE_ROUGH_CUT and OPENFRAME_ENABLE_DIARIZATION', () => {
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    vi.stubEnv('OPENFRAME_ENABLE_DIARIZATION', 'true');
+    vi.stubEnv('OPENFRAME_DIARIZATION_MODEL', 'pyannote/speaker-diarization-community-1');
+    expect(isRoughCutFeatureEnabled()).toBe(true);
+    expect(isDiarizationFeatureEnabled()).toBe(true);
+    expect(getDiarizationModelId()).toBe('pyannote/speaker-diarization-community-1');
   });
 
   it('lets OPENFRAME_REQUIRE_INVITE_CODE=false open registration', () => {

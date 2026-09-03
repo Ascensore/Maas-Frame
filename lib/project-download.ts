@@ -6,6 +6,13 @@ import {
   sanitizeAssetDisplayName,
   withFileExtension,
 } from '@/lib/video-assets';
+import {
+  buildVersionFileName,
+  sanitizeDownloadFileName,
+  uniqueDownloadFileName,
+} from '@/lib/export-file-names';
+
+export { buildVersionFileName, sanitizeDownloadFileName, uniqueDownloadFileName };
 
 const DEFAULT_MAX_FILES = 250;
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024 * 1024; // 20 GiB
@@ -57,14 +64,6 @@ export function canDownloadProjectMedia(
   if (!access.hasAccess) return false;
   if (access.canEdit) return true;
   return project.allowDownloads;
-}
-
-function sanitizeFileName(value: string): string {
-  const sanitized = value
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return sanitized.length > 0 ? sanitized : 'file';
 }
 
 function getAllowedDirectHosts(): string[] {
@@ -139,29 +138,11 @@ function selectLatestVersion(versions: VersionRow[]): VersionRow[] {
 }
 
 function makeUniqueName(baseName: string, usedNames: Set<string>): string {
-  if (!usedNames.has(baseName)) {
-    usedNames.add(baseName);
-    return baseName;
-  }
-
-  const dotIndex = baseName.lastIndexOf('.');
-  const stem = dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName;
-  const ext = dotIndex > 0 ? baseName.slice(dotIndex) : '';
-
-  let counter = 2;
-  while (usedNames.has(`${stem}-${counter}${ext}`)) {
-    counter += 1;
-  }
-  const unique = `${stem}-${counter}${ext}`;
-  usedNames.add(unique);
-  return unique;
+  return uniqueDownloadFileName(baseName, usedNames);
 }
 
-function buildVersionFileName(videoIndex: number, videoTitle: string, version: VersionRow): string {
-  const label = version.versionLabel?.trim() || `v${version.versionNumber}`;
-  const stem = sanitizeFileName(`${String(videoIndex).padStart(2, '0')}-${videoTitle}-${label}`);
-  const ext = extensionFromUrl(version.originalUrl, '.mp4');
-  return `${stem}${ext}`;
+function sanitizeFileName(value: string): string {
+  return sanitizeDownloadFileName(value);
 }
 
 function buildAssetFileName(videoIndex: number, videoTitle: string, asset: AssetRow): string {

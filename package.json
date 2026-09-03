@@ -24,7 +24,7 @@
     "test:e2e": "playwright test",
     "test:all": "bun run test && bun run test:api && bun run test:e2e",
     "test:coverage": "vitest run --project unit --coverage",
-    "test:mutation": "node node_modules/@stryker-mutator/core/bin/stryker.js run",
+    "test:otio-oracle": "bun run scripts/otio-oracle.ts",
     "verify": "bun run check && bun run test",
     "test:db:up": "podman compose -f docker-compose.test.yml up -d --wait postgres-test",
     "test:db:down": "podman compose -f docker-compose.test.yml down -v",

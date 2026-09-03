@@ -63,6 +63,14 @@ jobs:
       # enum that nothing in the history creates. That file explains it in full.
       - name: Unit and component tests
         run: bun run test
+      - name: Validate OTIO and FCP7 XML against OpenTimelineIO
+        # The TypeScript exporters are unit-tested against hand-written
+        # timecodes. This step is the other half: real OpenTimelineIO has to
+        # load those files and round-trip them. fcp_xml shipped in OTIO core
+        # until 2024; it is now the separate otio-fcp-adapter package.
+        run: |
+          python3 -m pip install --user opentimelineio otio-fcp-adapter
+          bun run scripts/otio-oracle.ts
       - name: API integration tests
         run: bun run test:api
       - name: Coverage report

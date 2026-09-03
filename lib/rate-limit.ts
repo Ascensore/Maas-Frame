@@ -76,6 +76,7 @@ export const RATE_LIMIT_CONFIGS: Record<string, RateLimitConfig> = {
   'subtitle-delete': { windowMs: 60 * 1000, maxRequests: 20 }, // 20 per minute
   'api-v1': { windowMs: 60 * 1000, maxRequests: 120 }, // 120 per minute
   'agent-run': { windowMs: 60 * 60 * 1000, maxRequests: 5 }, // 5 per version per hour
+  'rough-cut': { windowMs: 60 * 60 * 1000, maxRequests: 10 }, // 10 per hour per caller
 
   // Search — debounced on client but protect against scripted callers
   search: { windowMs: 60 * 1000, maxRequests: 60 }, // 60 per minute

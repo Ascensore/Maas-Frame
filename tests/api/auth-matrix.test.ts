@@ -35,6 +35,8 @@ import {
   createCommentTag,
   createFolder,
   createProject,
+  createRoughCut,
+  createRoughCutProfile,
   createShareLink,
   createUser,
   createVersion,
@@ -62,6 +64,7 @@ import * as onboardingCompleteRoute from '@/app/api/onboarding/complete/route';
 import * as onboardingSourceRoute from '@/app/api/onboarding/source/route';
 import * as approvalCandidatesRoute from '@/app/api/projects/[projectId]/approval-candidates/route';
 import * as projectDownloadRoute from '@/app/api/projects/[projectId]/download/route';
+import * as projectRoughCutsRoute from '@/app/api/projects/[projectId]/rough-cuts/route';
 import * as projectFoldersRoute from '@/app/api/projects/[projectId]/folders/route';
 import * as projectFolderRoute from '@/app/api/projects/[projectId]/folders/[folderId]/route';
 import * as projectInvitationRoute from '@/app/api/projects/[projectId]/members/invitations/[invitationId]/route';
@@ -125,6 +128,10 @@ import * as workspaceInvitationRoute from '@/app/api/workspaces/[workspaceId]/me
 import * as workspaceMemberRoute from '@/app/api/workspaces/[workspaceId]/members/[memberId]/route';
 import * as workspaceMembersRoute from '@/app/api/workspaces/[workspaceId]/members/route';
 import * as workspaceRoute from '@/app/api/workspaces/[workspaceId]/route';
+import * as workspaceRoughCutProfilesRoute from '@/app/api/workspaces/[workspaceId]/rough-cut-profiles/route';
+import * as workspaceRoughCutProfileRoute from '@/app/api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]/route';
+import * as roughCutRoute from '@/app/api/rough-cuts/[roughCutId]/route';
+import * as roughCutDownloadRoute from '@/app/api/rough-cuts/[roughCutId]/download/route';
 
 // ---------------------------------------------------------------------------
 // R2 boundary
@@ -170,7 +177,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 88;
+const EXPECTED_ROUTE_MODULE_COUNT = 93;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -253,6 +260,8 @@ interface Fixtures {
   subtitleId: string;
   approvalRequestId: string;
   feedbackId: string;
+  roughCutId: string;
+  profileId: string;
 }
 
 async function seedFixtures(): Promise<Fixtures> {
@@ -337,6 +346,18 @@ async function seedFixtures(): Promise<Fixtures> {
     approverIds: [collaborator.id],
   });
 
+  const profile = await createRoughCutProfile({
+    workspaceId: workspace.id,
+    name: 'Interview',
+  });
+  const roughCut = await createRoughCut({
+    projectId: project.id,
+    requestedById: owner.id,
+    folderId: folder.id,
+    profileId: profile.id,
+    status: 'READY',
+  });
+
   const feedback = await db.userFeedback.create({
     data: {
       userId: owner.id,
@@ -363,6 +384,8 @@ async function seedFixtures(): Promise<Fixtures> {
     subtitleId: subtitle.id,
     approvalRequestId: approvalRequest.id,
     feedbackId: feedback.id,
+    profileId: profile.id,
+    roughCutId: roughCut.id,
   };
 }
 
@@ -520,6 +543,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/projects/${f.projectId}/folders`,
     params: (f) => ({ projectId: f.projectId }),
     body: { name: 'Dailies' },
+  },
+  {
+    file: 'projects/[projectId]/rough-cuts/route.ts',
+    module: projectRoughCutsRoute,
+    url: (f) => `/api/projects/${f.projectId}/rough-cuts`,
+    params: (f) => ({ projectId: f.projectId }),
+    body: { folderId: null },
   },
   {
     file: 'projects/[projectId]/folders/[folderId]/route.ts',
@@ -931,6 +961,32 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: workspacesRoute,
     url: () => '/api/workspaces',
     body: { name: 'anon workspace' },
+  },
+  {
+    file: 'workspaces/[workspaceId]/rough-cut-profiles/route.ts',
+    module: workspaceRoughCutProfilesRoute,
+    url: (f) => `/api/workspaces/${f.workspaceId}/rough-cut-profiles`,
+    params: (f) => ({ workspaceId: f.workspaceId }),
+    body: { name: 'Interview' },
+  },
+  {
+    file: 'workspaces/[workspaceId]/rough-cut-profiles/[profileId]/route.ts',
+    module: workspaceRoughCutProfileRoute,
+    url: (f) => `/api/workspaces/${f.workspaceId}/rough-cut-profiles/${f.profileId}`,
+    params: (f) => ({ workspaceId: f.workspaceId, profileId: f.profileId }),
+    body: { minShotSeconds: 2 },
+  },
+  {
+    file: 'rough-cuts/[roughCutId]/route.ts',
+    module: roughCutRoute,
+    url: (f) => `/api/rough-cuts/${f.roughCutId}`,
+    params: (f) => ({ roughCutId: f.roughCutId }),
+  },
+  {
+    file: 'rough-cuts/[roughCutId]/download/route.ts',
+    module: roughCutDownloadRoute,
+    url: (f) => `/api/rough-cuts/${f.roughCutId}/download?format=otio`,
+    params: (f) => ({ roughCutId: f.roughCutId }),
   },
   {
     file: 'workspaces/[workspaceId]/members/invitations/[invitationId]/route.ts',

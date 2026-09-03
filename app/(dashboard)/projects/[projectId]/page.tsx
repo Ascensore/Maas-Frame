@@ -5,7 +5,11 @@ import { GuestGate } from '@/components/guest-gate';
 import { auth, checkProjectAccess } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { ProjectContentClient } from './project-content-client';
-import { isDirectFileUploadEnabled, isS3VideoUploadsEnabled } from '@/lib/feature-flags';
+import {
+  isDirectFileUploadEnabled,
+  isRoughCutFeatureEnabled,
+  isS3VideoUploadsEnabled,
+} from '@/lib/feature-flags';
 import { canDownloadProjectMedia } from '@/lib/project-download';
 
 function formatDuration(seconds: number | null): string {
@@ -108,6 +112,14 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
     orderBy: [{ position: 'asc' }, { name: 'asc' }],
     select: { id: true, name: true, parentId: true, position: true },
   });
+  const folderVideoCounts = await db.video.groupBy({
+    by: ['folderId'],
+    where: { projectId: project.id, kind: 'VIDEO' },
+    _count: { _all: true },
+  });
+  const videoCountByFolderId = new Map(
+    folderVideoCounts.map((row) => [row.folderId, row._count._all])
+  );
   const currentFolder = requestedFolderId
     ? (folders.find((folder) => folder.id === requestedFolderId) ?? null)
     : null;
@@ -147,6 +159,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
     name: folder.name,
     parentId: folder.parentId,
     position: folder.position,
+    videoCount: videoCountByFolderId.get(folder.id) ?? 0,
   }));
 
   const totalPages = Math.ceil(totalVideos / pageSize);
@@ -157,6 +170,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
     return {
       id: video.id,
       title: video.title,
+      metadata: video.metadata,
       thumbnailUrl:
         activeVersion?.thumbnailUrl || 'https://via.placeholder.com/320x180?text=No+Thumbnail',
       currentVersion: video._count.versions,
@@ -179,6 +193,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
   const isAuthenticated = !!session?.user?.id;
 
   const canDownloadProject = canDownloadProjectMedia(project, access);
+  const roughCutEnabled = isRoughCutFeatureEnabled();
 
   const projectData = {
     name: project.name,
@@ -220,6 +235,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
             pageSize={pageSize}
             directUploadsEnabled={directUploadsEnabled}
             directUploadProvider={directUploadProvider}
+            roughCutEnabled={false}
           />
         </div>
       </GuestGate>
@@ -254,6 +270,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
         pageSize={pageSize}
         directUploadsEnabled={directUploadsEnabled}
         directUploadProvider={directUploadProvider}
+        roughCutEnabled={roughCutEnabled}
       />
     </div>
   );

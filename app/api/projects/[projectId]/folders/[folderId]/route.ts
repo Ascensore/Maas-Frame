@@ -18,6 +18,7 @@ function shape(folder: {
   name: string;
   position: number;
   parentId: string | null;
+  roughCutProfileId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -26,6 +27,7 @@ function shape(folder: {
     name: folder.name,
     position: folder.position,
     parentId: folder.parentId,
+    roughCutProfileId: folder.roughCutProfileId,
     createdAt: folder.createdAt,
     updatedAt: folder.updatedAt,
   };
@@ -55,7 +57,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (!folder) return apiErrors.notFound('Folder');
 
     const body = await request.json().catch(() => null);
-    const data: { name?: string; parentId?: string | null; position?: number } = {};
+    const data: {
+      name?: string;
+      parentId?: string | null;
+      position?: number;
+      roughCutProfileId?: string | null;
+    } = {};
 
     if (body?.name !== undefined) {
       const name = parseFolderName(body.name);
@@ -96,8 +103,24 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
     if (typeof body?.position === 'number') data.position = body.position;
 
+    if (body && Object.prototype.hasOwnProperty.call(body, 'roughCutProfileId')) {
+      if (body.roughCutProfileId !== null && typeof body.roughCutProfileId !== 'string') {
+        return apiErrors.badRequest('roughCutProfileId must be a profile id or null');
+      }
+      if (typeof body.roughCutProfileId === 'string') {
+        const profile = await db.roughCutProfile.findFirst({
+          where: { id: body.roughCutProfileId, workspaceId: project.workspaceId },
+          select: { id: true },
+        });
+        if (!profile) return apiErrors.badRequest('profile was not found in this workspace');
+        data.roughCutProfileId = profile.id;
+      } else {
+        data.roughCutProfileId = null;
+      }
+    }
+
     if (Object.keys(data).length === 0) {
-      return apiErrors.badRequest('Provide name, parentId, and/or position');
+      return apiErrors.badRequest('Provide name, parentId, position, and/or roughCutProfileId');
     }
 
     const updated = await db.folder.update({

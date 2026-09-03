@@ -156,6 +156,28 @@ export function getAgentModelId(): string {
   return raw && raw.length > 0 ? raw : 'mock';
 }
 
+/**
+ * Multicam rough-cut generation. Defaults off: analysis downloads camera
+ * masters into the media worker and (when diarization is on) may send audio
+ * to a local pyannote model. Same caution as agents.
+ */
+export function isRoughCutFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_ROUGH_CUT', false);
+}
+
+/**
+ * Speaker diarization for rough cuts and transcript segments. Defaults off:
+ * pyannote 3.1 is a gated Hugging Face model and needs HUGGINGFACE_TOKEN.
+ */
+export function isDiarizationFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_DIARIZATION', false);
+}
+
+export function getDiarizationModelId(): string {
+  const raw = process.env.OPENFRAME_DIARIZATION_MODEL?.trim();
+  return raw && raw.length > 0 ? raw : 'pyannote/speaker-diarization-3.1';
+}
+
 export function isTranscriptionFeatureEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_TRANSCRIPTION', true);
 }
