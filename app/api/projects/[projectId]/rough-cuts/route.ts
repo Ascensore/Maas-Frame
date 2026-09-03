@@ -98,12 +98,13 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     let requestedProfileId: string | null = null;
     if (body && typeof body.profileId === 'string' && body.profileId.trim()) {
-      requestedProfileId = body.profileId.trim();
+      const profileId = body.profileId.trim();
       const profile = await db.roughCutProfile.findFirst({
-        where: { id: requestedProfileId, workspaceId: project.workspaceId },
+        where: { id: profileId, workspaceId: project.workspaceId },
         select: { id: true },
       });
       if (!profile) return apiErrors.badRequest('profile was not found in this workspace');
+      requestedProfileId = profileId;
     }
 
     const videos = await loadFolderVideos(projectId, folderId);
