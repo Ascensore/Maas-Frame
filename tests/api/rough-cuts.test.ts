@@ -45,6 +45,43 @@ async function seedMulticam() {
   return { ...scenario, camA, camB, versionA, versionB };
 }
 
+function sampleDecisions(videoId: string, versionId: string) {
+  return assembleDecisionList({
+    edits: [
+      {
+        timelineStartSeconds: 0,
+        timelineEndSeconds: 2,
+        inSeconds: 0,
+        outSeconds: 2,
+        sourceVersionId: versionId,
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+    ],
+    clips: [
+      {
+        videoId,
+        versionId,
+        title: 'Cam A',
+        role: 'A',
+        position: 0,
+        offsetSeconds: 0,
+        durationSeconds: 10,
+        frameRateNum: 24,
+        frameRateDen: 1,
+        dropFrame: false,
+        startTimecode: null,
+        originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+        versionNumber: 1,
+        versionLabel: null,
+      },
+    ],
+    fileNames: new Map([[versionId, '01-Cam A-v1.mp4']]),
+    mediaPathPrefix: './media/',
+    rate: { num: 24, den: 1, dropFrame: false },
+  });
+}
+
 describe('POST /api/projects/[projectId]/rough-cuts', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -265,28 +302,59 @@ describe('GET /api/rough-cuts/[roughCutId]', () => {
 
   it('returns the cut for the owner and reports whether decisions exist', async () => {
     const scenario = await seedProject();
-    const cut = await createRoughCut({
-      projectId: scenario.project.id,
-      requestedById: scenario.owner.id,
-      status: 'READY',
-      decisions: { version: 1, edits: [] },
+    const video = await createVideo({ projectId: scenario.project.id, title: 'Cam A' });
+    const version = await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
     });
     signedInAs(scenario.owner);
 
-    const response = await callRoute(getRoughCutRoute, apiRequest(`/api/rough-cuts/${cut.id}`), {
-      roughCutId: cut.id,
+    const pending = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'PENDING',
     });
-    expect(response.status).toBe(200);
-    const payload = await readData<{
-      roughCut: { id: string; status: string; hasDecisions: boolean };
-    }>(response);
-    expect(payload.roughCut.id).toBe(cut.id);
-    expect(payload.roughCut.status).toBe('READY');
-    expect(payload.roughCut.hasDecisions).toBe(true);
+    const ready = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions: sampleDecisions(video.id, version.id),
+    });
 
-    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: cut.id } });
-    expect(stored.status).toBe('READY');
-    expect(stored.decisions).not.toBeNull();
+    const pendingResponse = await callRoute(
+      getRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${pending.id}`),
+      { roughCutId: pending.id }
+    );
+    expect(pendingResponse.status).toBe(200);
+    const pendingPayload = await readData<{
+      roughCut: { id: string; status: string; hasDecisions: boolean };
+    }>(pendingResponse);
+    expect(pendingPayload.roughCut.id).toBe(pending.id);
+    expect(pendingPayload.roughCut.status).toBe('PENDING');
+    expect(pendingPayload.roughCut.hasDecisions).toBe(false);
+
+    const readyResponse = await callRoute(
+      getRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${ready.id}`),
+      { roughCutId: ready.id }
+    );
+    expect(readyResponse.status).toBe(200);
+    const readyPayload = await readData<{
+      roughCut: { id: string; status: string; hasDecisions: boolean };
+    }>(readyResponse);
+    expect(readyPayload.roughCut.id).toBe(ready.id);
+    expect(readyPayload.roughCut.status).toBe('READY');
+    expect(readyPayload.roughCut.hasDecisions).toBe(true);
+
+    expect(await db.roughCut.findUniqueOrThrow({ where: { id: pending.id } })).toMatchObject({
+      status: 'PENDING',
+      decisions: null,
+    });
+    expect(
+      (await db.roughCut.findUniqueOrThrow({ where: { id: ready.id } })).decisions
+    ).not.toBeNull();
   });
 });
 
@@ -388,45 +456,11 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
       providerId: 'r2',
       originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
     });
-    const decisions = assembleDecisionList({
-      edits: [
-        {
-          timelineStartSeconds: 0,
-          timelineEndSeconds: 2,
-          inSeconds: 0,
-          outSeconds: 2,
-          sourceVersionId: version.id,
-          cameraRole: 'A',
-          targetTrack: 1,
-        },
-      ],
-      clips: [
-        {
-          videoId: video.id,
-          versionId: version.id,
-          title: 'Cam A',
-          role: 'A',
-          position: 0,
-          offsetSeconds: 0,
-          durationSeconds: 10,
-          frameRateNum: 24,
-          frameRateDen: 1,
-          dropFrame: false,
-          startTimecode: null,
-          originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
-          versionNumber: 1,
-          versionLabel: null,
-        },
-      ],
-      fileNames: new Map([[version.id, '01-Cam A-v1.mp4']]),
-      mediaPathPrefix: './media/',
-      rate: { num: 24, den: 1, dropFrame: false },
-    });
     const cut = await createRoughCut({
       projectId: scenario.project.id,
       requestedById: scenario.owner.id,
       status: 'READY',
-      decisions,
+      decisions: sampleDecisions(video.id, version.id),
     });
     signedInAs(scenario.owner);
 
@@ -450,45 +484,11 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
       providerId: 'r2',
       originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
     });
-    const decisions = assembleDecisionList({
-      edits: [
-        {
-          timelineStartSeconds: 0,
-          timelineEndSeconds: 2,
-          inSeconds: 0,
-          outSeconds: 2,
-          sourceVersionId: version.id,
-          cameraRole: 'A',
-          targetTrack: 1,
-        },
-      ],
-      clips: [
-        {
-          videoId: video.id,
-          versionId: version.id,
-          title: 'Cam A',
-          role: 'A',
-          position: 0,
-          offsetSeconds: 0,
-          durationSeconds: 10,
-          frameRateNum: 24,
-          frameRateDen: 1,
-          dropFrame: false,
-          startTimecode: null,
-          originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
-          versionNumber: 1,
-          versionLabel: null,
-        },
-      ],
-      fileNames: new Map([[version.id, '01-Cam A-v1.mp4']]),
-      mediaPathPrefix: './media/',
-      rate: { num: 24, den: 1, dropFrame: false },
-    });
     const cut = await createRoughCut({
       projectId: scenario.project.id,
       requestedById: scenario.owner.id,
       status: 'READY',
-      decisions,
+      decisions: sampleDecisions(video.id, version.id),
     });
     signedInAs(scenario.owner);
 
@@ -502,6 +502,27 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     const body = await response.text();
     expect(body).toContain('<xmeml version="5">');
     expect(body).toContain('file://localhost/./media/01-Cam%20A-v1.mp4');
+  });
+
+  it('returns 500 when READY decisions cannot be parsed and leaves the row', async () => {
+    const scenario = await seedProject();
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions: { version: 1, edits: [] },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=otio`),
+      { roughCutId: cut.id }
+    );
+    expect(response.status).toBe(500);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: cut.id } });
+    expect(stored.status).toBe('READY');
+    expect(stored.decisions).toEqual({ version: 1, edits: [] });
   });
 
   it('returns 400 when the cut is not READY and leaves the row', async () => {

@@ -207,4 +207,30 @@ describe('useRoughCut', () => {
       'rough-cut.otio'
     );
   });
+
+  it('includes profileId in the POST body when one is passed', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('READY'), 201);
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+
+    const { result } = renderHook(() => useRoughCut());
+    await act(async () => {
+      await result.current.start({
+        projectId: 'proj-1',
+        folderId: null,
+        profileId: 'profile-1',
+      });
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/proj-1/rough-cuts',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ folderId: null, profileId: 'profile-1' }),
+      })
+    );
+  });
 });
