@@ -173,6 +173,21 @@ describe('POST /api/workspaces/[workspaceId]/rough-cut-profiles', () => {
     expect(firstAfter?.isDefault).toBe(false);
     expect(second?.isDefault).toBe(true);
   });
+
+  it('returns 403 when the feature flag is off and writes no row', async () => {
+    const owner = await createUser();
+    const workspace = await createWorkspace({ ownerId: owner.id });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'false');
+
+    const response = await callRoute(
+      createProfileRoute,
+      apiRequest(profilesUrl(workspace.id), { body: { name: 'Interview' } }),
+      { workspaceId: workspace.id }
+    );
+    expect(response.status).toBe(403);
+    expect(await db.roughCutProfile.count({ where: { workspaceId: workspace.id } })).toBe(0);
+  });
 });
 
 describe('PATCH /api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]', () => {
@@ -239,6 +254,23 @@ describe('PATCH /api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]', (
     expect(row?.name).toBe('Live');
     expect(row?.maxShotSeconds).toBe(12);
   });
+
+  it('returns 403 when the feature flag is off and leaves the row unchanged', async () => {
+    const owner = await createUser();
+    const workspace = await createWorkspace({ ownerId: owner.id });
+    const profile = await createRoughCutProfile({ workspaceId: workspace.id, name: 'Keep me' });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'false');
+
+    const response = await callRoute(
+      patchProfileRoute,
+      apiRequest(profileUrl(workspace.id, profile.id), { body: { name: 'Hijacked' } }),
+      { workspaceId: workspace.id, profileId: profile.id }
+    );
+    expect(response.status).toBe(403);
+    const row = await db.roughCutProfile.findUnique({ where: { id: profile.id } });
+    expect(row?.name).toBe('Keep me');
+  });
 });
 
 describe('DELETE /api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]', () => {
@@ -299,6 +331,22 @@ describe('DELETE /api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]', 
     expect(response.status).toBe(200);
     expect(await db.roughCutProfile.findUnique({ where: { id: profile.id } })).toBeNull();
   });
+
+  it('returns 403 when the feature flag is off and leaves the row', async () => {
+    const owner = await createUser();
+    const workspace = await createWorkspace({ ownerId: owner.id });
+    const profile = await createRoughCutProfile({ workspaceId: workspace.id });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'false');
+
+    const response = await callRoute(
+      deleteProfileRoute,
+      apiRequest(profileUrl(workspace.id, profile.id), { method: 'DELETE' }),
+      { workspaceId: workspace.id, profileId: profile.id }
+    );
+    expect(response.status).toBe(403);
+    expect(await db.roughCutProfile.findUnique({ where: { id: profile.id } })).not.toBeNull();
+  });
 });
 
 describe('PATCH /api/projects/[projectId]/folders/[folderId] roughCutProfileId', () => {
@@ -352,6 +400,29 @@ describe('PATCH /api/projects/[projectId]/folders/[folderId] roughCutProfileId',
       { projectId: scenario.project.id, folderId: folder.id }
     );
     expect(response.status).toBe(200);
+    const row = await db.folder.findUnique({ where: { id: folder.id } });
+    expect(row?.roughCutProfileId).toBeNull();
+  });
+
+  it('rejects a profile from another workspace and leaves the folder unbound', async () => {
+    const scenario = await seedProject();
+    const otherOwner = await createUser();
+    const otherWorkspace = await createWorkspace({ ownerId: otherOwner.id });
+    const foreign = await createRoughCutProfile({
+      workspaceId: otherWorkspace.id,
+      name: 'Foreign',
+    });
+    const folder = await createFolder({ projectId: scenario.project.id, name: 'A-cam' });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchFolder,
+      apiRequest(`/api/projects/${scenario.project.id}/folders/${folder.id}`, {
+        body: { roughCutProfileId: foreign.id },
+      }),
+      { projectId: scenario.project.id, folderId: folder.id }
+    );
+    expect(response.status).toBe(400);
     const row = await db.folder.findUnique({ where: { id: folder.id } });
     expect(row?.roughCutProfileId).toBeNull();
   });

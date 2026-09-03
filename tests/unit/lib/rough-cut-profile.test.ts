@@ -66,6 +66,11 @@ describe('parseRoughCutProfilePatch', () => {
     if (!parsed.ok) return;
     expect(parsed.value.minShotSeconds).toBe(2.5);
   });
+
+  it('rejects a mediaPathPrefix that escapes the folder', () => {
+    const parsed = parseRoughCutProfilePatch({ mediaPathPrefix: '../x' });
+    expect(parsed.ok).toBe(false);
+  });
 });
 
 describe('isSafeMediaPathPrefix', () => {
@@ -105,6 +110,24 @@ describe('resolveEffectiveProfileId', () => {
 });
 
 describe('resolveEffectiveProfile', () => {
+  it('uses the nearest folder profile before the workspace default', () => {
+    const tree = folders([
+      { id: 'root', parentId: null, name: 'Shoot', roughCutProfileId: INTERVIEW.id },
+      { id: 'leaf', parentId: 'root', name: 'Take 1', roughCutProfileId: null },
+    ]);
+    const resolved = resolveEffectiveProfile({
+      folderId: 'leaf',
+      folders: tree,
+      profilesById: new Map([
+        [INTERVIEW.id!, INTERVIEW],
+        [PODCAST.id!, PODCAST],
+      ]),
+      workspaceDefault: PODCAST,
+    });
+    expect(resolved.id).toBe(INTERVIEW.id);
+    expect(resolved.name).toBe('Interview');
+  });
+
   it('falls back to the workspace default, then the builtin profile', () => {
     const fromDefault = resolveEffectiveProfile({
       folderId: null,
@@ -138,5 +161,8 @@ describe('profileFromSnapshot', () => {
     };
     expect(profileFromSnapshot(snapshot).minShotSeconds).toBe(2);
     expect(profileFromSnapshot(snapshot).mediaPathPrefix).toBe('./dailies/');
+    expect(profileFromSnapshot(snapshot).name).toBe('Interview');
+    expect(profileFromSnapshot(snapshot).id).toBe('profile-interview');
+    expect(profileFromSnapshot(snapshot).overlapBehaviour).toBe('WIDE');
   });
 });

@@ -1,8 +1,14 @@
 import { join } from 'node:path';
 import type { Pool } from 'pg';
+import {
+  LOW_ATTRIBUTION_CONFIDENCE,
+  pickHighestRmsCamera,
+  type RmsSample,
+} from '../lib/rough-cut/attribute';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from '../lib/rough-cut/camera-roles';
 import { assembleDecisionList } from '../lib/rough-cut/decision-list';
 import { computeRoughCutDecisions } from '../lib/rough-cut/decisions';
+import { isDiarizationEnvEnabled } from '../lib/rough-cut/env';
 import { assignClipExportFileNames } from '../lib/rough-cut/media-paths';
 import { profileFromSnapshot } from '../lib/rough-cut/profile';
 import { computeTimecodeOffsets } from '../lib/rough-cut/sync';
@@ -39,8 +45,7 @@ function parseJson(stdout: string): unknown {
 }
 
 function isDiarizationEnabled(): boolean {
-  const raw = (process.env.OPENFRAME_ENABLE_DIARIZATION || 'false').trim().toLowerCase();
-  return raw === 'true';
+  return isDiarizationEnvEnabled(process.env);
 }
 
 async function ensureWav(
@@ -258,23 +263,16 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
 
     const turns: AttributedTurn[] = [];
     for (const turn of rawTurns) {
-      let bestIndex = 0;
-      let bestRms = -1;
-      let second = -1;
+      const samples: RmsSample[] = [];
       for (let index = 0; index < clips.length; index += 1) {
         const localStart = turn.start - clips[index]!.offsetSeconds;
         const localEnd = turn.end - clips[index]!.offsetSeconds;
         const value = await rmsAt(deps, wavs[index]!, Math.max(0, localStart), Math.max(0, localEnd));
-        if (value > bestRms) {
-          second = bestRms;
-          bestRms = value;
-          bestIndex = index;
-        } else if (value > second) {
-          second = value;
-        }
+        samples.push({ versionId: clips[index]!.versionId, rms: value });
       }
-      const confidence = second > 0 ? bestRms / second : 1;
-      if (confidence < 1.2) {
+      const picked = pickHighestRmsCamera(samples);
+      const confidence = picked?.confidence ?? 0;
+      if (confidence < LOW_ATTRIBUTION_CONFIDENCE) {
         warnings.push({
           code: 'low-attribution-confidence',
           message: `Could not confidently pick a camera for ${turn.start.toFixed(1)}s–${turn.end.toFixed(1)}s`,
@@ -283,7 +281,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       turns.push({
         start: turn.start,
         end: turn.end,
-        versionId: clips[bestIndex]!.versionId,
+        versionId: picked?.versionId ?? clips[0]!.versionId,
         speaker: turn.speaker,
         confidence,
       });

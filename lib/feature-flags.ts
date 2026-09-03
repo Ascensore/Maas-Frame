@@ -1,3 +1,4 @@
+import { isDiarizationEnvEnabled } from '@/lib/rough-cut/env';
 import { logError } from '@/lib/logger';
 
 function readBooleanEnv(name: string, defaultValue: boolean): boolean {
@@ -170,7 +171,7 @@ export function isRoughCutFeatureEnabled() {
  * pyannote 3.1 is a gated Hugging Face model and needs HUGGINGFACE_TOKEN.
  */
 export function isDiarizationFeatureEnabled() {
-  return readBooleanEnv('OPENFRAME_ENABLE_DIARIZATION', false);
+  return isDiarizationEnvEnabled(process.env);
 }
 
 export function getDiarizationModelId(): string {

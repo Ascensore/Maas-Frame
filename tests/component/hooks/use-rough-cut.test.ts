@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { useRoughCut, ROUGH_CUT_POLL_MS } from '@/components/video-page/hooks/use-rough-cut';
 
+const downloadNamedFile = vi.hoisted(() => vi.fn());
+
+vi.mock('@/lib/client/download-file', () => ({
+  downloadNamedFile: (...args: unknown[]) => downloadNamedFile(...args),
+}));
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -41,7 +47,6 @@ function roughCutPayload(status: string, id = 'cut-1') {
 
 describe('useRoughCut', () => {
   const fetchMock = vi.fn();
-  const downloadNamedFile = vi.fn();
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -54,7 +59,6 @@ describe('useRoughCut', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    vi.resetModules();
   });
 
   it('POSTs a generate request and polls until READY, then stops', async () => {
@@ -78,9 +82,15 @@ describe('useRoughCut', () => {
     });
     expect(startError).toBeNull();
     expect(result.current.roughCut?.status).toBe('PENDING');
+    expect(result.current.cameras).toEqual([
+      expect.objectContaining({ role: 'A', versionId: 'ver-a' }),
+    ]);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/projects/proj-1/rough-cuts',
-      expect.objectContaining({ method: 'POST' })
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ folderId: null }),
+      })
     );
 
     const callsAfterStart = fetchMock.mock.calls.length;
@@ -108,14 +118,27 @@ describe('useRoughCut', () => {
   it('stops polling when the cut fails', async () => {
     let status = 'RUNNING';
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'POST') return jsonResponse(roughCutPayload('RUNNING'), 201);
-      return jsonResponse(roughCutPayload(status));
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('RUNNING'), 201);
+      }
+      if (url === '/api/rough-cuts/cut-1') {
+        return jsonResponse(roughCutPayload(status));
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
     });
 
     const { result } = renderHook(() => useRoughCut());
     await act(async () => {
       await result.current.start({ projectId: 'proj-1', folderId: 'folder-1' });
     });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/proj-1/rough-cuts',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ folderId: 'folder-1' }),
+      })
+    );
 
     status = 'FAILED';
     await act(async () => {
@@ -134,8 +157,14 @@ describe('useRoughCut', () => {
 
   it('does not leak an interval after unmount', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (init?.method === 'POST') return jsonResponse(roughCutPayload('PENDING'), 201);
-      return jsonResponse(roughCutPayload('PENDING'));
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('PENDING'), 201);
+      }
+      if (url === '/api/rough-cuts/cut-1') {
+        return jsonResponse(roughCutPayload('PENDING'));
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
     });
 
     const { result, unmount } = renderHook(() => useRoughCut());
@@ -150,5 +179,32 @@ describe('useRoughCut', () => {
       await Promise.resolve();
     });
     expect(fetchMock.mock.calls.length).toBe(callsBeforeUnmount);
+  });
+
+  it('downloads through downloadNamedFile once READY', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('READY'), 201);
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+
+    const { result } = renderHook(() => useRoughCut());
+    await act(async () => {
+      await result.current.start({ projectId: 'proj-1', folderId: null });
+    });
+    expect(result.current.roughCut?.status).toBe('READY');
+    expect(result.current.cameras.map((camera) => camera.role)).toEqual(['A']);
+
+    let downloadError: string | null = 'unset';
+    await act(async () => {
+      downloadError = await result.current.download('otio');
+    });
+    expect(downloadError).toBeNull();
+    expect(downloadNamedFile).toHaveBeenCalledWith(
+      '/api/rough-cuts/cut-1/download?format=otio',
+      'rough-cut.otio'
+    );
   });
 });

@@ -34,8 +34,8 @@ const edits: EditDecision[] = [
   {
     timelineStartSeconds: 0,
     timelineEndSeconds: 2,
-    inSeconds: 0,
-    outSeconds: 2,
+    inSeconds: 1,
+    outSeconds: 3,
     sourceVersionId: 'ver-a',
     cameraRole: 'A',
     targetTrack: 1,

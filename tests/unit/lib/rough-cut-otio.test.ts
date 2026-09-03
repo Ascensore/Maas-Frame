@@ -33,8 +33,8 @@ describe('buildOtioTimeline', () => {
       {
         timelineStartSeconds: 0,
         timelineEndSeconds: 2,
-        inSeconds: 0,
-        outSeconds: 2,
+        inSeconds: 1,
+        outSeconds: 3,
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
@@ -74,10 +74,11 @@ describe('buildOtioTimeline', () => {
 
     const firstClip = timeline.tracks.children[0]?.children[0];
     expect(firstClip?.OTIO_SCHEMA).toBe('Clip.1');
+    expect(firstClip && firstClip.OTIO_SCHEMA === 'Clip.1').toBe(true);
     if (firstClip && firstClip.OTIO_SCHEMA === 'Clip.1') {
       expect(firstClip.source_range.start_time).toEqual({
         OTIO_SCHEMA: 'RationalTime.1',
-        value: 0,
+        value: 24,
         rate: 24,
       });
       expect(firstClip.source_range.duration).toEqual({
@@ -89,10 +90,19 @@ describe('buildOtioTimeline', () => {
     }
 
     const secondClip = timeline.tracks.children[0]?.children[1];
+    expect(secondClip?.OTIO_SCHEMA).toBe('Clip.1');
     if (secondClip && secondClip.OTIO_SCHEMA === 'Clip.1') {
       expect(secondClip.source_range.start_time.value).toBe(48);
       expect(secondClip.source_range.duration.value).toBe(72);
       expect(secondClip.media_reference.target_url).toBe('./media/02-Cam B-v1.mp4');
     }
+
+    const stackedA = timeline.tracks.children[1];
+    expect(stackedA?.name).toBe('A');
+    expect(stackedA?.children[0]?.OTIO_SCHEMA).toBe('Clip.1');
+    if (stackedA?.children[0]?.OTIO_SCHEMA === 'Clip.1') {
+      expect(stackedA.children[0].media_reference.target_url).toBe('./media/01-Cam A-v1.mp4');
+    }
+    expect(timeline.tracks.children[2]?.name).toBe('B');
   });
 });

@@ -105,6 +105,17 @@ describe('computeRoughCutDecisions', () => {
     expect(cameraAt(edits, 6)).toBe(CAM_A);
   });
 
+  it('stays on the first active speaker when overlapBehaviour is SPEAKER', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(0, 10, CAM_A), turn(4, 8, CAM_B)], {
+      ...PROFILE,
+      overlapBehaviour: 'SPEAKER',
+      minShotSeconds: 0.5,
+    });
+
+    expect(cameraAt(edits, 6)).toBe(CAM_A);
+    expect(cameraAt(edits, 6)).not.toBe(WIDE);
+  });
+
   it('merges a shot shorter than minShotSeconds into the previous shot', () => {
     const edits = computeRoughCutDecisions(
       CLIPS,
@@ -136,6 +147,26 @@ describe('computeRoughCutDecisions', () => {
     expect(edits[0]).toMatchObject({ sourceVersionId: CAM_A, timelineStartSeconds: 0 });
     expect(edits[0]!.timelineEndSeconds).toBe(8);
     expect(edits[1]?.sourceVersionId).toBe(WIDE);
+    expect(edits[1]!.timelineEndSeconds - edits[1]!.timelineStartSeconds).toBe(1.5);
+  });
+
+  it('maps source in/out relative to a clip offset', () => {
+    const offsetClips = [
+      clip({ versionId: CAM_A, role: 'A', position: 0, offsetSeconds: 2, durationSeconds: 20 }),
+      clip({ versionId: WIDE, role: 'WIDE', position: 2, durationSeconds: 30 }),
+    ];
+    const edits = computeRoughCutDecisions(offsetClips, [turn(2, 8, CAM_A)], {
+      ...PROFILE,
+      minShotSeconds: 0.5,
+      safetyPauseSeconds: 10,
+    });
+    const live = edits.find((edit) => edit.sourceVersionId === CAM_A);
+    expect(live).toMatchObject({
+      timelineStartSeconds: 2,
+      timelineEndSeconds: 8,
+      inSeconds: 0,
+      outSeconds: 6,
+    });
   });
 
   it('returns no edits when there are no clips', () => {

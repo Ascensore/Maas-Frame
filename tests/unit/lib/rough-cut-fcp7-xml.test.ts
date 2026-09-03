@@ -47,8 +47,8 @@ describe('buildFcp7Xml', () => {
       {
         timelineStartSeconds: 0,
         timelineEndSeconds: 2,
-        inSeconds: 0,
-        outSeconds: 2,
+        inSeconds: 1,
+        outSeconds: 3,
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
@@ -70,12 +70,14 @@ describe('buildFcp7Xml', () => {
     expect(xml).toContain('<xmeml version="5">');
     expect(xml).toContain('<timebase>24</timebase>');
     expect(xml).toContain('<ntsc>FALSE</ntsc>');
-    expect(xml).toContain('<in>0</in>');
-    expect(xml).toContain('<out>48</out>');
+    expect(xml).toContain('<in>24</in>');
+    expect(xml).toContain('<out>72</out>');
     expect(xml).toContain('<start>0</start>');
     expect(xml).toContain('<end>48</end>');
     expect(xml).toContain('file://localhost/./media/01-Cam%20A-v1.mp4');
-    expect(xml).toContain('id="file-ver-a"');
+    expect(xml).toContain('<file id="file-ver-a">');
+    expect(xml).toContain('<file id="file-ver-a"/>');
     expect(xml).toContain('<displayformat>NDF</displayformat>');
+    expect(xml).toContain('clipitem-stack-1');
   });
 });

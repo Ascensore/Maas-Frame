@@ -241,6 +241,7 @@ const PUBLIC_ROUTES: ReadonlyMap<string, string> = new Map([
 const IMAGE_FILENAME = '11111111-1111-4111-8111-111111111111.png';
 const AUDIO_FILENAME = '22222222-2222-4222-8222-222222222222.webm';
 const VIDEO_FILENAME = '33333333-3333-4333-8333-333333333333.mp4';
+const VIDEO_FILENAME_B = '44444444-4444-4444-8444-444444444444.mp4';
 const SUBTITLE_FILENAME = '44444444-4444-4444-8444-444444444444.vtt';
 
 interface Fixtures {
@@ -306,6 +307,14 @@ async function seedFixtures(): Promise<Fixtures> {
     providerId: 'r2',
     providerVideoId: `videos/${VIDEO_FILENAME}`,
     originalUrl: `/api/upload/video/${VIDEO_FILENAME}`,
+    sizeBytes: BigInt(1024),
+  });
+  const secondVideo = await createVideo({ projectId: project.id, title: 'ISO 2' });
+  await createVersion({
+    videoParentId: secondVideo.id,
+    providerId: 'r2',
+    providerVideoId: `videos/${VIDEO_FILENAME_B}`,
+    originalUrl: `/api/upload/video/${VIDEO_FILENAME_B}`,
     sizeBytes: BigInt(1024),
   });
   const comment = await createComment({ versionId: version.id, authorId: owner.id });
@@ -1155,6 +1164,7 @@ describe('auth matrix', () => {
     beforeEach(async () => {
       signedOut();
       vi.stubEnv('OPENFRAME_ENABLE_AGENTS', 'true');
+      vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
       fixtures = await seedFixtures();
     });
 

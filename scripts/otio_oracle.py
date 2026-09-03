@@ -59,6 +59,26 @@ def assert_program_edits(timeline: otio.schema.Timeline, expected_clip_count: in
     duration = first.source_range.duration.to_seconds() if first.source_range else None
     if duration is None or abs(duration - 2.0) > 1e-3:
         fail(f"first program clip duration is {duration}, expected 2.0 seconds")
+    second = clips[1]
+    duration2 = second.source_range.duration.to_seconds() if second.source_range else None
+    if duration2 is None or abs(duration2 - 3.0) > 1e-3:
+        fail(f"second program clip duration is {duration2}, expected 3.0 seconds")
+
+
+def assert_stacked_cameras(timeline: otio.schema.Timeline) -> None:
+    tracks = list(timeline.tracks)
+    if len(tracks) < 3:
+        fail(f"expected program + 2 stacked tracks, got {len(tracks)}")
+    stacked_urls: list[str | None] = []
+    for track in tracks[1:]:
+        clips = list(track.find_clips())
+        if len(clips) != 1:
+            fail(f"stacked track {track.name!r} has {len(clips)} clips, expected 1")
+        reference = clips[0].media_reference
+        stacked_urls.append(getattr(reference, "target_url", None) if reference is not None else None)
+    expected = {"./media/01-Cam A-v1.mp4", "./media/02-Cam B-v1.mp4"}
+    if set(stacked_urls) != expected:
+        fail(f"stacked track urls are {stacked_urls}, expected {sorted(expected)}")
 
 
 def round_trip_otio(timeline: otio.schema.Timeline) -> None:
@@ -102,6 +122,7 @@ def main(argv: list[str]) -> None:
     if otio_timeline.name != "Rough Cut":
         fail(f"OTIO timeline name is {otio_timeline.name!r}, expected 'Rough Cut'")
     assert_program_edits(otio_timeline, expected_clip_count=2)
+    assert_stacked_cameras(otio_timeline)
     round_trip_otio(otio_timeline)
 
     xml_timeline = load_fcp_xml(xml_path)

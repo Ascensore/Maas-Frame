@@ -27,6 +27,7 @@ export function readEmbeddedTimecode(probe: ProbeJson): string | null {
 
   const streams = probe.streams ?? [];
   for (const stream of streams) {
+    if (stream.codec_type === 'data') continue;
     const fromTags = firstTimecode(stream.tags);
     if (fromTags) return fromTags;
   }

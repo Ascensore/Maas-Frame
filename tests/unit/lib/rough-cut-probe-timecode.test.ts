@@ -28,6 +28,17 @@ describe('readEmbeddedTimecode', () => {
     ).toBe('01:00:00;00');
   });
 
+  it('does not let a non-tmcd data stream steal the later tmcd tag', () => {
+    expect(
+      readEmbeddedTimecode({
+        streams: [
+          { codec_type: 'data', codec_name: 'other', tags: { timecode: '09:00:00:00' } },
+          { codec_type: 'data', codec_name: 'tmcd', tags: { timecode: '01:00:00:00' } },
+        ],
+      })
+    ).toBe('01:00:00:00');
+  });
+
   it('ignores values that are not SMPTE timecode', () => {
     expect(
       readEmbeddedTimecode({

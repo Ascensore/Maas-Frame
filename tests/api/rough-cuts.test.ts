@@ -22,12 +22,12 @@ async function seedMulticam() {
   const scenario = await seedProject();
   const camA = await createVideo({
     projectId: scenario.project.id,
-    title: 'Cam A',
+    title: 'ISO 1',
     metadata: { camera: 'A' },
   });
   const camB = await createVideo({
     projectId: scenario.project.id,
-    title: 'Cam B',
+    title: 'ISO 2',
     metadata: { camera: 'B' },
   });
   const versionA = await createVersion({
@@ -104,6 +104,32 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(stored.requestedById).toBe(scenario.owner.id);
     expect(stored.projectId).toBe(scenario.project.id);
     expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
+    const job = await db.mediaJob.findFirstOrThrow({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } });
+    expect(job.payload).toEqual({ roughCutId: payload.roughCut.id });
+  });
+
+  it('returns 400 when the folder has fewer than two file-backed videos', async () => {
+    const scenario = await seedProject();
+    const only = await createVideo({
+      projectId: scenario.project.id,
+      title: 'ISO 1',
+      metadata: { camera: 'A' },
+    });
+    await createVersion({
+      videoParentId: only.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
   });
 
   it('returns 403 when the feature flag is off and writes no row', async () => {
@@ -119,6 +145,26 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
 
     expect(response.status).toBe(403);
     expect(await db.roughCut.count()).toBe(0);
+  });
+
+  it('returns 409 when a cut is already pending', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'PENDING',
+    });
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(409);
+    expect(await db.roughCut.count()).toBe(1);
   });
 
   it('returns 409 when a cut is already running', async () => {
@@ -167,6 +213,22 @@ describe('GET /api/projects/[projectId]/rough-cuts', () => {
     );
     expect(payload.roughCuts.map((row) => row.id)).toEqual([cut.id]);
   });
+
+  it('returns 403 to a signed-in stranger', async () => {
+    const scenario = await seedProject();
+    await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+    });
+    const stranger = await createUser();
+    signedInAs(stranger);
+
+    const response = await callRoute(listRoughCuts, apiRequest(cutsUrl(scenario.project.id)), {
+      projectId: scenario.project.id,
+    });
+    expect(response.status).toBe(403);
+    expect(await db.roughCut.count()).toBe(1);
+  });
 });
 
 describe('GET /api/rough-cuts/[roughCutId]', () => {
@@ -199,6 +261,32 @@ describe('GET /api/rough-cuts/[roughCutId]', () => {
     });
     expect(response.status).toBe(403);
     expect(await db.roughCut.count()).toBe(1);
+  });
+
+  it('returns the cut for the owner and reports whether decisions exist', async () => {
+    const scenario = await seedProject();
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions: { version: 1, edits: [] },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(getRoughCutRoute, apiRequest(`/api/rough-cuts/${cut.id}`), {
+      roughCutId: cut.id,
+    });
+    expect(response.status).toBe(200);
+    const payload = await readData<{
+      roughCut: { id: string; status: string; hasDecisions: boolean };
+    }>(response);
+    expect(payload.roughCut.id).toBe(cut.id);
+    expect(payload.roughCut.status).toBe('READY');
+    expect(payload.roughCut.hasDecisions).toBe(true);
+
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: cut.id } });
+    expect(stored.status).toBe('READY');
+    expect(stored.decisions).not.toBeNull();
   });
 });
 
@@ -235,6 +323,24 @@ describe('DELETE /api/rough-cuts/[roughCutId]', () => {
     );
     expect(response.status).toBe(200);
     expect(await db.roughCut.findUnique({ where: { id: cut.id } })).toBeNull();
+  });
+
+  it('returns 403 to a signed-in stranger and leaves the row', async () => {
+    const scenario = await seedProject();
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+    });
+    const stranger = await createUser();
+    signedInAs(stranger);
+
+    const response = await callRoute(
+      deleteRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}`, { method: 'DELETE' }),
+      { roughCutId: cut.id }
+    );
+    expect(response.status).toBe(403);
+    expect(await db.roughCut.findUnique({ where: { id: cut.id } })).not.toBeNull();
   });
 });
 
@@ -334,5 +440,86 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     const body = await response.text();
     expect(body).toContain('"OTIO_SCHEMA": "Timeline.1"');
     expect(body).toContain('./media/01-Cam A-v1.mp4');
+  });
+
+  it('returns an FCP7 .xml attachment when the cut is READY', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id, title: 'Cam A' });
+    const version = await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    const decisions = assembleDecisionList({
+      edits: [
+        {
+          timelineStartSeconds: 0,
+          timelineEndSeconds: 2,
+          inSeconds: 0,
+          outSeconds: 2,
+          sourceVersionId: version.id,
+          cameraRole: 'A',
+          targetTrack: 1,
+        },
+      ],
+      clips: [
+        {
+          videoId: video.id,
+          versionId: version.id,
+          title: 'Cam A',
+          role: 'A',
+          position: 0,
+          offsetSeconds: 0,
+          durationSeconds: 10,
+          frameRateNum: 24,
+          frameRateDen: 1,
+          dropFrame: false,
+          startTimecode: null,
+          originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+          versionNumber: 1,
+          versionLabel: null,
+        },
+      ],
+      fileNames: new Map([[version.id, '01-Cam A-v1.mp4']]),
+      mediaPathPrefix: './media/',
+      rate: { num: 24, den: 1, dropFrame: false },
+    });
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions,
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=xml`),
+      { roughCutId: cut.id }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-disposition')).toContain('.xml');
+    const body = await response.text();
+    expect(body).toContain('<xmeml version="5">');
+    expect(body).toContain('file://localhost/./media/01-Cam%20A-v1.mp4');
+  });
+
+  it('returns 400 when the cut is not READY and leaves the row', async () => {
+    const scenario = await seedProject();
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'PENDING',
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=otio`),
+      { roughCutId: cut.id }
+    );
+    expect(response.status).toBe(400);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: cut.id } });
+    expect(stored.status).toBe('PENDING');
   });
 });

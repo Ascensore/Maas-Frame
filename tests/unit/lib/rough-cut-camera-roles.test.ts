@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { assignStackedTracks, inferCameraRole, pickWideClip } from '@/lib/rough-cut/camera-roles';
 
 describe('inferCameraRole', () => {
-  it('reads the configured metadata key first', () => {
-    expect(inferCameraRole('ignored.mp4', { camera: 'A' }, 'camera')).toBe('A');
+  it('reads the configured metadata key before the filename', () => {
+    expect(inferCameraRole('Cam_B_interview.mov', { camera: 'A' }, 'camera')).toBe('A');
     expect(inferCameraRole('ignored.mp4', { Camera: 'wide' }, 'camera')).toBe('WIDE');
   });
 
@@ -32,9 +32,12 @@ describe('pickWideClip', () => {
   });
 
   it('falls back to the first clip by position when no wide exists', () => {
-    const withoutWide = clips.filter((clip) => clip.role !== 'WIDE');
+    const withoutWide = [
+      { role: 'B', position: 5, videoId: 'vb' },
+      { role: 'A', position: 1, videoId: 'va' },
+    ];
     const picked = pickWideClip(withoutWide, 'WIDE');
-    expect(picked).toEqual({ clip: withoutWide[0], inferred: true });
+    expect(picked).toEqual({ clip: withoutWide[1], inferred: true });
   });
 
   it('returns null for an empty list', () => {
