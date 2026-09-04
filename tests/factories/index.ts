@@ -44,8 +44,12 @@ export type { CreateShareLinkInput } from './share';
 export { createApprovalRequest } from './approval';
 export type { CreateApprovalRequestInput } from './approval';
 
-export { createRoughCut, createRoughCutProfile } from './rough-cut';
-export type { CreateRoughCutInput, CreateRoughCutProfileInput } from './rough-cut';
+export { createEditorialBrief, createRoughCut, createRoughCutProfile } from './rough-cut';
+export type {
+  CreateEditorialBriefInput,
+  CreateRoughCutInput,
+  CreateRoughCutProfileInput,
+} from './rough-cut';
 
 export { seedProject, seedVersion } from './scenario';
 export type { ProjectScenario, VersionScenario } from './scenario';

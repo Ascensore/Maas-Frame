@@ -377,7 +377,14 @@ format because it has no stable keys.
 1. Assembler reads the canonical transcript with the waiting rule and VAD fallback. **Done.**
    The job moved from `worker/src` to `lib/rough-cut/assemble-job.ts` so it is type-checked,
    linted and unit tested with the app; the worker re-exports it.
-2. Brief model, three templates, folder/project binding, merge order, `briefSnapshot`.
+2. Brief model, three templates, folder/project binding, merge order, `briefSnapshot`. **Done.**
+   `lib/rough-cut/brief.ts` holds the schema, templates, aggressiveness table, merge order,
+   resolution and layout bias; `EditorialBrief` rows are workspace-scoped with one default per
+   project type; folders and projects bind through `editorialBriefId`; the rough-cut POST
+   accepts `briefId` and `projectType`, snapshots `{ briefId, source, layoutSource, brief }` on
+   the run, and the assembler already reads the brief's silence policy for the kept-gap. UI:
+   a briefs card on workspace settings and a selector in the rough-cut dialog. Binding a
+   folder or project from the UI is API-only for now, as it is for profiles.
 3. Assembly: dead air, false starts, take selection (talking head / interview), multicam
    grammar with `holdWideOnChaos`.
 4. Additive decision-list fields with reasons; placeholder markers.

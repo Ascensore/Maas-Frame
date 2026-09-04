@@ -99,6 +99,8 @@ function harness(options: {
   syncOffsets?: number[];
   /** Both the stored wav and a fresh extraction fail, as on a worker without ffmpeg. */
   audioUnavailable?: boolean;
+  /** The run's stored brief, as the create route writes it. */
+  briefSnapshot?: unknown;
 }) {
   const queries: Query[] = [];
   const runs: string[][] = [];
@@ -115,6 +117,7 @@ function harness(options: {
             folder_id: null,
             profile_snapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
             layout: options.layout,
+            brief_snapshot: options.briefSnapshot ?? null,
             created_at: options.createdAt,
           },
         ],
@@ -580,6 +583,37 @@ describe('assembleRoughCut with a transcript', () => {
     expect(result?.warnings.map((warning) => warning.code)).toEqual([
       WEAK_TRANSCRIPT_WARNING,
       'no-speech-detected',
+    ]);
+  });
+
+  it('keeps pauses by the brief’s silence policy, not the medium default', async () => {
+    const run = async (briefSnapshot: unknown) => {
+      const h = harness({
+        layout: 'LINEAR',
+        createdAt: ONE_MINUTE_AGO,
+        videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+        transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
+        segments: { 't-a': [segment(1, 4, 'first sentence here'), segment(4.5, 8, 'and then')] },
+        briefSnapshot,
+      });
+      await assembleRoughCut(h.deps, 'cut-1');
+      return h.persisted()?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds]);
+    };
+
+    // No brief: the 0.5 s pause is under the medium 0.8 s and survives.
+    expect(await run(null)).toEqual([[1, 8]]);
+    // A high-aggressiveness brief keeps only 0.4 s, so the same pause is cut.
+    expect(
+      await run({
+        version: 1,
+        briefId: 'brief-1',
+        source: 'folder',
+        layoutSource: 'guess',
+        brief: { projectType: 'TALKING_HEAD', pacing: { silenceAggressiveness: 'high' } },
+      })
+    ).toEqual([
+      [1, 4],
+      [4.5, 8],
     ]);
   });
 

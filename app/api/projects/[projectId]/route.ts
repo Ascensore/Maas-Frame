@@ -110,7 +110,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { name, description, visibility, allowDownloads, watermarkReviews } = body;
+    const { name, description, visibility, allowDownloads, watermarkReviews, editorialBriefId } =
+      body;
 
     if (name !== undefined) {
       if (typeof name !== 'string' || name.trim().length === 0) {
@@ -139,6 +140,16 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (watermarkReviews !== undefined && typeof watermarkReviews !== 'boolean') {
       return apiErrors.badRequest('watermarkReviews must be a boolean');
     }
+    if (editorialBriefId !== undefined && editorialBriefId !== null) {
+      if (typeof editorialBriefId !== 'string') {
+        return apiErrors.badRequest('editorialBriefId must be a brief id or null');
+      }
+      const brief = await db.editorialBrief.findFirst({
+        where: { id: editorialBriefId, workspaceId: projectAccessTarget!.workspaceId },
+        select: { id: true },
+      });
+      if (!brief) return apiErrors.badRequest('brief was not found in this workspace');
+    }
 
     const updateData: Record<string, unknown> = {};
     if (name !== undefined) updateData.name = name.trim();
@@ -146,6 +157,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (visibility !== undefined) updateData.visibility = visibility;
     if (allowDownloads !== undefined) updateData.allowDownloads = allowDownloads;
     if (watermarkReviews !== undefined) updateData.watermarkReviews = watermarkReviews;
+    if (editorialBriefId !== undefined) updateData.editorialBriefId = editorialBriefId;
 
     const project = await db.project.update({
       where: { id: projectId },

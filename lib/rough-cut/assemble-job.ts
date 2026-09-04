@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
 import { LOW_ATTRIBUTION_CONFIDENCE, pickHighestRmsCamera, type RmsSample } from './attribute';
+import { briefFromSnapshot, SILENCE_AGGRESSIVENESS } from './brief';
 import { applyCameraRole, assemblyFromSnapshot, orderClipsForLinearLayout } from './assembly';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from './camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from './decision-list';
@@ -332,7 +333,8 @@ async function assembleLinearLayout(
 /** The run's row, its resolved settings, and the folder's file-backed videos. */
 async function loadRun(deps: AssembleDeps, roughCutId: string) {
   const cutRes = await deps.pool.query(
-    `SELECT id, project_id, folder_id, profile_snapshot, layout, created_at FROM rough_cuts WHERE id = $1`,
+    `SELECT id, project_id, folder_id, profile_snapshot, brief_snapshot, layout, created_at
+     FROM rough_cuts WHERE id = $1`,
     [roughCutId]
   );
   const cut = cutRes.rows[0];
@@ -385,6 +387,13 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
   let tmp: string | null = null;
   try {
     const { cut, profile, assembly, layout, videosRes } = await loadRun(deps, roughCutId);
+    // The brief's silence policy decides how long a pause survives inside a
+    // turn. Runs made before briefs existed keep the medium default.
+    const briefSnapshot = briefFromSnapshot(cut.brief_snapshot);
+    const maxGapSeconds = briefSnapshot
+      ? SILENCE_AGGRESSIVENESS[briefSnapshot.brief.pacing.silenceAggressiveness]
+          .maxKeptGapInsideBeatSeconds
+      : TRANSCRIPT_MAX_KEPT_GAP_SECONDS;
     const clips: CameraClip[] = [];
     const metadataByVideoId = new Map<string, Record<string, unknown>>();
     for (const row of videosRes.rows) {
@@ -502,7 +511,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
               versionId: clip.versionId,
               offsetSeconds: 0,
               durationSeconds: clip.durationSeconds,
-              maxGapSeconds: TRANSCRIPT_MAX_KEPT_GAP_SECONDS,
+              maxGapSeconds,
             });
             if (turns.length > 0) {
               const quality = assessTranscriptQuality(slot.segments);
@@ -617,7 +626,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         versionId: source.versionId,
         offsetSeconds: source.offsetSeconds,
         durationSeconds: source.durationSeconds,
-        maxGapSeconds: TRANSCRIPT_MAX_KEPT_GAP_SECONDS,
+        maxGapSeconds,
       });
       if (turns.length > 0) {
         transcriptUsed = true;

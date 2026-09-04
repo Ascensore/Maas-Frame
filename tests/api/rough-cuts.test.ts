@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
+import { BUILTIN_BRIEF_TEMPLATES } from '@/lib/rough-cut/brief';
 import {
   GET as listRoughCuts,
   POST as createRoughCutRoute,
@@ -11,7 +12,15 @@ import {
 import { GET as downloadRoughCutRoute } from '@/app/api/rough-cuts/[roughCutId]/download/route';
 import { apiRequest, callRoute, readData } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
-import { createRoughCut, createUser, createVideo, createVersion, seedProject } from '../factories';
+import {
+  createEditorialBrief,
+  createFolder,
+  createRoughCut,
+  createUser,
+  createVersion,
+  createVideo,
+  seedProject,
+} from '../factories';
 import { assembleDecisionList } from '@/lib/rough-cut/decision-list';
 
 function cutsUrl(projectId: string) {
@@ -537,6 +546,239 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
 
     expect(response.status).toBe(409);
     expect(await db.roughCut.count()).toBe(1);
+  });
+});
+
+/** Two clips that look like nothing in particular: no timecode, no dates, same inferred role. */
+async function seedWeakGuess(folderId: string | null = null) {
+  const scenario = await seedProject();
+  const first = await createVideo({ projectId: scenario.project.id, title: 'Take one', folderId });
+  const second = await createVideo({ projectId: scenario.project.id, title: 'Take two', folderId });
+  await createVersion({
+    videoParentId: first.id,
+    providerId: 'r2',
+    originalUrl: '/api/upload/video/cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+  });
+  await createVersion({
+    videoParentId: second.id,
+    providerId: 'r2',
+    originalUrl: '/api/upload/video/dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+  });
+  return scenario;
+}
+
+describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('snapshots the folder’s brief, its source, and the technical override on the profile', async () => {
+    const scenario = await seedMulticam();
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'ASCENSORE',
+      config: { technical: { minShotSeconds: 3 } },
+    });
+    const folder = await createFolder({
+      projectId: scenario.project.id,
+      editorialBriefId: brief.id,
+    });
+    await db.video.updateMany({
+      where: { projectId: scenario.project.id },
+      data: { folderId: folder.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, wideCameraRole: 'B' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string; briefId: string | null } }>(response);
+    expect(payload.roughCut.briefId).toBe(brief.id);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefId).toBe(brief.id);
+    expect(stored.briefSnapshot).toEqual({
+      version: 1,
+      briefId: brief.id,
+      source: 'folder',
+      layoutSource: 'guess',
+      brief: {
+        ...BUILTIN_BRIEF_TEMPLATES.ASCENSORE,
+        technical: { roughCutProfileId: null, minShotSeconds: 3 },
+      },
+    });
+    // The brief's technical block beats the profile; the dialog value beats both.
+    expect(stored.profileSnapshot).toMatchObject({ minShotSeconds: 3, wideCameraRole: 'B' });
+  });
+
+  it('an explicit briefId wins over the folder binding; an unknown one is refused', async () => {
+    const scenario = await seedMulticam();
+    const bound = await createEditorialBrief({ workspaceId: scenario.workspace.id });
+    const chosen = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'INTERVIEW',
+    });
+    const foreign = await createEditorialBrief({ workspaceId: (await seedProject()).workspace.id });
+    const folder = await createFolder({
+      projectId: scenario.project.id,
+      editorialBriefId: bound.id,
+    });
+    await db.video.updateMany({
+      where: { projectId: scenario.project.id },
+      data: { folderId: folder.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, briefId: foreign.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, briefId: chosen.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string } }>(response);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefId).toBe(chosen.id);
+    expect(stored.briefSnapshot).toMatchObject({ source: 'requested', briefId: chosen.id });
+  });
+
+  it('a root cut falls back to the project’s brief, then the workspace default, then the template', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    const create = async () => {
+      const response = await callRoute(
+        createRoughCutRoute,
+        apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+        { projectId: scenario.project.id }
+      );
+      expect(response.status).toBe(201);
+      const payload = await readData<{ roughCut: { id: string } }>(response);
+      const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+      await db.roughCut.delete({ where: { id: stored.id } });
+      return stored;
+    };
+
+    // Nothing bound: two synced cameras read as an interview, from the template.
+    expect(await create()).toMatchObject({
+      briefId: null,
+      briefSnapshot: expect.objectContaining({
+        source: 'builtin',
+        brief: expect.objectContaining({ projectType: 'INTERVIEW' }),
+      }),
+    });
+
+    const workspaceDefault = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'INTERVIEW',
+      isDefault: true,
+    });
+    await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'ASCENSORE',
+      isDefault: true,
+    });
+    expect(await create()).toMatchObject({
+      briefId: workspaceDefault.id,
+      briefSnapshot: expect.objectContaining({ source: 'workspace-default' }),
+    });
+
+    const projectBrief = await createEditorialBrief({ workspaceId: scenario.workspace.id });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: projectBrief.id },
+    });
+    expect(await create()).toMatchObject({
+      briefId: projectBrief.id,
+      briefSnapshot: expect.objectContaining({ source: 'project' }),
+    });
+  });
+
+  it('a requested projectType picks the template when nothing is bound, and an unknown one is refused', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, projectType: 'VLOG' } }),
+      { projectId: scenario.project.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, projectType: 'ascensore' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string } }>(response);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefSnapshot).toMatchObject({
+      source: 'builtin',
+      brief: expect.objectContaining({ projectType: 'ASCENSORE' }),
+    });
+  });
+
+  it('a weak layout guess follows the brief’s bias, and an explicit layout still wins', async () => {
+    const scenario = await seedWeakGuess();
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'TALKING_HEAD',
+      config: { layoutBias: 'SEQUENTIAL' },
+    });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: brief.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const biased = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(biased.status).toBe(201);
+    const first = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(biased)).roughCut.id },
+    });
+    expect(first.layout).toBe('SEQUENTIAL');
+    expect(first.briefSnapshot).toMatchObject({ layoutSource: 'brief' });
+    await db.roughCut.delete({ where: { id: first.id } });
+
+    const explicit = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, layout: 'MULTICAM' } }),
+      { projectId: scenario.project.id }
+    );
+    expect(explicit.status).toBe(201);
+    const second = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(explicit)).roughCut.id },
+    });
+    expect(second.layout).toBe('MULTICAM');
+    expect(second.briefSnapshot).toMatchObject({ layoutSource: 'dialog' });
   });
 });
 
