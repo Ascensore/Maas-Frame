@@ -14,6 +14,7 @@ import {
   getAllowedSignupEmails,
   isS3VideoUploadsEnabled,
   isS3VideoUploadsFeatureEnabled,
+  isUsingSupabaseObjectStorage,
   isStripeBillingEnabled,
   isStripeFeatureEnabled,
   isProxyTranscodeEnabled,
@@ -52,6 +53,10 @@ const MANAGED_ENV = [
   'R2_BUCKET_NAME',
   'R2_ENDPOINT',
   'R2_ACCOUNT_ID',
+  'SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_SECRET_KEY',
 ];
 
 function enableR2Config() {
@@ -249,6 +254,28 @@ describe('hasR2Config', () => {
     vi.stubEnv('R2_BUCKET_NAME', 'bucket');
     expect(hasR2Config()).toBe(false);
   });
+
+  it('is incomplete without a Supabase url', () => {
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+    expect(hasR2Config()).toBe(false);
+  });
+
+  it('is incomplete without a Supabase service role or secret key', () => {
+    vi.stubEnv('SUPABASE_URL', 'https://abc.supabase.co');
+    expect(hasR2Config()).toBe(false);
+  });
+
+  it('treats a configured Supabase project as object storage', () => {
+    vi.stubEnv('SUPABASE_URL', 'https://abc.supabase.co');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+    expect(hasR2Config()).toBe(true);
+  });
+
+  it('accepts the secret key as a substitute for the service role key', () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://xyz.supabase.co');
+    vi.stubEnv('SUPABASE_SECRET_KEY', 'secret-key');
+    expect(hasR2Config()).toBe(true);
+  });
 });
 
 describe('hasBunnyUploadsConfig', () => {
@@ -292,6 +319,27 @@ describe('direct upload precedence', () => {
     expect(isS3VideoUploadsEnabled()).toBe(false);
     expect(isBunnyUploadsEnabled()).toBe(true);
     expect(isDirectFileUploadEnabled()).toBe(true);
+  });
+
+  it('enables S3 uploads through Supabase when Cloudflare R2 keys are absent', () => {
+    vi.stubEnv('OPENFRAME_ENABLE_S3_VIDEO_UPLOADS', 'true');
+    vi.stubEnv('SUPABASE_URL', 'https://abc.supabase.co');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+
+    expect(isUsingSupabaseObjectStorage()).toBe(true);
+    expect(isS3VideoUploadsEnabled()).toBe(true);
+    expect(isDirectFileUploadEnabled()).toBe(true);
+  });
+
+  it('prefers Cloudflare R2 over Supabase when both are configured', () => {
+    vi.stubEnv('OPENFRAME_ENABLE_S3_VIDEO_UPLOADS', 'true');
+    enableR2Config();
+    vi.stubEnv('SUPABASE_URL', 'https://abc.supabase.co');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+
+    expect(isUsingSupabaseObjectStorage()).toBe(false);
+    expect(isS3VideoUploadsEnabled()).toBe(true);
+    expect(hasR2Config()).toBe(true);
   });
 
   it('leaves S3 off when R2 is configured but the flag is not set', () => {

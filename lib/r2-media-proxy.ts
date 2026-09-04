@@ -6,7 +6,9 @@ import {
 import { Readable } from 'node:stream';
 import { NextResponse } from 'next/server';
 import { apiErrors } from '@/lib/api-response';
-import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
+import { r2Client, R2_BUCKET_NAME, getObjectStorageBucketName } from '@/lib/r2';
+import { isUsingSupabaseObjectStorage } from '@/lib/feature-flags';
+import { proxySupabaseMediaObject } from '@/lib/supabase-object-storage';
 import { logError } from '@/lib/logger';
 
 type ProxyR2MediaOptions = {
@@ -105,6 +107,19 @@ export async function proxyR2MediaObject({
 }: ProxyR2MediaOptions): Promise<NextResponse> {
   if (!isSafeR2MediaKey(key)) {
     return apiErrors.badRequest('Invalid media key');
+  }
+
+  if (isUsingSupabaseObjectStorage()) {
+    return proxySupabaseMediaObject({
+      request,
+      bucket: getObjectStorageBucketName(),
+      key,
+      fallbackContentType,
+      cacheControl,
+      extraHeaders,
+      notFoundLabel,
+      internalErrorMessage,
+    });
   }
 
   const range = request.headers.get('range');

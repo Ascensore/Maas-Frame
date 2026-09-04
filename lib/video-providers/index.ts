@@ -1,6 +1,7 @@
 // Video Provider Registry - Central place to manage all video providers
 
 import { youtubeProvider } from './youtube';
+import { gdriveProvider } from './gdrive';
 import { directProvider } from './direct';
 import { bunnyProvider } from './bunny';
 import { r2Provider } from './r2';
@@ -11,7 +12,13 @@ import { logError } from '@/lib/logger';
 export * from './types';
 
 // Registry of all available providers
-const providers: VideoProvider[] = [youtubeProvider, directProvider, bunnyProvider, r2Provider];
+const providers: VideoProvider[] = [
+  youtubeProvider,
+  gdriveProvider,
+  directProvider,
+  bunnyProvider,
+  r2Provider,
+];
 
 // Provider lookup map for quick access
 const providerMap = new Map<string, VideoProvider>(providers.map((p) => [p.id, p]));

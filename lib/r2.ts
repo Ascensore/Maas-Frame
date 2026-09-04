@@ -16,6 +16,16 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { VIDEO_OBJECT_KEY_PREFIX } from '@/lib/video-upload-validation';
+import { isUsingSupabaseObjectStorage } from '@/lib/feature-flags';
+import {
+  DEFAULT_SUPABASE_STORAGE_BUCKET,
+  createSupabaseSignedUploadUrl,
+  deleteSupabaseObject,
+  headSupabaseObject,
+  putSupabaseObject,
+  readSupabaseObjectBytes,
+  sendSupabaseS3Command,
+} from '@/lib/supabase-object-storage';
 
 const IMAGE_OBJECT_KEY_PREFIX = 'images/';
 const AUDIO_OBJECT_KEY_PREFIX = 'voice/';
@@ -60,6 +70,13 @@ function getR2PresignEndpoint(): string {
     return trimTrailingSlashes(R2_PRESIGN_ENDPOINT);
   }
   return getR2Endpoint();
+}
+
+export function getObjectStorageBucketName(): string {
+  const named = process.env.R2_BUCKET_NAME?.trim();
+  if (named) return named;
+  if (isUsingSupabaseObjectStorage()) return DEFAULT_SUPABASE_STORAGE_BUCKET;
+  return '';
 }
 
 function getOrCreateR2Client(): S3Client {
@@ -119,6 +136,16 @@ export const r2Client = new Proxy({} as S3Client, {
       };
     }
 
+    if (prop === 'send') {
+      return (command: unknown) => {
+        if (isUsingSupabaseObjectStorage()) {
+          return sendSupabaseS3Command(command);
+        }
+        const client = getOrCreateR2Client();
+        return client.send(command as never);
+      };
+    }
+
     const client = getOrCreateR2Client();
     const value = Reflect.get(client, prop, receiver);
     return typeof value === 'function' ? value.bind(client) : value;
@@ -144,6 +171,10 @@ export function getR2PublicObjectUrl(key: string): string {
 }
 
 export async function ensureR2BucketExists(): Promise<void> {
+  if (isUsingSupabaseObjectStorage()) {
+    return;
+  }
+
   try {
     await r2Client.send(new HeadBucketCommand({ Bucket: R2_BUCKET_NAME }));
     return;
@@ -167,6 +198,11 @@ export async function uploadAudio(
   const sanitized = filename.replace(/^.*[\\/]/, '').replace(/\.\.+/g, '');
   if (!sanitized) throw new Error('Invalid filename');
   const key = `voice/${sanitized}`;
+
+  if (isUsingSupabaseObjectStorage()) {
+    await putSupabaseObject(getObjectStorageBucketName(), key, buffer, contentType);
+    return `/api/upload/audio/${sanitized}`;
+  }
 
   await r2Client.send(
     new PutObjectCommand({
@@ -225,6 +261,10 @@ function corsRulesMatchOrigins(
 }
 
 export async function ensureR2UploadCors(extraOrigins: string[] = []): Promise<string[]> {
+  if (isUsingSupabaseObjectStorage()) {
+    return getR2UploadCorsOrigins(extraOrigins);
+  }
+
   const allowedOrigins = getR2UploadCorsOrigins(extraOrigins);
   if (allowedOrigins.length === 0) {
     throw new Error(
@@ -295,6 +335,10 @@ export async function createPresignedVideoPutUrl(
 
   if (contentLength <= BigInt(0) || contentLength > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('Invalid video content length');
+  }
+
+  if (isUsingSupabaseObjectStorage()) {
+    return createSupabaseSignedUploadUrl(getObjectStorageBucketName(), key);
   }
 
   const command = new PutObjectCommand({
@@ -410,6 +454,10 @@ export async function createPresignedImagePutUrl(
     throw new Error('Invalid image object key');
   }
 
+  if (isUsingSupabaseObjectStorage()) {
+    return createSupabaseSignedUploadUrl(getObjectStorageBucketName(), key);
+  }
+
   const command = new PutObjectCommand({
     Bucket: R2_BUCKET_NAME,
     Key: key,
@@ -430,6 +478,10 @@ export async function headVideoObject(key: string): Promise<{
 } | null> {
   if (!key.startsWith(VIDEO_OBJECT_KEY_PREFIX)) {
     return null;
+  }
+
+  if (isUsingSupabaseObjectStorage()) {
+    return headSupabaseObject(getObjectStorageBucketName(), key);
   }
 
   try {
@@ -463,6 +515,10 @@ export async function readVideoObjectBytes(
 ): Promise<Uint8Array | null> {
   if (!key.startsWith(VIDEO_OBJECT_KEY_PREFIX) || byteLength <= 0) {
     return null;
+  }
+
+  if (isUsingSupabaseObjectStorage()) {
+    return readSupabaseObjectBytes(getObjectStorageBucketName(), key, byteLength);
   }
 
   const rangeEnd = Math.max(0, byteLength - 1);
@@ -510,6 +566,11 @@ export async function deleteVideoObject(key: string): Promise<void> {
 
 export async function deleteR2Object(key: string): Promise<void> {
   assertAllowedObjectKey(key);
+
+  if (isUsingSupabaseObjectStorage()) {
+    await deleteSupabaseObject(getObjectStorageBucketName(), key);
+    return;
+  }
 
   await r2Client.send(
     new DeleteObjectCommand({

@@ -396,6 +396,9 @@ export function VideoPageContent({
       if (!bunnyCdnHostname) return '';
       return `https://${bunnyCdnHostname}/${activeVersion.videoId}/playlist.m3u8`;
     }
+    if (activeVersion.providerId === 'gdrive') {
+      return `https://drive.google.com/file/d/${activeVersion.videoId}/preview`;
+    }
     if (activeVersion.providerId === 'r2') {
       return resolveR2PlaybackUrl(activeVersion);
     }

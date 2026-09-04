@@ -45,6 +45,8 @@ describe('detectProvider', () => {
     ['https://iframe.mediadelivery.net/play/12345/abc-def_1', 'bunny'],
     ['https://video.bunnycdn.com/embed/12345/abcdef', 'bunny'],
     [`/api/upload/video/${UUID}.mp4`, 'r2'],
+    ['https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/view', 'gdrive'],
+    ['https://drive.google.com/open?id=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms', 'gdrive'],
   ])('resolves %s to the %s provider', (url, expectedId) => {
     expect(detectProvider(url)?.id).toBe(expectedId);
   });
@@ -59,6 +61,8 @@ describe('detectProvider', () => {
     `/api/upload/image/${UUID}.png`,
     'clip.mp4',
     '',
+    'https://drive.google.com/drive/folders/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+    'https://drive.google.com/file/d/short/view',
   ])('returns null for %s', (url) => {
     expect(detectProvider(url)).toBeNull();
   });
@@ -92,6 +96,24 @@ describe('parseVideoUrl', () => {
     });
   });
 
+  it('extracts the Google Drive file id from a share link', () => {
+    const url = 'https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/view';
+    expect(parseVideoUrl(url)).toEqual({
+      providerId: 'gdrive',
+      videoId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+      originalUrl: url,
+    });
+  });
+
+  it('extracts the Google Drive file id from an open link', () => {
+    const url = 'https://drive.google.com/open?id=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms';
+    expect(parseVideoUrl(url)).toEqual({
+      providerId: 'gdrive',
+      videoId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+      originalUrl: url,
+    });
+  });
+
   it('uses the whole url as the id for a direct upload', () => {
     const url = 'https://cdn.example.com/clip.mp4';
     expect(parseVideoUrl(url)).toEqual({
@@ -120,9 +142,12 @@ describe('parseVideoUrl', () => {
 });
 
 describe('getProvider and getProviderIcon', () => {
-  it.each(['youtube', 'direct', 'bunny', 'r2'] as const)('returns the %s provider by id', (id) => {
-    expect(getProvider(id)?.id).toBe(id);
-  });
+  it.each(['youtube', 'gdrive', 'direct', 'bunny', 'r2'] as const)(
+    'returns the %s provider by id',
+    (id) => {
+      expect(getProvider(id)?.id).toBe(id);
+    }
+  );
 
   it('returns null for an unregistered id', () => {
     expect(getProvider('vimeo' as VideoProviderType)).toBeNull();
@@ -130,6 +155,7 @@ describe('getProvider and getProviderIcon', () => {
 
   it.each([
     ['youtube', 'Youtube'],
+    ['gdrive', 'HardDrive'],
     ['direct', 'Upload'],
     ['bunny', 'Video'],
     ['r2', 'Upload'],
@@ -144,13 +170,19 @@ describe('getProvider and getProviderIcon', () => {
 
 describe('getAllProviders', () => {
   it('lists every registered provider', () => {
-    expect(getAllProviders().map((p) => p.id)).toEqual(['youtube', 'direct', 'bunny', 'r2']);
+    expect(getAllProviders().map((p) => p.id)).toEqual([
+      'youtube',
+      'gdrive',
+      'direct',
+      'bunny',
+      'r2',
+    ]);
   });
 
   it('returns a copy so callers cannot mutate the registry', () => {
     getAllProviders().length = 0;
 
-    expect(getAllProviders()).toHaveLength(4);
+    expect(getAllProviders()).toHaveLength(5);
   });
 });
 
@@ -284,6 +316,17 @@ describe('direct and r2 embed urls', () => {
   it('returns the r2 proxy path unchanged without a start time', () => {
     const path = `/api/upload/video/${UUID}.mp4`;
     expect(getEmbedUrl({ providerId: 'r2', videoId: path, originalUrl: path })).toBe(path);
+  });
+
+  it('embeds a Google Drive file through the preview player', () => {
+    expect(
+      getEmbedUrl({
+        providerId: 'gdrive',
+        videoId: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+        originalUrl:
+          'https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/view',
+      })
+    ).toBe('https://drive.google.com/file/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/preview');
   });
 
   it.each(['direct', 'r2'] as const)('serves the placeholder thumbnail for %s', (providerId) => {
@@ -503,7 +546,7 @@ describe('metadata cache', () => {
 });
 
 describe('provider extractVideoId guards', () => {
-  it.each(['youtube', 'direct', 'bunny', 'r2'] as const)(
+  it.each(['youtube', 'gdrive', 'direct', 'bunny', 'r2'] as const)(
     'the %s provider returns null for a url it cannot handle',
     (id) => {
       expect(getProvider(id)!.extractVideoId('https://example.com/not-a-video')).toBeNull();
