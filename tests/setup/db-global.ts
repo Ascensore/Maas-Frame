@@ -82,6 +82,7 @@ const REVIEWED_MIGRATIONS = [
   '20260904010000_rough_cut_layout',
   '20260904080000_edit_workspace',
   '20260904120000_transcript_translation',
+  '20260905100000_media_job_run_after',
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */

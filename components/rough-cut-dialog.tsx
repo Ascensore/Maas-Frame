@@ -27,6 +27,7 @@ import {
   type LayoutGuessReason,
 } from '@/lib/rough-cut/layout';
 import type { RoughCutLayout } from '@/lib/rough-cut/types';
+import { isWaitingForTranscript } from '@/lib/rough-cut/workspace';
 
 export type RoughCutDialogVideo = {
   id: string;
@@ -425,7 +426,11 @@ export function RoughCutDialog({
           {status === 'PENDING' || status === 'RUNNING' ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {status === 'PENDING' ? 'Queued…' : 'Assembling the rough cut…'}
+              {status === 'PENDING'
+                ? 'Queued…'
+                : isWaitingForTranscript(status, roughCut?.warnings)
+                  ? 'Waiting for the transcript…'
+                  : 'Assembling the rough cut…'}
             </div>
           ) : null}
 

@@ -30,6 +30,7 @@ import { useRoughCutHistory } from '@/components/video-page/hooks/use-rough-cut'
 import type { DirectUploadProvider } from '@/components/video-page/types';
 import { folderPath } from '@/lib/folders';
 import { upsertMetadataField } from '@/lib/rough-cut/camera-roles';
+import { isWaitingForTranscript } from '@/lib/rough-cut/workspace';
 import {
   layoutFromEditMode,
   type EditWorkspaceMode,
@@ -722,7 +723,11 @@ export function EditWorkspaceClient({
                           ) : cut.status === 'PENDING' ? (
                             'Queued…'
                           ) : cut.status === 'RUNNING' ? (
-                            'Running…'
+                            isWaitingForTranscript(cut.status, cut.warnings) ? (
+                              'Waiting for the transcript…'
+                            ) : (
+                              'Running…'
+                            )
                           ) : cut.status === 'READY' ? (
                             cut.outputVideoId ? (
                               'Ready'
