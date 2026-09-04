@@ -113,6 +113,15 @@ export function applyClipOrder<T extends { id: string }>(clips: T[], orderedIds:
   return ordered;
 }
 
+export function orderClipsForLinearLayout<T extends { id: string }>(
+  clips: T[],
+  clipOrder: string[] | null,
+  chronological: (clips: T[]) => T[]
+): T[] {
+  if (clipOrder && clipOrder.length > 0) return applyClipOrder(clips, clipOrder);
+  return chronological(clips);
+}
+
 export function applyCameraRole(
   videoId: string,
   inferred: string,
