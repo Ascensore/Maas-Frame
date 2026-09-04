@@ -10,11 +10,15 @@ import {
   connectCommentLiveListener,
   formatSseEvent,
   parseCommentLiveEvent,
+  shouldListenForCommentLive,
 } from '@/lib/comment-live';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
-export const maxDuration = 300;
+// Keep this well under the session-pooler idle window. A 300s stream used to
+// pin a LISTEN connection until Vercel killed the function, which is how a
+// few open review pages exhausted the 15-client cap.
+export const maxDuration = 25;
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
@@ -55,11 +59,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('versionId cannot be used as a live channel');
     }
 
-    const listener = await connectCommentLiveListener(versionId);
-    if (!listener) return apiErrors.internalError('Failed to subscribe to comment updates');
+    const listen = shouldListenForCommentLive();
+    const listener = listen ? await connectCommentLiveListener(versionId) : null;
+    if (listen && !listener) {
+      return apiErrors.internalError('Failed to subscribe to comment updates');
+    }
 
     const encoder = new TextEncoder();
-    const { client, channel } = listener;
+    const client = listener?.client ?? null;
+    const channel = listener?.channel ?? null;
     let pingTimer: ReturnType<typeof setInterval> | null = null;
     let closed = false;
 
@@ -67,6 +75,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       if (closed) return;
       closed = true;
       if (pingTimer) clearInterval(pingTimer);
+      if (!client) return;
       try {
         await client.query('UNLISTEN *');
       } catch {
@@ -88,21 +97,23 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
         send(formatSseEvent('ready', { versionId }));
 
-        client.on('notification', (message) => {
-          if (message.channel !== channel) return;
-          const payload = parseCommentLiveEvent(message.payload ?? '') ?? { versionId };
-          send(formatSseEvent('comments', payload));
-        });
+        if (client && channel) {
+          client.on('notification', (message) => {
+            if (message.channel !== channel) return;
+            const payload = parseCommentLiveEvent(message.payload ?? '') ?? { versionId };
+            send(formatSseEvent('comments', payload));
+          });
 
-        client.on('error', (error) => {
-          logError('Comment live listener error:', error);
-          void close();
-          try {
-            controller.close();
-          } catch {
-            // already closed
-          }
-        });
+          client.on('error', (error) => {
+            logError('Comment live listener error:', error);
+            void close();
+            try {
+              controller.close();
+            } catch {
+              // already closed
+            }
+          });
+        }
 
         pingTimer = setInterval(() => send(': ping\n\n'), 15000);
         request.signal.addEventListener('abort', () => {

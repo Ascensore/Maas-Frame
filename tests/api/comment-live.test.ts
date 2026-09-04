@@ -333,6 +333,26 @@ describe('GET /api/versions/[versionId]/comments/live', () => {
     await waitForListenerCount(scenario.version.id, 0);
   });
 
+  it('does not open a postgres listener on Vercel', async () => {
+    vi.stubEnv('VERCEL', '1');
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    signedInAs(scenario.owner);
+    const connect = vi.spyOn(commentLive, 'connectCommentLiveListener');
+
+    try {
+      const stream = await openOwnerStream(scenario.version.id);
+      try {
+        expect(connect).not.toHaveBeenCalled();
+        expect(await liveListenerCount(scenario.version.id)).toBe(0);
+      } finally {
+        await stream.cancel();
+      }
+    } finally {
+      connect.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('does not push an event when creating a comment is refused', async () => {
     const scenario = await seedVersion({ visibility: 'PRIVATE' });
     signedInAs(scenario.owner);

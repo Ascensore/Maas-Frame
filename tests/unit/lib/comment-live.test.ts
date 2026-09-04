@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   commentLiveChannel,
   encodeCommentLiveEvent,
   formatSseEvent,
   parseCommentLiveEvent,
+  shouldListenForCommentLive,
 } from '@/lib/comment-live';
 
 describe('commentLiveChannel', () => {
@@ -48,5 +49,21 @@ describe('formatSseEvent', () => {
     expect(formatSseEvent('comments', { versionId: 'clabc' })).toBe(
       'event: comments\ndata: {"versionId":"clabc"}\n\n'
     );
+  });
+});
+
+describe('shouldListenForCommentLive', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('skips LISTEN on Vercel so the session pooler is not pinned', () => {
+    vi.stubEnv('VERCEL', '1');
+    expect(shouldListenForCommentLive()).toBe(false);
+  });
+
+  it('listens off Vercel', () => {
+    vi.stubEnv('VERCEL', undefined);
+    expect(shouldListenForCommentLive()).toBe(true);
   });
 });

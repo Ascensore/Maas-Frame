@@ -35,7 +35,15 @@ function parseFrameRateString(value: string): { num: number; den: number } | nul
   return { num: num / divisor, den: den / divisor };
 }
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Cap both pools. The worker shares the Supabase session pooler (15 clients)
+// with Vercel; node-pg and pg-boss default to 10 each and starve the app.
+const WORKER_POOL_MAX = 2;
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: WORKER_POOL_MAX,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+});
 
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME ?? '';
 const R2_ENDPOINT = process.env.R2_ENDPOINT;
@@ -757,7 +765,11 @@ async function start(): Promise<void> {
   }
   await mkdir(tmpdir(), { recursive: true });
 
-  const boss = new PgBoss({ connectionString: process.env.DATABASE_URL });
+  const boss = new PgBoss({
+    connectionString: process.env.DATABASE_URL,
+    max: WORKER_POOL_MAX,
+    application_name: 'of-media-worker',
+  });
   boss.on('error', (error) => {
     console.error('pg-boss error', error);
   });
