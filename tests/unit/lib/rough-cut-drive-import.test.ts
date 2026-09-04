@@ -102,7 +102,9 @@ describe('downloadPublicDriveFile', () => {
     const html = '<html>virus scan warning download anyway</html>';
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(new Response(html, { headers: { 'content-type': 'text/html' } }));
+      .mockImplementation(() =>
+        Promise.resolve(new Response(html, { headers: { 'content-type': 'text/html' } }))
+      );
 
     await expect(downloadPublicDriveFile(FILE_ID, fetchImpl)).rejects.toThrow(
       /confirmation page instead of the file/
