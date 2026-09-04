@@ -49,8 +49,20 @@ function s3Endpoint(): string {
   return `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
 }
 
+function s3Region(): string {
+  const fromEnv = (process.env.AWS_REGION || process.env.S3_REGION || '').trim();
+  if (fromEnv) return fromEnv;
+  const endpoint = (R2_ENDPOINT ?? '').replace(/\/+$/, '');
+  // Cloudflare R2 accepts region "auto". Supabase/MinIO S3 need a real region or
+  // SigV4 is sent to Amazon and fails with "Access Key Id does not exist".
+  if (endpoint && !endpoint.includes('r2.cloudflarestorage.com')) {
+    return 'eu-west-1';
+  }
+  return 'auto';
+}
+
 const s3 = new S3Client({
-  region: 'auto',
+  region: s3Region(),
   endpoint: s3Endpoint(),
   forcePathStyle: Boolean(R2_ENDPOINT),
   credentials: {
