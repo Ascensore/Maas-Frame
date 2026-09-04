@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
+import { isAudioFileName, mediaTypeFromFileName } from '@/lib/transcription/media-type';
 import {
+  canRunInlineTranscription,
   isTooLargeForInlineTranscription,
   r2ObjectKeyFromVersion,
   sourceFileExtension,
@@ -67,9 +68,9 @@ describe('r2ObjectKeyFromVersion', () => {
 });
 
 describe('isTooLargeForInlineTranscription', () => {
-  it('allows a 25 MiB file and rejects one byte over', () => {
-    expect(isTooLargeForInlineTranscription(BigInt(26214400))).toBe(false);
-    expect(isTooLargeForInlineTranscription(BigInt(26214401))).toBe(true);
+  it('allows a 24 MiB file and rejects one byte over', () => {
+    expect(isTooLargeForInlineTranscription(BigInt(25165824))).toBe(false);
+    expect(isTooLargeForInlineTranscription(BigInt(25165825))).toBe(true);
   });
 });
 
@@ -86,6 +87,31 @@ describe('mediaTypeFromFileName', () => {
     expect(mediaTypeFromFileName('mix.flac')).toBe('audio/flac');
     expect(mediaTypeFromFileName('mix.aac')).toBe('audio/aac');
     expect(mediaTypeFromFileName('note.txt')).toBe('application/octet-stream');
+  });
+});
+
+describe('isAudioFileName', () => {
+  it('accepts audio extensions and rejects video or unknown names', () => {
+    expect(isAudioFileName('mix.wav')).toBe(true);
+    expect(isAudioFileName('mix.MP3')).toBe(true);
+    expect(isAudioFileName('mix.m4a')).toBe(true);
+    expect(isAudioFileName('mix.ogg')).toBe(true);
+    expect(isAudioFileName('mix.flac')).toBe(true);
+    expect(isAudioFileName('clip.mp4')).toBe(false);
+    expect(isAudioFileName('clip.webm')).toBe(false);
+    expect(isAudioFileName('clip.m4v')).toBe(false);
+    expect(isAudioFileName('note.txt')).toBe(false);
+  });
+});
+
+describe('canRunInlineTranscription', () => {
+  it('allows small audio and rejects video, images, and oversized audio', () => {
+    expect(canRunInlineTranscription('AUDIO')).toBe(true);
+    expect(canRunInlineTranscription('AUDIO', BigInt(25165824))).toBe(true);
+    expect(canRunInlineTranscription('AUDIO', BigInt(25165825))).toBe(false);
+    expect(canRunInlineTranscription('VIDEO')).toBe(false);
+    expect(canRunInlineTranscription('VIDEO', BigInt(1024))).toBe(false);
+    expect(canRunInlineTranscription('IMAGE')).toBe(false);
   });
 });
 

@@ -1,5 +1,6 @@
-import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
+import { OPENAI_MAX_AUDIO_BYTES } from '@/lib/transcription/chunk';
 import { AUTO_DETECT_TRANSCRIPT_LANGUAGE, languageForProvider } from '@/lib/transcription/language';
+import { isAudioFileName, mediaTypeFromFileName } from '@/lib/transcription/media-type';
 import type { TranscriptionProvider, TranscriptionResult } from '@/lib/transcription/types';
 
 export const openaiProvider: TranscriptionProvider = {
@@ -14,6 +15,12 @@ export const openaiProvider: TranscriptionProvider = {
     const path = await import('node:path');
     const audio = await fs.readFile(input.audioPath);
     const fileName = path.basename(input.audioPath) || 'audio.wav';
+    if (!isAudioFileName(fileName)) {
+      throw new Error('OpenAI transcription only accepts audio files, not video');
+    }
+    if (audio.byteLength > OPENAI_MAX_AUDIO_BYTES) {
+      throw new Error("Audio exceeds OpenAI's 25 MiB upload limit");
+    }
     const language = languageForProvider(input.language);
 
     const form = new FormData();
@@ -35,7 +42,10 @@ export const openaiProvider: TranscriptionProvider = {
     });
 
     if (!response.ok) {
-      throw new Error(`OpenAI transcription returned ${response.status}`);
+      const bodyText = await response.text();
+      throw new Error(
+        `OpenAI transcription returned ${response.status}: ${bodyText.slice(0, 300)}`
+      );
     }
 
     const body = (await response.json()) as {
