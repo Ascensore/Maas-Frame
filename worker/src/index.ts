@@ -357,6 +357,27 @@ async function upsertCaptionTrack(
   );
 }
 
+async function markTranscriptFailed(
+  versionId: string,
+  payload: { language?: string; transcriptId?: string } | null,
+  error: string
+): Promise<void> {
+  const message = error.slice(0, 2000);
+  if (payload?.transcriptId) {
+    await pool.query(
+      `UPDATE transcripts SET status = 'FAILED', error = $2, updated_at = NOW() WHERE id = $1`,
+      [payload.transcriptId, message]
+    );
+    return;
+  }
+  await pool.query(
+    `UPDATE transcripts
+     SET status = 'FAILED', error = $2, updated_at = NOW()
+     WHERE version_id = $1 AND language = $3 AND status IN ('PENDING', 'RUNNING')`,
+    [versionId, message, payload?.language || 'en']
+  );
+}
+
 async function transcribe(versionId: string, payload: { language?: string; transcriptId?: string } | null): Promise<void> {
   const provider = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local').trim().toLowerCase();
   const language = payload?.language || 'en';
@@ -407,6 +428,10 @@ async function transcribe(versionId: string, payload: { language?: string; trans
     } catch (error) {
       console.error('caption upsert failed', error);
     }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await markTranscriptFailed(versionId, payload, message);
+    throw error;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

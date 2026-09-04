@@ -303,7 +303,7 @@ describe('GET /api/versions/[versionId]/transcript', () => {
 
 describe('POST /api/versions/[versionId]/transcript', () => {
   it('returns 401 to an anonymous caller', async () => {
-    const scenario = await seedVersion();
+    const scenario = await seedVersion({ providerId: 'r2' });
     signedOut();
 
     const response = await callRoute(
@@ -318,7 +318,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
   });
 
   it('returns 403 to a signed-in commentator', async () => {
-    const scenario = await seedVersion();
+    const scenario = await seedVersion({ providerId: 'r2' });
     const member = await createUser();
     await addProjectMember({
       projectId: scenario.project.id,
@@ -339,7 +339,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
   });
 
   it('enqueues a PENDING transcript for the project owner', async () => {
-    const scenario = await seedVersion();
+    const scenario = await seedVersion({ providerId: 'r2' });
     signedInAs(scenario.owner);
 
     const response = await callRoute(
@@ -364,7 +364,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
   });
 
   it('re-enqueues an existing READY transcript as PENDING', async () => {
-    const scenario = await seedVersion();
+    const scenario = await seedVersion({ providerId: 'r2' });
     const existing = await seedReadyTranscript(scenario.version.id);
     await db.transcript.update({
       where: { id: existing.id },
@@ -384,6 +384,114 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     expect(rows[0]?.id).toBe(existing.id);
     expect(rows[0]?.status).toBe(TranscriptStatus.PENDING);
     expect(rows[0]?.error).toBeNull();
+  });
+
+  it('imports YouTube captions immediately and does not enqueue a worker job', async () => {
+    const scenario = await seedVersion({
+      providerId: 'youtube',
+    });
+    await db.videoVersion.update({
+      where: { id: scenario.version.id },
+      data: { videoId: 'QMRh3oE5BaU' },
+    });
+    signedInAs(scenario.owner);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/youtubei/v1/player')) {
+        return new Response(
+          JSON.stringify({
+            playabilityStatus: { status: 'OK' },
+            captions: {
+              playerCaptionsTracklistRenderer: {
+                captionTracks: [
+                  {
+                    languageCode: 'en',
+                    kind: 'asr',
+                    baseUrl: 'https://www.youtube.com/api/timedtext?v=QMRh3oE5BaU&fmt=srv3',
+                  },
+                ],
+              },
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          events: [
+            {
+              tStartMs: 160,
+              dDurationMs: 2000,
+              segs: [{ utf8: 'Hello' }, { utf8: ' world', tOffsetMs: 400 }],
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const response = await callRoute(
+        enqueueTranscript,
+        apiRequest(transcriptUrl(scenario.version.id), { body: { language: 'en' } }),
+        { versionId: scenario.version.id }
+      );
+
+      expect(response.status).toBe(200);
+      expect(fetchMock).toHaveBeenCalled();
+      const row = await db.transcript.findFirstOrThrow({
+        where: { versionId: scenario.version.id },
+        include: { segments: { orderBy: { position: 'asc' } } },
+      });
+      expect(row.status).toBe(TranscriptStatus.READY);
+      expect(row.provider).toBe('youtube');
+      expect(row.segments.map((segment) => segment.text)).toEqual(['Hello world']);
+      expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('marks a YouTube transcript FAILED when captions are missing', async () => {
+    const scenario = await seedVersion({ providerId: 'youtube' });
+    await db.videoVersion.update({
+      where: { id: scenario.version.id },
+      data: { videoId: 'QMRh3oE5BaU' },
+    });
+    signedInAs(scenario.owner);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            playabilityStatus: { status: 'OK' },
+            captions: { playerCaptionsTracklistRenderer: { captionTracks: [] } },
+          }),
+          { status: 200 }
+        );
+      })
+    );
+
+    try {
+      const response = await callRoute(
+        enqueueTranscript,
+        apiRequest(transcriptUrl(scenario.version.id), { body: { language: 'en' } }),
+        { versionId: scenario.version.id }
+      );
+
+      expect(response.status).toBe(400);
+      expect(await readError(response)).toBe('This YouTube video has no captions to import');
+      const row = await db.transcript.findFirstOrThrow({
+        where: { versionId: scenario.version.id },
+      });
+      expect(row.status).toBe(TranscriptStatus.FAILED);
+      expect(row.error).toBe('This YouTube video has no captions to import');
+      expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

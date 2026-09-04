@@ -17,6 +17,7 @@ function shapeTranscript(transcript: {
   language: string;
   provider: string;
   status: string;
+  error: string | null;
   segments: Array<{
     id: string;
     startSec: number;
@@ -33,6 +34,7 @@ function shapeTranscript(transcript: {
     language: transcript.language,
     provider: transcript.provider,
     status: transcript.status,
+    error: transcript.error,
     segments: transcript.segments.map((segment) => ({
       id: segment.id,
       startSec: segment.startSec,
