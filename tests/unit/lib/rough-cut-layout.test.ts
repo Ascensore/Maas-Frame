@@ -89,10 +89,10 @@ describe('sortClipsChronologically', () => {
     expect(ordered.map((entry) => entry.id)).toEqual(['a', 'b']);
   });
 
-  it('orders by a date stamp in the filename when tags are missing', () => {
+  it('orders by a date stamp in the filename even when natural name order disagrees', () => {
     const ordered = sortClipsChronologically([
-      clip({ id: 'late', title: 'VID_20260315_150000.mp4' }),
-      clip({ id: 'early', title: 'VID_20260315_140000.mp4' }),
+      clip({ id: 'late', title: 'AAA_20261231_000000.mp4' }),
+      clip({ id: 'early', title: 'ZZZ_20260101_000000.mp4' }),
     ]);
     expect(ordered.map((entry) => entry.id)).toEqual(['early', 'late']);
   });

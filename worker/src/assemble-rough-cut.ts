@@ -5,7 +5,7 @@ import {
   pickHighestRmsCamera,
   type RmsSample,
 } from '../lib/rough-cut/attribute';
-import { applyCameraRole, applyClipOrder, assemblyFromSnapshot } from '../lib/rough-cut/assembly';
+import { applyCameraRole, assemblyFromSnapshot, orderClipsForLinearLayout } from '../lib/rough-cut/assembly';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from '../lib/rough-cut/camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from '../lib/rough-cut/decision-list';
 import { computeRoughCutDecisions, computeLinearDecisions } from '../lib/rough-cut/decisions';
@@ -164,13 +164,13 @@ async function assembleLinearLayout(
       metadataStringRecord(options.metadataByVideoId.get(clip.videoId) ?? {})
     )
   );
-  const orderedGuess = options.clipOrder
-    ? applyClipOrder(guessClips, options.clipOrder)
-    : sortClipsChronologically(guessClips, {
-        num: clips[0]!.frameRateNum,
-        den: clips[0]!.frameRateDen,
-        dropFrame: clips[0]!.dropFrame,
-      });
+  const orderedGuess = orderClipsForLinearLayout(guessClips, options.clipOrder, (entries) =>
+    sortClipsChronologically(entries, {
+      num: clips[0]!.frameRateNum,
+      den: clips[0]!.frameRateDen,
+      dropFrame: clips[0]!.dropFrame,
+    })
+  );
   const byVideoId = new Map(clips.map((clip) => [clip.videoId, clip]));
   const orderedClips = applySequentialOffsets(
     orderedGuess.map((guess) => byVideoId.get(guess.id)).filter((clip): clip is CameraClip => Boolean(clip))

@@ -409,7 +409,7 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
           folderId: null,
           layout: 'MULTICAM',
           cameraRoles: { [scenario.camA.id]: 'Interview', [scenario.camB.id]: 'Wide' },
-          wideCameraRole: 'Wide',
+          wideCameraRole: 'Interview',
         },
       }),
       { projectId: scenario.project.id }
@@ -430,7 +430,9 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
       wideCameraRole?: string;
     };
     expect(snapshot.cameraRoles?.[scenario.camA.id]).toBe('INTERVIEW');
-    expect(snapshot.wideCameraRole).toBe('WIDE');
+    expect(snapshot.cameraRoles?.[scenario.camB.id]).toBe('WIDE');
+    expect(snapshot.wideCameraRole).toBe('INTERVIEW');
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
   });
 
   it('returns 400 for a clipOrder id that is not in the folder and writes no row', async () => {
@@ -442,6 +444,23 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
       createRoughCutRoute,
       apiRequest(cutsUrl(scenario.project.id), {
         body: { folderId: null, clipOrder: ['not-a-video'] },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(0);
+  });
+
+  it('returns 400 for a cameraRoles id that is not in the folder and writes no row', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, cameraRoles: { 'not-a-video': 'A' } },
       }),
       { projectId: scenario.project.id }
     );
