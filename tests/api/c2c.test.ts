@@ -10,6 +10,8 @@ import { DELETE as revokeConnection } from '@/app/api/projects/[projectId]/c2c-c
 import { POST as c2cR2Init } from '@/app/api/c2c/r2-init/route';
 import { POST as c2cR2Complete } from '@/app/api/c2c/r2-complete/route';
 import { POST as c2cCreateVideo } from '@/app/api/c2c/videos/route';
+import { TranscriptStatus } from '@prisma/client';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 import { apiRequest, callRoute, readData } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
 import { addProjectMember, createFolder, createUser, seedProject } from '../factories';
@@ -325,9 +327,31 @@ describe('C2C ingest', () => {
     );
 
     expect(createResponse.status).toBe(201);
-    const video = await db.video.findFirstOrThrow({ where: { title: 'A001C001' } });
+    const video = await db.video.findFirstOrThrow({
+      where: { title: 'A001C001' },
+      include: { versions: true },
+    });
     expect(video.projectId).toBe(scenario.project.id);
     expect(video.folderId).toBeNull();
+    expect(video.versions).toHaveLength(1);
+    const versionId = video.versions[0].id;
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId },
+      select: { kind: true, payload: true },
+    });
+    expect(jobs.map((job) => job.kind).sort()).toEqual([
+      'EXTRACT_AUDIO',
+      'PROBE_MEDIA',
+      'TRANSCRIBE',
+    ]);
+    const transcript = await db.transcript.findFirstOrThrow({
+      where: { versionId, language: 'en' },
+    });
+    expect(transcript.status).toBe(TranscriptStatus.PENDING);
+    const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(versionId, 'en');
   });
 
   it('lands files in the connection folder', async () => {

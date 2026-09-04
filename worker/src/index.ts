@@ -10,6 +10,11 @@ import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegAr
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
 import { importDriveFile } from './import-drive';
 import { materializeRoughCut } from './materialize-rough-cut';
+import {
+  createWhisperLocalProvider,
+  getWorkerTranscriptionProvider,
+  type TranscriptionResult,
+} from './transcription';
 
 const { Pool } = pg;
 
@@ -97,6 +102,69 @@ function objectKeyFromProvider(version: { providerId: string; videoId: string; o
   return null;
 }
 
+const BUNNY_FALLBACK_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240];
+const BUNNY_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Keep in lockstep with lib/bunny-cdn.ts. The worker image cannot import
+ * from the app tree (Docker context is ./worker).
+ */
+function normalizeBunnyCdnHostname(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.hostname || null;
+  } catch {
+    return trimmed.replace(/^https?:\/\//, '').replace(/\/+$/, '') || null;
+  }
+}
+
+function bunnyCdnHostname(): string | null {
+  return normalizeBunnyCdnHostname(process.env.BUNNY_CDN_URL || process.env.NEXT_PUBLIC_BUNNY_CDN_URL);
+}
+
+async function tryDownloadHttp(url: string, dest: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(BUNNY_DOWNLOAD_TIMEOUT_MS) });
+    if (!response.ok) return false;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0) return false;
+    await writeFile(dest, bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function downloadVersionFile(
+  version: { providerId: string; videoId: string; originalUrl: string },
+  dest: string
+): Promise<void> {
+  if (version.providerId === 'r2') {
+    const key = objectKeyFromProvider(version);
+    if (!key) throw new Error('Version has no extractable file');
+    await downloadObject(key, dest);
+    return;
+  }
+
+  if (version.providerId === 'bunny') {
+    const hostname = bunnyCdnHostname();
+    if (!hostname) throw new Error('Version has no extractable file');
+    if (await tryDownloadHttp(`https://${hostname}/${version.videoId}/original`, dest)) return;
+    for (const height of BUNNY_FALLBACK_HEIGHTS) {
+      if (await tryDownloadHttp(`https://${hostname}/${version.videoId}/play_${height}p.mp4`, dest)) {
+        return;
+      }
+    }
+    throw new Error('Version has no extractable file');
+  }
+
+  throw new Error('Version has no extractable file');
+}
+
 async function probeMedia(versionId: string): Promise<void> {
   const versionRes = await pool.query(
     `SELECT id, "providerId", "videoId", "originalUrl" FROM video_versions WHERE id = $1`,
@@ -104,13 +172,10 @@ async function probeMedia(versionId: string): Promise<void> {
   );
   const version = versionRes.rows[0];
   if (!version) throw new Error('Version not found');
-  const key = objectKeyFromProvider(version);
-  if (!key) throw new Error('Version has no probeable file');
-
   const dir = await mkdtemp(join(tmpdir(), 'of-probe-'));
   const filePath = join(dir, 'source.bin');
   try {
-    await downloadObject(key, filePath);
+    await downloadVersionFile(version, filePath);
     const probed = await run('ffprobe', [
       '-v',
       'error',
@@ -244,15 +309,12 @@ async function transcodeProxy(versionId: string): Promise<void> {
   );
   const version = versionRes.rows[0];
   if (!version) throw new Error('Version not found');
-  const key = objectKeyFromProvider(version);
-  if (!key) throw new Error('Version has no transcodable file');
-
   const dir = await mkdtemp(join(tmpdir(), 'of-proxy-'));
   const source = join(dir, 'source.bin');
   const output = join(dir, 'proxy.mp4');
   try {
     await pool.query(`UPDATE video_versions SET proxy_status = 'RUNNING' WHERE id = $1`, [versionId]);
-    await downloadObject(key, source);
+    await downloadVersionFile(version, source);
     const burnIn = version.watermark_reviews
       ? reviewProxyBurnInLabel(version.project_name ?? '')
       : null;
@@ -281,14 +343,12 @@ async function extractAudio(versionId: string): Promise<void> {
   );
   const version = versionRes.rows[0];
   if (!version) throw new Error('Version not found');
-  const key = objectKeyFromProvider(version);
-  if (!key) throw new Error('Version has no extractable file');
 
   const dir = await mkdtemp(join(tmpdir(), 'of-audio-'));
   const source = join(dir, 'source.bin');
   const wav = join(dir, 'audio.wav');
   try {
-    await downloadObject(key, source);
+    await downloadVersionFile(version, source);
     const extracted = await run('ffmpeg', ['-y', '-i', source, '-vn', '-ac', '1', '-ar', '16000', wav]);
     if (extracted.code !== 0) throw new Error(extracted.stderr || 'ffmpeg failed');
     const audio = await readFile(wav);
@@ -359,30 +419,49 @@ async function upsertCaptionTrack(
   );
 }
 
-async function markTranscriptFailed(
-  versionId: string,
-  payload: { language?: string; transcriptId?: string } | null,
-  error: string
-): Promise<void> {
-  const message = error.slice(0, 2000);
-  if (payload?.transcriptId) {
+async function setTranscriptStatus(options: {
+  transcriptId?: string;
+  versionId: string;
+  language: string;
+  status: 'RUNNING' | 'FAILED';
+  error?: string;
+}): Promise<void> {
+  if (options.transcriptId) {
     await pool.query(
-      `UPDATE transcripts SET status = 'FAILED', error = $2, updated_at = NOW() WHERE id = $1`,
-      [payload.transcriptId, message]
+      `UPDATE transcripts SET status = $2, error = $3, updated_at = NOW() WHERE id = $1`,
+      [options.transcriptId, options.status, options.error ?? null]
     );
     return;
   }
   await pool.query(
     `UPDATE transcripts
-     SET status = 'FAILED', error = $2, updated_at = NOW()
-     WHERE version_id = $1 AND language = $3 AND status IN ('PENDING', 'RUNNING')`,
-    [versionId, message, payload?.language || 'en']
+     SET status = $3, error = $4, updated_at = NOW()
+     WHERE version_id = $1 AND language = $2`,
+    [options.versionId, options.language, options.status, options.error ?? null]
   );
 }
 
+async function transcribeLocalWhisper(audioPath: string, language: string): Promise<TranscriptionResult> {
+  const script = join(import.meta.dir, '..', 'whisper_local.py');
+  const ran = await run('python3', [script, audioPath, language]);
+  if (ran.code !== 0) throw new Error(ran.stderr || 'faster-whisper failed');
+  return JSON.parse(ran.stdout) as TranscriptionResult;
+}
+
 async function transcribe(versionId: string, payload: { language?: string; transcriptId?: string } | null): Promise<void> {
-  const provider = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local').trim().toLowerCase();
+  const providerName = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local').trim().toLowerCase();
   const language = payload?.language || 'en';
+  const provider = getWorkerTranscriptionProvider(
+    providerName,
+    createWhisperLocalProvider(transcribeLocalWhisper)
+  );
+
+  await setTranscriptStatus({
+    transcriptId: payload?.transcriptId,
+    versionId,
+    language,
+    status: 'RUNNING',
+  });
 
   const audioKey = `audio/${versionId}.wav`;
   const dir = await mkdtemp(join(tmpdir(), 'of-tr-'));
@@ -395,15 +474,7 @@ async function transcribe(versionId: string, payload: { language?: string; trans
       await downloadObject(audioKey, wav);
     }
 
-    let result: { language: string; segments: Array<{ start: number; end: number; text: string; words: unknown }> };
-    if (provider === 'whisper-local') {
-      const script = join(import.meta.dir, '..', 'whisper_local.py');
-      const ran = await run('python3', [script, wav, language]);
-      if (ran.code !== 0) throw new Error(ran.stderr || 'faster-whisper failed');
-      result = JSON.parse(ran.stdout);
-    } else {
-      throw new Error(`Provider ${provider} must be run through the app process; worker only supports whisper-local`);
-    }
+    const result = await provider.transcribe({ audioPath: wav, language });
 
     const searchText = result.segments.map((segment) => segment.text).join(' ');
     const upsert = await pool.query(
@@ -412,7 +483,7 @@ async function transcribe(versionId: string, payload: { language?: string; trans
        ON CONFLICT (version_id, language)
        DO UPDATE SET provider = EXCLUDED.provider, status = 'READY', search_text = EXCLUDED.search_text, error = NULL, updated_at = NOW()
        RETURNING id`,
-      [versionId, result.language || language, provider, searchText]
+      [versionId, result.language || language, provider.name, searchText]
     );
     const transcriptId = upsert.rows[0].id as string;
     await pool.query(`DELETE FROM transcript_segments WHERE transcript_id = $1`, [transcriptId]);
@@ -432,7 +503,13 @@ async function transcribe(versionId: string, payload: { language?: string; trans
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await markTranscriptFailed(versionId, payload, message);
+    await setTranscriptStatus({
+      transcriptId: payload?.transcriptId,
+      versionId,
+      language,
+      status: 'FAILED',
+      error: message,
+    });
     throw error;
   } finally {
     await rm(dir, { recursive: true, force: true });

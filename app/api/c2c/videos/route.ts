@@ -12,6 +12,8 @@ import { reviewKindFromUploadPath } from '@/lib/review-kind';
 import { loadC2cCaller } from '@/lib/c2c-token';
 import { isS3VideoUploadsEnabled } from '@/lib/feature-flags';
 
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest) {
   try {
     const limited = await rateLimit(request, 'create-video');

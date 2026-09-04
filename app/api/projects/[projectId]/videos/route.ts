@@ -15,6 +15,8 @@ import { reviewKindFromUploadPath } from '@/lib/review-kind';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
+export const maxDuration = 300;
+
 // GET /api/projects/[projectId]/videos - List all videos in a project
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {

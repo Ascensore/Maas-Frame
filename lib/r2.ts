@@ -543,6 +543,36 @@ export async function readVideoObjectBytes(
   }
 }
 
+/**
+ * Full-object GET for in-app transcription. `readVideoObjectBytes` is ranged and
+ * only used for magic-byte probes; sending that prefix to Whisper would
+ * transcribe silence.
+ */
+export async function downloadVideoObject(key: string): Promise<Buffer | null> {
+  if (!key.startsWith(VIDEO_OBJECT_KEY_PREFIX)) {
+    return null;
+  }
+
+  try {
+    const result = await r2Client.send(
+      new GetObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+      })
+    );
+
+    if (!result.Body) return null;
+    const body = result.Body as { transformToByteArray?: () => Promise<Uint8Array> };
+    if (typeof body.transformToByteArray !== 'function') return null;
+    return Buffer.from(await body.transformToByteArray());
+  } catch (error) {
+    const statusCode = (error as { $metadata?: { httpStatusCode?: number } })?.$metadata
+      ?.httpStatusCode;
+    if (statusCode === 404) return null;
+    throw error;
+  }
+}
+
 function assertAllowedObjectKey(key: string): void {
   // `voice/` belongs here because uploadAudio() writes under it. Leaving it out meant
   // deleteR2Object('voice/...') always threw, so a voice note attached to a comment could

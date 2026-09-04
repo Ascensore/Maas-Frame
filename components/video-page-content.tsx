@@ -49,6 +49,7 @@ import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
 import { useSubtitles } from '@/components/video-page/hooks/use-subtitles';
 import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
+import { canAutoTranscribe } from '@/lib/review-kind';
 
 function formatTime(seconds: number): string {
   const totalSeconds = Math.floor(seconds);
@@ -1009,6 +1010,11 @@ export function VideoPageContent({
             versionId={activeVersionId}
             getCurrentTime={getCurrentTime}
             canManage={canManageCaptions}
+            canTranscribe={
+              !!video.canManageTags &&
+              (canAutoTranscribe(video.kind ?? 'VIDEO', activeProviderId ?? '') ||
+                activeProviderId === 'youtube')
+            }
             comments={transcriptCommentMarkers}
             draftRange={
               commentRangeStart !== null && commentRangeEnd !== null

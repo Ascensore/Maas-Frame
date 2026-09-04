@@ -1,3 +1,4 @@
+import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
 import type { TranscriptionProvider, TranscriptionResult } from '@/lib/transcription/types';
 
 export const deepgramProvider: TranscriptionProvider = {
@@ -9,7 +10,9 @@ export const deepgramProvider: TranscriptionProvider = {
     }
 
     const fs = await import('node:fs/promises');
+    const path = await import('node:path');
     const audio = await fs.readFile(input.audioPath);
+    const fileName = path.basename(input.audioPath) || 'audio.wav';
     const params = new URLSearchParams({
       model: 'nova-2',
       smart_format: 'true',
@@ -22,7 +25,7 @@ export const deepgramProvider: TranscriptionProvider = {
       method: 'POST',
       headers: {
         Authorization: `Token ${apiKey}`,
-        'Content-Type': 'audio/wav',
+        'Content-Type': mediaTypeFromFileName(fileName),
       },
       body: audio,
     });

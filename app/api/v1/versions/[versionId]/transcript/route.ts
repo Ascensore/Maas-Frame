@@ -6,6 +6,8 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { enqueueMediaJob } from '@/lib/media-jobs';
 import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
+import { canAutoTranscribe } from '@/lib/review-kind';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 import { logError } from '@/lib/logger';
 import { saveFailedTranscript, saveReadyTranscript } from '@/lib/transcript-persist';
 import { fetchYoutubeTranscript, YOUTUBE_TRANSCRIPT_PROVIDER } from '@/lib/transcription/youtube';
@@ -17,6 +19,8 @@ import {
 import { normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
+
+export const maxDuration = 300;
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
@@ -123,6 +127,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
+    if (!canAutoTranscribe(loaded.version.video.kind, loaded.version.providerId)) {
+      return apiErrors.badRequest(
+        'This version cannot be transcribed automatically. Upload a transcript file instead.'
+      );
+    }
+
     const transcript = await db.transcript.upsert({
       where: { versionId_language: { versionId, language } },
       create: {
@@ -143,6 +153,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       language,
       transcriptId: transcript.id,
     });
+    scheduleVersionTranscription(versionId, language);
 
     return withCacheControl(successResponse({ transcript }, 202), 'private, no-store');
   } catch (error) {

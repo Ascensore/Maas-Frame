@@ -1,8 +1,8 @@
-import { MediaJobKind, type Prisma } from '@prisma/client';
+import { MediaJobKind, TranscriptStatus, type Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
-import { isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
-import { shouldEnqueueProbe, shouldEnqueueTranscribe } from '@/lib/review-kind';
-import type { ReviewKind } from '@/lib/review-kind';
+import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
+import { shouldEnqueueProbe, shouldEnqueueTranscribe, type ReviewKind } from '@/lib/review-kind';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 
 export async function enqueueMediaJob(
   versionId: string,
@@ -21,8 +21,9 @@ export async function enqueueMediaJob(
 }
 
 /**
- * Queue probe (file-backed VIDEO and AUDIO) and transcription (VIDEO only,
- * when enabled). Stills and PDFs skip both. YouTube/Vimeo skip probe.
+ * Queue probe (file-backed VIDEO and AUDIO) and transcription (file-backed
+ * VIDEO and AUDIO, when enabled). Stills and PDFs skip both. YouTube/Vimeo
+ * skip probe and STT.
  */
 export async function enqueueJobsForNewVersion(options: {
   versionId: string;
@@ -37,7 +38,26 @@ export async function enqueueJobsForNewVersion(options: {
   }
 
   if (shouldEnqueueTranscribe(kind, providerId, isTranscriptionFeatureEnabled())) {
+    const language = 'en';
+    const transcript = await db.transcript.upsert({
+      where: { versionId_language: { versionId, language } },
+      create: {
+        versionId,
+        language,
+        provider: getTranscriptionProviderName(),
+        status: TranscriptStatus.PENDING,
+      },
+      update: {
+        status: TranscriptStatus.PENDING,
+        error: null,
+        provider: getTranscriptionProviderName(),
+      },
+    });
     await enqueueMediaJob(versionId, MediaJobKind.EXTRACT_AUDIO);
-    await enqueueMediaJob(versionId, MediaJobKind.TRANSCRIBE);
+    await enqueueMediaJob(versionId, MediaJobKind.TRANSCRIBE, {
+      language,
+      transcriptId: transcript.id,
+    });
+    scheduleVersionTranscription(versionId, language);
   }
 }
