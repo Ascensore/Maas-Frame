@@ -1,4 +1,4 @@
-import type { AttributedTurn, RoughCutWarning } from './types';
+import type { RoughCutWarning } from './types';
 
 /**
  * How the assembler gets speech from the transcript that already exists per
@@ -14,13 +14,6 @@ export const TRANSCRIPT_WAIT_LIMIT_SECONDS = 15 * 60;
 
 /** Delay before a waiting assemble job is looked at again. */
 export const TRANSCRIPT_RETRY_DELAY_SECONDS = 60;
-
-/**
- * Pauses up to this long stay in the program; longer ones are cut. This is the
- * "medium" inside-a-beat value from the editorial brief design and becomes
- * brief-driven once briefs exist.
- */
-export const TRANSCRIPT_MAX_KEPT_GAP_SECONDS = 0.8;
 
 /** Words per second over speech time, outside which the transcript is suspect. */
 export const TRANSCRIPT_MIN_WORDS_PER_SECOND = 0.5;
@@ -42,6 +35,8 @@ export type TranscriptRow = {
   versionId: string;
   status: TranscriptRowStatus;
   createdAt: Date | string;
+  /** The transcript's language tag, which picks the filler list. */
+  language?: string | null;
 };
 
 export type TranscriptSegmentRow = {
@@ -141,59 +136,6 @@ function wordCount(segment: TranscriptSegmentRow): number {
 
 function hasText(segment: TranscriptSegmentRow): boolean {
   return segment.text.trim().length > 0;
-}
-
-/**
- * Turn transcript segments into speech turns the decision functions accept.
- *
- * Segments are file-local; `offsetSeconds` moves them onto the timeline (0
- * for linear layouts, the sync offset for multicam). Pauses no longer than
- * `maxGapSeconds` are absorbed so the program keeps natural breathing room;
- * a speaker change is never absorbed, so camera attribution can switch there.
- */
-export function turnsFromTranscriptSegments(
-  segments: TranscriptSegmentRow[],
-  options: {
-    versionId: string;
-    offsetSeconds: number;
-    durationSeconds: number;
-    maxGapSeconds: number;
-  }
-): AttributedTurn[] {
-  const clampEnd = options.durationSeconds > EPSILON ? options.durationSeconds : null;
-  const usable = segments
-    .filter(hasText)
-    .map((segment) => {
-      const start = Math.max(0, segment.startSec);
-      const end = clampEnd === null ? segment.endSec : Math.min(clampEnd, segment.endSec);
-      return { start, end, speaker: segment.speaker };
-    })
-    .filter((segment) => segment.end - segment.start > EPSILON)
-    .sort((a, b) => a.start - b.start || a.end - b.end);
-
-  const merged: Array<{ start: number; end: number; speaker: string | null }> = [];
-  for (const segment of usable) {
-    const last = merged[merged.length - 1];
-    const sameSpeaker =
-      !last ||
-      last.speaker === null ||
-      segment.speaker === null ||
-      last.speaker === segment.speaker;
-    if (last && sameSpeaker && segment.start - last.end <= options.maxGapSeconds + EPSILON) {
-      last.end = Math.max(last.end, segment.end);
-      if (last.speaker === null) last.speaker = segment.speaker;
-      continue;
-    }
-    merged.push({ ...segment });
-  }
-
-  return merged.map((segment) => ({
-    start: segment.start + options.offsetSeconds,
-    end: segment.end + options.offsetSeconds,
-    versionId: options.versionId,
-    speaker: segment.speaker,
-    confidence: 1,
-  }));
 }
 
 export type TranscriptQualityReason = 'no-speech' | 'speech-rate' | 'empty-segments';

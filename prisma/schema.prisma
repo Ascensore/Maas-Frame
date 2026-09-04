@@ -195,6 +195,7 @@ model Workspace {
   projects    Project[]
   invitations Invitation[]
   roughCutProfiles RoughCutProfile[]
+  editorialBriefs  EditorialBrief[]
   
   @@index([ownerId])
   @@index([slug])
@@ -248,6 +249,10 @@ model Project {
   // Workspace (required - every project belongs to a workspace)
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Editorial brief for rough cuts at the project root; folders can bind their own
+  editorialBriefId String?
+  editorialBrief   EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
   
   // Timestamps
   createdAt   DateTime @default(now())
@@ -267,6 +272,7 @@ model Project {
   @@index([slug])
   @@index([workspaceId])
   @@index([workspaceId, updatedAt(sort: Desc)])
+  @@index([editorialBriefId])
   @@map("projects")
 }
 
@@ -392,6 +398,8 @@ model Folder {
   c2cConnections C2cConnection[]
   roughCutProfileId String? @map("rough_cut_profile_id")
   roughCutProfile   RoughCutProfile? @relation(fields: [roughCutProfileId], references: [id], onDelete: SetNull)
+  editorialBriefId  String? @map("editorial_brief_id")
+  editorialBrief    EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
   roughCuts RoughCut[]
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -399,6 +407,7 @@ model Folder {
   @@index([projectId])
   @@index([parentId])
   @@index([roughCutProfileId])
+  @@index([editorialBriefId])
   @@map("folders")
 }
 
@@ -1030,6 +1039,34 @@ enum RoughCutLayout {
   LINEAR
 }
 
+enum EditorialProjectType {
+  ASCENSORE
+  TALKING_HEAD
+  INTERVIEW
+}
+
+// What "good" means for a project type: intent and policy for the rough-cut
+// assembler. `config` is a versioned EditorialBrief JSON (lib/rough-cut/brief.ts);
+// the technical knobs stay on RoughCutProfile underneath it.
+model EditorialBrief {
+  id          String               @id @default(cuid())
+  name        String
+  workspaceId String               @map("workspace_id")
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectType EditorialProjectType @map("project_type")
+  isDefault   Boolean              @default(false) @map("is_default")
+  config      Json
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+  folders     Folder[]
+  projects    Project[]
+  roughCuts   RoughCut[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, projectType])
+  @@map("editorial_briefs")
+}
+
 model RoughCutProfile {
   id                    String               @id @default(cuid())
   name                  String
@@ -1064,6 +1101,8 @@ model RoughCut {
   folder           Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
   profileId        String?         @map("profile_id")
   profile          RoughCutProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  briefId          String?         @map("brief_id")
+  brief            EditorialBrief? @relation(fields: [briefId], references: [id], onDelete: SetNull)
   requestedById    String          @map("requested_by_id")
   requestedBy      User            @relation("RoughCutsRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
   layout           RoughCutLayout  @default(MULTICAM)
@@ -1071,6 +1110,7 @@ model RoughCut {
   frameRateDen     Int?            @map("frame_rate_den")
   dropFrame        Boolean         @default(false) @map("drop_frame")
   profileSnapshot  Json            @map("profile_snapshot")
+  briefSnapshot    Json?           @map("brief_snapshot")
   syncReport       Json?           @map("sync_report")
   decisions        Json?
   warnings         Json?
@@ -1083,6 +1123,7 @@ model RoughCut {
   @@index([projectId, folderId, createdAt(sort: Desc)])
   @@index([status, createdAt])
   @@index([outputVideoId])
+  @@index([briefId])
   @@map("rough_cuts")
 }
 

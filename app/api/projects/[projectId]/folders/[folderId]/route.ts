@@ -19,6 +19,7 @@ function shape(folder: {
   position: number;
   parentId: string | null;
   roughCutProfileId: string | null;
+  editorialBriefId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -28,6 +29,7 @@ function shape(folder: {
     position: folder.position,
     parentId: folder.parentId,
     roughCutProfileId: folder.roughCutProfileId,
+    editorialBriefId: folder.editorialBriefId,
     createdAt: folder.createdAt,
     updatedAt: folder.updatedAt,
   };
@@ -62,6 +64,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       parentId?: string | null;
       position?: number;
       roughCutProfileId?: string | null;
+      editorialBriefId?: string | null;
     } = {};
 
     if (body?.name !== undefined) {
@@ -119,8 +122,26 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    if (body && Object.prototype.hasOwnProperty.call(body, 'editorialBriefId')) {
+      if (body.editorialBriefId !== null && typeof body.editorialBriefId !== 'string') {
+        return apiErrors.badRequest('editorialBriefId must be a brief id or null');
+      }
+      if (typeof body.editorialBriefId === 'string') {
+        const brief = await db.editorialBrief.findFirst({
+          where: { id: body.editorialBriefId, workspaceId: project.workspaceId },
+          select: { id: true },
+        });
+        if (!brief) return apiErrors.badRequest('brief was not found in this workspace');
+        data.editorialBriefId = brief.id;
+      } else {
+        data.editorialBriefId = null;
+      }
+    }
+
     if (Object.keys(data).length === 0) {
-      return apiErrors.badRequest('Provide name, parentId, position, and/or roughCutProfileId');
+      return apiErrors.badRequest(
+        'Provide name, parentId, position, roughCutProfileId and/or editorialBriefId'
+      );
     }
 
     const updated = await db.folder.update({

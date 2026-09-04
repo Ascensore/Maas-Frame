@@ -1,5 +1,17 @@
-import type { RoughCut, RoughCutLayout, RoughCutProfile, RoughCutStatus } from '@prisma/client';
+import type {
+  EditorialBrief,
+  EditorialProjectType,
+  RoughCut,
+  RoughCutLayout,
+  RoughCutProfile,
+  RoughCutStatus,
+} from '@prisma/client';
 import { db } from '@/lib/db';
+import {
+  BUILTIN_BRIEF_TEMPLATES,
+  mergeBriefConfig,
+  type EditorialBriefConfigPatch,
+} from '@/lib/rough-cut/brief';
 import { BUILTIN_ROUGH_CUT_PROFILE, snapshotFromProfile } from '@/lib/rough-cut/profile';
 import { nextSeq } from './seq';
 
@@ -61,6 +73,34 @@ export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughC
       layout: input.layout ?? 'MULTICAM',
       profileSnapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
       decisions: input.decisions ?? undefined,
+    },
+  });
+}
+
+export interface CreateEditorialBriefInput {
+  workspaceId: string;
+  name?: string;
+  projectType?: EditorialProjectType;
+  isDefault?: boolean;
+  /** Laid over the template for the project type, as the create route does. */
+  config?: EditorialBriefConfigPatch;
+}
+
+export async function createEditorialBrief(
+  input: CreateEditorialBriefInput
+): Promise<EditorialBrief> {
+  const seq = nextSeq();
+  const projectType = input.projectType ?? 'TALKING_HEAD';
+  return db.editorialBrief.create({
+    data: {
+      workspaceId: input.workspaceId,
+      name: input.name ?? `Brief ${seq}`,
+      projectType,
+      isDefault: input.isDefault ?? false,
+      config: mergeBriefConfig(BUILTIN_BRIEF_TEMPLATES[projectType], {
+        ...(input.config ?? {}),
+        projectType,
+      }),
     },
   });
 }

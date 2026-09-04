@@ -21,6 +21,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { EditorialBriefsCard } from '@/components/editorial-briefs-card';
 import { RoughCutProfilesCard } from '@/components/rough-cut-profiles-card';
 
 interface WorkspaceData {
@@ -210,6 +211,7 @@ export default function WorkspaceSettingsPageClient({
       </Card>
 
       {roughCutEnabled ? <RoughCutProfilesCard workspaceId={workspaceId} /> : null}
+      {roughCutEnabled ? <EditorialBriefsCard workspaceId={workspaceId} /> : null}
 
       {canDelete ? (
         <>

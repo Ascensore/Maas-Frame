@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -29,7 +29,9 @@ import { VideoDragDropUploader } from '@/components/video-drag-drop-uploader';
 import { useRoughCutHistory } from '@/components/video-page/hooks/use-rough-cut';
 import type { DirectUploadProvider } from '@/components/video-page/types';
 import { folderPath } from '@/lib/folders';
+import type { EditorialProjectType } from '@/lib/rough-cut/brief';
 import { upsertMetadataField } from '@/lib/rough-cut/camera-roles';
+import { PROJECT_TYPE_LABELS } from '@/components/editorial-briefs-card';
 import { isWaitingForTranscript } from '@/lib/rough-cut/workspace';
 import {
   layoutFromEditMode,
@@ -41,6 +43,14 @@ export type EditFolder = {
   id: string;
   name: string;
   parentId: string | null;
+  editorialBriefId: string | null;
+};
+
+type WorkspaceBrief = {
+  id: string;
+  name: string;
+  projectType: EditorialProjectType;
+  isDefault: boolean;
 };
 
 export type EditBinClip = {
@@ -140,6 +150,9 @@ function defaultFocusVideoId(clips: EditBinClip[], names: Record<string, string>
 interface EditWorkspaceClientProps {
   projectId: string;
   projectName: string;
+  workspaceId: string;
+  /** The project's own brief binding, used for cuts at the project root. */
+  projectBriefId: string | null;
   folders: EditFolder[];
   currentFolderId: string | null;
   clips: EditBinClip[];
@@ -155,6 +168,8 @@ interface EditWorkspaceClientProps {
 export function EditWorkspaceClient({
   projectId,
   projectName,
+  workspaceId,
+  projectBriefId,
   folders,
   currentFolderId,
   clips,
@@ -178,6 +193,64 @@ export function EditWorkspaceClient({
   const [isImporting, setIsImporting] = useState(false);
   const [newFolderName, setNewFolderName] = useState(sessionFolderName);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [workspaceBriefs, setWorkspaceBriefs] = useState<WorkspaceBrief[]>([]);
+  const [boundBriefId, setBoundBriefId] = useState<string | null>(
+    currentFolderId
+      ? (folders.find((folder) => folder.id === currentFolderId)?.editorialBriefId ?? null)
+      : projectBriefId
+  );
+  const [isBindingBrief, setIsBindingBrief] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/workspaces/${workspaceId}/editorial-briefs`, {
+          cache: 'no-store',
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) return;
+        const list = (payload as { data?: { briefs?: WorkspaceBrief[] } }).data?.briefs;
+        if (!cancelled && Array.isArray(list)) setWorkspaceBriefs(list);
+      } catch {
+        // The selector stays hidden; the run still inherits a brief.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId]);
+
+  // At the project root the binding lives on the project; inside a folder, on
+  // that folder. Either way the next rough cut in this place picks it up.
+  const bindBrief = async (value: string) => {
+    const nextId = value === 'inherit' ? null : value;
+    const previous = boundBriefId;
+    setBoundBriefId(nextId);
+    setIsBindingBrief(true);
+    try {
+      const url = currentFolderId
+        ? `/api/projects/${projectId}/folders/${currentFolderId}`
+        : `/api/projects/${projectId}`;
+      const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editorialBriefId: nextId }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setBoundBriefId(previous);
+        toast.error(typeof payload?.error === 'string' ? payload.error : 'Failed to bind brief');
+        return;
+      }
+      router.refresh();
+    } catch {
+      setBoundBriefId(previous);
+      toast.error('Failed to bind brief');
+    } finally {
+      setIsBindingBrief(false);
+    }
+  };
   const history = useRoughCutHistory(projectId, currentFolderId);
 
   const libraryHref = currentFolderId
@@ -401,6 +474,35 @@ export function EditWorkspaceClient({
               </SelectContent>
             </Select>
           </div>
+          {workspaceBriefs.length > 0 || boundBriefId ? (
+            <div className="grid gap-2 min-w-0 flex-1">
+              <Label htmlFor="edit-brief">
+                Editorial brief {currentFolderId ? 'for this folder' : 'for the project'}
+              </Label>
+              <Select
+                value={boundBriefId ?? 'inherit'}
+                onValueChange={(value) => void bindBrief(value)}
+                disabled={isBindingBrief}
+              >
+                <SelectTrigger id="edit-brief" className="w-full max-w-md">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="inherit">
+                    {currentFolderId
+                      ? 'Inherited from the parent folder or project'
+                      : 'Workspace default for the project type'}
+                  </SelectItem>
+                  {workspaceBriefs.map((brief) => (
+                    <SelectItem key={brief.id} value={brief.id}>
+                      {brief.name} · {PROJECT_TYPE_LABELS[brief.projectType]}
+                      {brief.isDefault ? ' (default)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
           <div className="flex min-w-0 flex-1 gap-2">
             <Input
               value={newFolderName}

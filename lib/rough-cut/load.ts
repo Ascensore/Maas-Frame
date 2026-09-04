@@ -1,4 +1,11 @@
 import { db } from '@/lib/db';
+import {
+  briefConfigFromStored,
+  resolveEffectiveBrief,
+  type EditorialProjectType,
+  type ResolvedBrief,
+  type StoredBrief,
+} from '@/lib/rough-cut/brief';
 import { inferCameraRole, metadataStringRecord } from '@/lib/rough-cut/camera-roles';
 import { readImportStatus } from '@/lib/rough-cut/drive-import';
 import type { LayoutGuessClip } from '@/lib/rough-cut/layout';
@@ -43,6 +50,57 @@ export async function loadResolvedProfile(options: {
     folders,
     profilesById,
     workspaceDefault,
+  });
+}
+
+/**
+ * The brief a run should use: an explicit request, the nearest folder, the
+ * project, the workspace default for the project type, or the built-in
+ * template. Stored configs are read through `briefConfigFromStored` so a
+ * hand-edited row degrades to its template rather than failing the run.
+ */
+export async function loadResolvedBrief(options: {
+  workspaceId: string;
+  projectId: string;
+  folderId: string | null;
+  briefId?: string | null;
+  projectType: EditorialProjectType;
+}): Promise<ResolvedBrief> {
+  const [briefs, folders, project] = await Promise.all([
+    db.editorialBrief.findMany({ where: { workspaceId: options.workspaceId } }),
+    db.folder.findMany({
+      where: { projectId: options.projectId },
+      select: { id: true, parentId: true, name: true, editorialBriefId: true },
+    }),
+    db.project.findUnique({
+      where: { id: options.projectId },
+      select: { editorialBriefId: true },
+    }),
+  ]);
+  const briefsById = new Map<string, StoredBrief>(
+    briefs.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        projectType: row.projectType,
+        brief: briefConfigFromStored(row.config, row.projectType),
+      },
+    ])
+  );
+  const defaultsByType = new Map<EditorialProjectType, StoredBrief>();
+  for (const row of briefs) {
+    if (!row.isDefault) continue;
+    const stored = briefsById.get(row.id);
+    if (stored) defaultsByType.set(row.projectType, stored);
+  }
+  return resolveEffectiveBrief({
+    requestedBriefId: options.briefId ?? null,
+    folderId: options.folderId,
+    folders,
+    projectBriefId: project?.editorialBriefId ?? null,
+    briefsById,
+    defaultsByType,
+    projectType: options.projectType,
   });
 }
 

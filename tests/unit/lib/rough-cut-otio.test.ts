@@ -27,6 +27,53 @@ function clip(role: string, versionId: string, durationSeconds: number): CameraC
 }
 
 describe('buildOtioTimeline', () => {
+  it('produces the same timeline whether or not edits carry reasons and the list carries cuts', () => {
+    const clips = [clip('A', 'ver-a', 10)];
+    const edit: EditDecision = {
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 2,
+      inSeconds: 1,
+      outSeconds: 3,
+      sourceVersionId: 'ver-a',
+      cameraRole: 'A',
+      targetTrack: 1,
+    };
+    const build = (
+      edits: EditDecision[],
+      cuts?: Parameters<typeof assembleDecisionList>[0]['cuts']
+    ) =>
+      buildOtioTimeline({
+        name: 'Rough Cut',
+        decisions: assembleDecisionList({
+          edits,
+          clips,
+          fileNames: new Map([['ver-a', '01-Cam A-v1.mp4']]),
+          mediaPathPrefix: './media/',
+          rate: RATE,
+          cuts,
+        }),
+        clips,
+        handleFrames: 0,
+      });
+
+    const plain = build([edit]);
+    const annotated = build(
+      [{ ...edit, reason: { code: 'KEPT', summary: 'Speech' } }],
+      [
+        {
+          key: 'ver-a:72-96',
+          sourceVersionId: 'ver-a',
+          inSeconds: 3,
+          outSeconds: 4,
+          reason: { code: 'DEAD_AIR', summary: '1.0s of dead air' },
+          transcriptText: null,
+        },
+      ]
+    );
+
+    expect(annotated).toEqual(plain);
+  });
+
   it('emits a Timeline with a Program track and one stacked track per camera', () => {
     const clips = [clip('A', 'ver-a', 10), clip('B', 'ver-b', 10)];
     const edits: EditDecision[] = [

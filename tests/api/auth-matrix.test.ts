@@ -36,6 +36,7 @@ import {
   createFolder,
   createProject,
   createRoughCut,
+  createEditorialBrief,
   createRoughCutProfile,
   createShareLink,
   createUser,
@@ -132,6 +133,8 @@ import * as workspaceMembersRoute from '@/app/api/workspaces/[workspaceId]/membe
 import * as workspaceRoute from '@/app/api/workspaces/[workspaceId]/route';
 import * as workspaceRoughCutProfilesRoute from '@/app/api/workspaces/[workspaceId]/rough-cut-profiles/route';
 import * as workspaceRoughCutProfileRoute from '@/app/api/workspaces/[workspaceId]/rough-cut-profiles/[profileId]/route';
+import * as workspaceEditorialBriefsRoute from '@/app/api/workspaces/[workspaceId]/editorial-briefs/route';
+import * as workspaceEditorialBriefRoute from '@/app/api/workspaces/[workspaceId]/editorial-briefs/[briefId]/route';
 import * as roughCutRoute from '@/app/api/rough-cuts/[roughCutId]/route';
 import * as roughCutDownloadRoute from '@/app/api/rough-cuts/[roughCutId]/download/route';
 
@@ -179,7 +182,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 95;
+const EXPECTED_ROUTE_MODULE_COUNT = 97;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -265,6 +268,7 @@ interface Fixtures {
   feedbackId: string;
   roughCutId: string;
   profileId: string;
+  briefId: string;
 }
 
 async function seedFixtures(): Promise<Fixtures> {
@@ -368,6 +372,7 @@ async function seedFixtures(): Promise<Fixtures> {
     profileId: profile.id,
     status: 'READY',
   });
+  const brief = await createEditorialBrief({ workspaceId: workspace.id, name: 'Show' });
 
   const feedback = await db.userFeedback.create({
     data: {
@@ -397,6 +402,7 @@ async function seedFixtures(): Promise<Fixtures> {
     feedbackId: feedback.id,
     profileId: profile.id,
     roughCutId: roughCut.id,
+    briefId: brief.id,
   };
 }
 
@@ -1002,6 +1008,20 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/workspaces/${f.workspaceId}/rough-cut-profiles/${f.profileId}`,
     params: (f) => ({ workspaceId: f.workspaceId, profileId: f.profileId }),
     body: { minShotSeconds: 2 },
+  },
+  {
+    file: 'workspaces/[workspaceId]/editorial-briefs/route.ts',
+    module: workspaceEditorialBriefsRoute,
+    url: (f) => `/api/workspaces/${f.workspaceId}/editorial-briefs`,
+    params: (f) => ({ workspaceId: f.workspaceId }),
+    body: { name: 'Pitch night', projectType: 'ASCENSORE' },
+  },
+  {
+    file: 'workspaces/[workspaceId]/editorial-briefs/[briefId]/route.ts',
+    module: workspaceEditorialBriefRoute,
+    url: (f) => `/api/workspaces/${f.workspaceId}/editorial-briefs/${f.briefId}`,
+    params: (f) => ({ workspaceId: f.workspaceId, briefId: f.briefId }),
+    body: { name: 'Renamed' },
   },
   {
     file: 'rough-cuts/[roughCutId]/route.ts',
