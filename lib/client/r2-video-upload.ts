@@ -7,6 +7,7 @@ import {
   getRetryDelayMs,
   getUploadProgressPercent,
   isRetryableUploadError,
+  messageFromDirectUploadFailure,
   PART_RETRY_DELAYS_MS,
 } from '@/lib/client/upload-chunking';
 
@@ -59,7 +60,7 @@ export function uploadBytesWithProgress(
         resolve();
         return;
       }
-      reject(new Error(`Upload failed with status ${xhr.status}`));
+      reject(new Error(messageFromDirectUploadFailure(xhr.status, xhr.responseText)));
     };
 
     xhr.onerror = () => {

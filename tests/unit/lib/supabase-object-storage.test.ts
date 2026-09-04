@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSupabaseSignedUploadUrl,
+  deleteSupabaseObject,
   getSupabaseStorageApi,
+  isMissingSupabaseObjectResponse,
   supabaseStorageConnectOrigins,
 } from '@/lib/supabase-object-storage';
 
@@ -59,10 +61,12 @@ describe('createSupabaseSignedUploadUrl', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(SIGN_URL);
     expect(init.method).toBe('POST');
-    expect(init.body).toBe(JSON.stringify({ upsert: true }));
+    expect(init.body).toBeUndefined();
     const headers = new Headers(init.headers);
     expect(headers.get('Authorization')).toBe('Bearer service-role-key');
     expect(headers.get('apikey')).toBe('service-role-key');
+    expect(headers.get('x-upsert')).toBe('true');
+    expect(headers.get('Content-Type')).toBeNull();
   });
 
   it('encodes each object-key segment in the sign url', async () => {
@@ -91,6 +95,56 @@ describe('createSupabaseSignedUploadUrl', () => {
 
     await expect(createSupabaseSignedUploadUrl('maas-frame', 'videos/clip.mp4')).rejects.toThrow(
       'Failed to sign Supabase upload (401)'
+    );
+  });
+});
+
+describe('isMissingSupabaseObjectResponse', () => {
+  it('treats a nested NoSuchKey 400 as missing', () => {
+    expect(
+      isMissingSupabaseObjectResponse(
+        400,
+        '{"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}'
+      )
+    ).toBe(true);
+  });
+
+  it('treats a real 404 as missing', () => {
+    expect(isMissingSupabaseObjectResponse(404, '')).toBe(true);
+  });
+
+  it('does not swallow an unrelated 400', () => {
+    expect(isMissingSupabaseObjectResponse(400, '{"code":"InvalidRequest"}')).toBe(false);
+  });
+});
+
+describe('deleteSupabaseObject', () => {
+  it('does not throw when Storage wraps a missing object as HTTP 400', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () =>
+          '{"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}',
+      })
+    );
+
+    await expect(deleteSupabaseObject('maas-frame', 'videos/clip.mp4')).resolves.toBeUndefined();
+  });
+
+  it('still throws for a real delete failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => '{"code":"InvalidRequest","message":"bad delete"}',
+      })
+    );
+
+    await expect(deleteSupabaseObject('maas-frame', 'videos/clip.mp4')).rejects.toThrow(
+      'Failed to delete Supabase object (400)'
     );
   });
 });
