@@ -5,6 +5,7 @@ import {
   getRetryDelayMs,
   getUploadProgressPercent,
   isRetryableUploadError,
+  messageFromDirectUploadFailure,
   PART_RETRY_DELAYS_MS,
 } from '@/lib/client/upload-chunking';
 
@@ -228,5 +229,20 @@ describe('isRetryableUploadError', () => {
 
   it('retries a non-Error rejection rather than swallowing it', () => {
     expect(isRetryableUploadError('something went wrong')).toBe(true);
+  });
+});
+
+describe('messageFromDirectUploadFailure', () => {
+  it('reads EntityTooLarge out of a 400 that wraps a 413', () => {
+    expect(
+      messageFromDirectUploadFailure(
+        400,
+        '{"statusCode":"413","error":"Payload too large","message":"The object exceeded the maximum allowed size","code":"EntityTooLarge"}'
+      )
+    ).toBe('Upload failed with status 400: This file is larger than the storage upload limit.');
+  });
+
+  it('keeps the status-only wording when the body is not JSON', () => {
+    expect(messageFromDirectUploadFailure(400, '')).toBe('Upload failed with status 400');
   });
 });

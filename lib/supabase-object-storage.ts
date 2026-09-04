@@ -66,8 +66,7 @@ export async function createSupabaseSignedUploadUrl(bucket: string, key: string)
   const signUrl = `${api.storageOrigin}/storage/v1/object/upload/sign/${encodeURIComponent(bucket)}/${encodeObjectKey(key)}`;
   const response = await fetch(signUrl, {
     method: 'POST',
-    headers: authHeaders(api, { 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ upsert: true }),
+    headers: authHeaders(api, { 'x-upsert': 'true' }),
   });
 
   if (!response.ok) {
@@ -117,6 +116,27 @@ export async function putSupabaseObject(
   }
 }
 
+/**
+ * Storage wraps a missing object as HTTP 400 with a nested 404 payload
+ * (`code: NoSuchKey`). Cleanup after a failed PUT hits this on every retry.
+ */
+export function isMissingSupabaseObjectResponse(status: number, body: string): boolean {
+  if (status === 404) return true;
+  if (status !== 400) return false;
+  try {
+    const payload = JSON.parse(body) as {
+      code?: unknown;
+      error?: unknown;
+      statusCode?: unknown;
+    };
+    return (
+      payload.code === 'NoSuchKey' || payload.error === 'not_found' || payload.statusCode === '404'
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function deleteSupabaseObject(bucket: string, key: string): Promise<void> {
   const api = getSupabaseStorageApi();
   if (!api) {
@@ -128,12 +148,12 @@ export async function deleteSupabaseObject(bucket: string, key: string): Promise
     headers: authHeaders(api),
   });
 
-  if (!response.ok && response.status !== 404) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(
-      `Failed to delete Supabase object (${response.status}): ${detail.slice(0, 200)}`
-    );
-  }
+  if (response.ok || response.status === 404) return;
+
+  const detail = await response.text().catch(() => '');
+  if (isMissingSupabaseObjectResponse(response.status, detail)) return;
+
+  throw new Error(`Failed to delete Supabase object (${response.status}): ${detail.slice(0, 200)}`);
 }
 
 export async function headSupabaseObject(

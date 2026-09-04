@@ -101,3 +101,26 @@ export function statusFromUploadErrorMessage(message: string): number | null {
   const status = Number(match[1]);
   return Number.isFinite(status) ? status : null;
 }
+
+/**
+ * Storage often wraps a 413 in HTTP 400. The UI used to show only "status 400",
+ * which is what the two oversized MP4s looked like.
+ */
+export function messageFromDirectUploadFailure(status: number, body: string): string {
+  try {
+    const payload = JSON.parse(body) as {
+      code?: unknown;
+      message?: unknown;
+      statusCode?: unknown;
+    };
+    if (payload.code === 'EntityTooLarge' || payload.statusCode === '413') {
+      return `Upload failed with status ${status}: This file is larger than the storage upload limit.`;
+    }
+    if (typeof payload.message === 'string' && payload.message.trim()) {
+      return `Upload failed with status ${status}: ${payload.message.trim()}`;
+    }
+  } catch {
+    // The body is not JSON; fall through to the status-only message.
+  }
+  return `Upload failed with status ${status}`;
+}
