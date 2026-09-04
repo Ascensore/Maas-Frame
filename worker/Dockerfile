@@ -21,6 +21,7 @@ COPY worker/diarize.py ./diarize.py
 COPY lib/timecode.ts ./lib/timecode.ts
 COPY lib/folders.ts ./lib/folders.ts
 COPY lib/export-file-names.ts ./lib/export-file-names.ts
+COPY lib/media-job-queue.ts ./lib/media-job-queue.ts
 COPY lib/rough-cut ./lib/rough-cut
 
 CMD ["bun", "run", "start"]

@@ -1,11 +1,10 @@
 import { basename } from 'node:path';
 import type { Pool } from 'pg';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { assembleRoughCut, type AssembleDeps } from '@/lib/rough-cut/assemble-job';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import { BUILTIN_ROUGH_CUT_PROFILE, snapshotFromProfile } from '@/lib/rough-cut/profile';
 import {
-  TRANSCRIPT_RETRY_DELAY_SECONDS,
   WAITING_FOR_TRANSCRIPT_WARNING,
   WEAK_TRANSCRIPT_WARNING,
 } from '@/lib/rough-cut/transcript-source';
@@ -98,6 +97,8 @@ function harness(options: {
   vad?: Record<string, Array<{ start: number; end: number }>>;
   rms?: (versionId: string, start: number, end: number) => number;
   syncOffsets?: number[];
+  /** Both the stored wav and a fresh extraction fail, as on a worker without ffmpeg. */
+  audioUnavailable?: boolean;
 }) {
   const queries: Query[] = [];
   const runs: string[][] = [];
@@ -160,9 +161,12 @@ function harness(options: {
     run,
     downloadObject: async (key) => {
       downloads.push(key);
+      if (options.audioUnavailable) throw new Error(`no such object ${key}`);
     },
     objectKeyFromProvider: () => null,
-    extractAudio: async () => {},
+    extractAudio: async () => {
+      if (options.audioUnavailable) throw new Error('ffmpeg is not installed');
+    },
     scriptDir: '/scripts',
   };
 
@@ -178,11 +182,18 @@ function harness(options: {
   const mediaJobInserts = () =>
     queries.filter((entry) => entry.sql.includes('INSERT INTO media_jobs'));
   const vadRuns = () => runs.filter((args) => args[1] === '--vad-only');
+  const failed = () => queries.find((entry) => entry.sql.includes("status = 'FAILED'"));
 
-  return { deps, queries, runs, downloads, persisted, mediaJobInserts, vadRuns };
+  return { deps, queries, runs, downloads, persisted, mediaJobInserts, vadRuns, failed };
 }
 
 describe('assembleRoughCut with a transcript', () => {
+  // The fallback path shells out to full diarization when this flag is on;
+  // pin it so the suite does not depend on the machine running it.
+  beforeEach(() => {
+    vi.stubEnv('OPENFRAME_ENABLE_DIARIZATION', 'false');
+  });
+
   it('builds a linear cut from transcript segments without touching the audio', async () => {
     const h = harness({
       layout: 'LINEAR',
@@ -250,7 +261,7 @@ describe('assembleRoughCut with a transcript', () => {
     );
     expect(inserts[0]!.params[0]).toBe('ver-a');
     expect(JSON.parse(inserts[0]!.params[1] as string)).toEqual({ roughCutId: 'cut-1' });
-    expect(inserts[0]!.params[2]).toBe(TRANSCRIPT_RETRY_DELAY_SECONDS);
+    expect(inserts[0]!.params[2]).toBe(60);
 
     const warningUpdate = h.queries.find((entry) =>
       entry.sql.includes('UPDATE rough_cuts SET warnings')
@@ -301,7 +312,7 @@ describe('assembleRoughCut with a transcript', () => {
     ]);
   });
 
-  it('treats a READY transcript with no segments as missing', async () => {
+  it('falls back when a READY transcript has no segments', async () => {
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -318,7 +329,7 @@ describe('assembleRoughCut with a transcript', () => {
       [2, 6],
     ]);
     expect(result?.warnings).toEqual([
-      { code: WEAK_TRANSCRIPT_WARNING, message: expect.stringContaining('has no segments') },
+      { code: WEAK_TRANSCRIPT_WARNING, message: expect.stringContaining('has no spoken segments') },
     ]);
     expect(h.vadRuns()).toHaveLength(1);
   });
@@ -352,9 +363,11 @@ describe('assembleRoughCut with a transcript', () => {
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,
+      // Stored in the opposite order to their chronological (title) order, so
+      // a slot looked up by position rather than by version would swap them.
       videos: [
-        video({ version_id: 'ver-a', title: 'Clip 1', position: 0, duration: 20 }),
-        video({ version_id: 'ver-b', title: 'Clip 2', position: 1, duration: 20 }),
+        video({ version_id: 'ver-b', title: 'Clip 2', position: 0, duration: 20 }),
+        video({ version_id: 'ver-a', title: 'Clip 1', position: 1, duration: 20 }),
       ],
       transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
       segments: { 't-a': [segment(0, 5, 'the whole first clip is speech')] },
@@ -403,7 +416,7 @@ describe('assembleRoughCut with a transcript', () => {
         { id: 't-wide', version_id: 'ver-wide', status: 'PENDING', created_at: NOW_DATE() },
         { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() },
       ],
-      segments: { 't-a': [segment(2, 8, 'hello there everyone')] },
+      segments: { 't-a': [segment(2, 8, 'hello there everyone and welcome')] },
       syncOffsets: [0, 3],
       rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
     });
@@ -490,6 +503,112 @@ describe('assembleRoughCut with a transcript', () => {
       { code: WEAK_TRANSCRIPT_WARNING, message: expect.stringContaining('No transcript exists') },
     ]);
     expect(h.vadRuns().map((args) => versionIdFromWav(args[2]))).toEqual(['ver-wide']);
+  });
+  it('names a failed transcription and uses voice activity for multicam', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      transcripts: [
+        { id: 't-wide', version_id: 'ver-wide', status: 'FAILED', created_at: NOW_DATE() },
+        { id: 't-a', version_id: 'ver-a', status: 'FAILED', created_at: NOW_DATE() },
+      ],
+      vad: { 'ver-wide': [{ start: 4, end: 9 }] },
+      rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(result?.warnings).toEqual([
+      { code: WEAK_TRANSCRIPT_WARNING, message: expect.stringContaining('Transcription failed') },
+    ]);
+    expect(h.vadRuns().map((args) => versionIdFromWav(args[2]))).toEqual(['ver-wide']);
+    expect(result?.decisions?.edits.find((edit) => edit.sourceVersionId === 'ver-a')).toMatchObject(
+      { timelineStartSeconds: 4, timelineEndSeconds: 9 }
+    );
+  });
+
+  it('falls back when every transcript segment is blank', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
+      segments: { 't-a': [segment(1, 4, '   '), segment(5, 9, '')] },
+      vad: { 'ver-a': [{ start: 2, end: 6 }] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(result?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual([
+      [2, 6],
+    ]);
+    expect(result?.warnings).toEqual([
+      { code: WEAK_TRANSCRIPT_WARNING, message: expect.stringContaining('no spoken segments') },
+    ]);
+    expect(h.vadRuns()).toHaveLength(1);
+  });
+
+  it('keeps each clip in full when neither transcript nor voice activity finds speech', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+      vad: { 'ver-a': [] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(result?.decisions?.edits).toEqual([
+      {
+        timelineStartSeconds: 0,
+        timelineEndSeconds: 30,
+        inSeconds: 0,
+        outSeconds: 30,
+        sourceVersionId: 'ver-a',
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+    ]);
+    expect(result?.warnings.map((warning) => warning.code)).toEqual([
+      WEAK_TRANSCRIPT_WARNING,
+      'no-speech-detected',
+    ]);
+  });
+
+  it('marks the run FAILED with the error when the fallback cannot get audio', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+      audioUnavailable: true,
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow('ffmpeg is not installed');
+
+    expect(h.failed()?.params).toEqual(['cut-1', 'ffmpeg is not installed']);
+    expect(h.persisted()).toBeNull();
+  });
+
+  it('marks the run FAILED when the folder has no file-backed video left', async () => {
+    const h = harness({ layout: 'LINEAR', createdAt: ONE_MINUTE_AGO, videos: [], transcripts: [] });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(
+      'at least one file-backed video'
+    );
+
+    expect(h.failed()?.params).toEqual([
+      'cut-1',
+      'A rough cut needs at least one file-backed video in this folder',
+    ]);
   });
 });
 

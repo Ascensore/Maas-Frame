@@ -18,6 +18,12 @@ describe('isWaitingForTranscript', () => {
   it('is true only for a RUNNING cut carrying the waiting warning', () => {
     const waiting = [{ code: 'waiting-for-transcript' }];
     expect(isWaitingForTranscript('RUNNING', waiting)).toBe(true);
+    expect(
+      isWaitingForTranscript('RUNNING', [
+        { code: 'weak-transcript' },
+        { code: 'waiting-for-transcript' },
+      ])
+    ).toBe(true);
     expect(isWaitingForTranscript('RUNNING', [{ code: 'weak-transcript' }])).toBe(false);
     expect(isWaitingForTranscript('RUNNING', null)).toBe(false);
     expect(isWaitingForTranscript('PENDING', waiting)).toBe(false);

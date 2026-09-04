@@ -276,7 +276,7 @@ export function transcriptFallbackWarning(
             TRANSCRIPT_WAIT_LIMIT_SECONDS / 60
           )} minutes`
         : reason === 'empty'
-          ? `The transcript${label} has no segments`
+          ? `The transcript${label} has no spoken segments`
           : `No transcript exists${label}`;
   return {
     code: WEAK_TRANSCRIPT_WARNING,

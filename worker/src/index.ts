@@ -8,6 +8,7 @@ import PgBoss from 'pg-boss';
 import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
+import { claimDueMediaJobs } from '../lib/media-job-queue';
 import { importDriveFile } from './import-drive';
 import { materializeRoughCut } from './materialize-rough-cut';
 import {
@@ -825,30 +826,19 @@ async function publishPending(boss: PgBoss): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query(
-      `SELECT id, kind, version_id, payload
-       FROM media_jobs
-       WHERE status = 'PENDING'
-         AND (run_after IS NULL OR run_after <= NOW())
-       ORDER BY created_at ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT 20`
-    );
-    for (const row of result.rows) {
-      await client.query(`UPDATE media_jobs SET status = 'QUEUED', updated_at = NOW() WHERE id = $1`, [row.id]);
-    }
+    const jobs = await claimDueMediaJobs(client);
     await client.query('COMMIT');
-    for (const row of result.rows) {
+    for (const job of jobs) {
       try {
-        await boss.send(queueForKind(row.kind), {
-          mediaJobId: row.id,
-          versionId: row.version_id,
-          payload: row.payload,
+        await boss.send(queueForKind(job.kind), {
+          mediaJobId: job.id,
+          versionId: job.versionId,
+          payload: job.payload,
         } satisfies MediaJobData);
       } catch (error) {
         await pool.query(
           `UPDATE media_jobs SET status = 'PENDING', updated_at = NOW() WHERE id = $1 AND status = 'QUEUED'`,
-          [row.id]
+          [job.id]
         );
         throw error;
       }

@@ -329,13 +329,8 @@ async function assembleLinearLayout(
   await persistReady(deps, options.roughCutId, decisions, syncReport, warnings, rate);
 }
 
-export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): Promise<void> {
-  const warnings: RoughCutWarning[] = [];
-  await deps.pool.query(
-    `UPDATE rough_cuts SET status = 'RUNNING', updated_at = NOW() WHERE id = $1`,
-    [roughCutId]
-  );
-
+/** The run's row, its resolved settings, and the folder's file-backed videos. */
+async function loadRun(deps: AssembleDeps, roughCutId: string) {
   const cutRes = await deps.pool.query(
     `SELECT id, project_id, folder_id, profile_snapshot, layout, created_at FROM rough_cuts WHERE id = $1`,
     [roughCutId]
@@ -374,9 +369,22 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     throw new Error('A multicam rough cut needs at least two file-backed videos in this folder');
   }
 
-  const tmp = await mkdtemp(join(tmpdir(), 'of-rough-'));
+  return { cut, profile, assembly, layout, videosRes };
+}
 
+export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): Promise<void> {
+  const warnings: RoughCutWarning[] = [];
+  await deps.pool.query(
+    `UPDATE rough_cuts SET status = 'RUNNING', updated_at = NOW() WHERE id = $1`,
+    [roughCutId]
+  );
+
+  // Everything after the status flip runs inside the try, so a failure such as
+  // a folder that lost its videos lands on the row as FAILED rather than
+  // leaving it RUNNING with only the media job marked failed.
+  let tmp: string | null = null;
   try {
+    const { cut, profile, assembly, layout, videosRes } = await loadRun(deps, roughCutId);
     const clips: CameraClip[] = [];
     const metadataByVideoId = new Map<string, Record<string, unknown>>();
     for (const row of videosRes.rows) {
@@ -466,6 +474,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       slots.push(await resolveTranscriptSlot(deps, decision));
     }
 
+    tmp = await mkdtemp(join(tmpdir(), 'of-rough-'));
     const wavFor = createWavCache(deps, tmp);
 
     if (layout !== 'MULTICAM') {
@@ -719,7 +728,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     );
     throw error;
   } finally {
-    await rm(tmp, { recursive: true, force: true });
+    if (tmp) await rm(tmp, { recursive: true, force: true });
   }
 }
 

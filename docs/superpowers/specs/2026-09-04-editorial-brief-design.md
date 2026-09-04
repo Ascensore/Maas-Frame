@@ -446,4 +446,5 @@ classified in `tests/api/auth-matrix.test.ts` or the suite fails.
   stop skipping folder profiles entirely (small, related fix).
 - ~~Exact pg-boss retry configuration for the waiting rule.~~ Resolved: a delayed `media_jobs`
   row (`run_after`) rather than pg-boss retries, so the wait survives a worker restart and shows
-  up in the same table as every other job.
+  up in the same table as every other job. The claim query that honours `run_after` lives in
+  `lib/media-job-queue.ts` so it is tested against the real test database.
