@@ -1,4 +1,5 @@
 import { nominalFps, secondsToFrames, type FrameRate } from '../timecode';
+import { exportMarkers, type ExportMarker } from './export-markers';
 import type { CameraClip, RoughCutDecisionList } from './types';
 
 function xmlEscape(value: string): string {
@@ -71,12 +72,29 @@ function clipItemXml(options: {
               </clipitem>`;
 }
 
-export function buildFcp7Xml(options: {
+/** A sequence marker; `out` is -1 for a point, as Premiere and Resolve write it. */
+function markerXml(marker: ExportMarker, rate: FrameRate): string {
+  const inFrames = secondsToFrames(marker.timelineSeconds, rate);
+  const outFrames =
+    marker.durationSeconds === null ? -1 : inFrames + secondsToFrames(marker.durationSeconds, rate);
+  return `<marker>
+      <comment>${xmlEscape(marker.comment)}</comment>
+      <name>${xmlEscape(marker.title)}</name>
+      <in>${inFrames}</in>
+      <out>${outFrames}</out>
+    </marker>`;
+}
+
+export type Fcp7BuildOptions = {
   name: string;
   decisions: RoughCutDecisionList;
   clips: CameraClip[];
   handleFrames: number;
-}): string {
+  /** Also export the cut islands as a second marker set. Off by default. */
+  includeCuts?: boolean;
+};
+
+export function buildFcp7Xml(options: Fcp7BuildOptions): string {
   const rate: FrameRate = {
     num: options.decisions.rate.num,
     den: options.decisions.rate.den,
@@ -146,6 +164,11 @@ export function buildFcp7Xml(options: {
             </track>`;
     });
 
+  const markers = exportMarkers(options.decisions, { includeCuts: options.includeCuts ?? false })
+    .map((marker) => markerXml(marker, rate))
+    .join('\n    ');
+  const markersXml = markers ? `\n    ${markers}` : '';
+
   const sequenceDuration = options.decisions.edits.reduce((max, edit) => {
     const end = secondsToFrames(edit.timelineEndSeconds, rate);
     return end > max ? end : max;
@@ -176,7 +199,7 @@ export function buildFcp7Xml(options: {
         </track>
 ${stackedTracks.join('\n')}
       </video>
-    </media>
+    </media>${markersXml}
   </sequence>
 </xmeml>
 `;

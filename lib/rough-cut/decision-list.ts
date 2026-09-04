@@ -5,9 +5,12 @@ import { buildRoughCutTargetUrl } from './media-paths';
 import {
   CUT_REASON_CODES,
   EDIT_REASON_CODES,
+  MARKER_KINDS,
+  MARKER_REASON_CODES,
   type CameraClip,
   type CutIsland,
   type EditDecision,
+  type Marker,
   type RoughCutDecisionList,
 } from './types';
 
@@ -31,6 +34,15 @@ const cutSchema = z.object({
   transcriptText: z.string().nullable(),
 });
 
+const markerSchema = z.object({
+  key: z.string().min(1),
+  kind: z.enum(MARKER_KINDS),
+  timelineSeconds: z.number().finite().nonnegative(),
+  durationSeconds: z.number().finite().nonnegative().nullable(),
+  title: z.string(),
+  reason: z.object({ code: z.enum(MARKER_REASON_CODES), summary: z.string() }),
+});
+
 const clipSchema = z.object({
   versionId: z.string().min(1),
   videoId: z.string().min(1),
@@ -52,6 +64,7 @@ export const roughCutDecisionListSchema = z.object({
     dropFrame: z.boolean(),
   }),
   cuts: z.array(cutSchema).optional(),
+  markers: z.array(markerSchema).optional(),
 });
 
 export function parseRoughCutDecisionList(value: unknown): RoughCutDecisionList | null {
@@ -67,12 +80,14 @@ export function assembleDecisionList(options: {
   mediaPathPrefix: string;
   rate: FrameRate;
   cuts?: CutIsland[];
+  markers?: Marker[];
 }): RoughCutDecisionList {
   const tracks = assignStackedTracks(options.clips);
   return {
     version: 1,
     edits: options.edits,
     ...(options.cuts && options.cuts.length > 0 ? { cuts: options.cuts } : {}),
+    ...(options.markers && options.markers.length > 0 ? { markers: options.markers } : {}),
     clips: options.clips.map((clip) => {
       const fileName = options.fileNames.get(clip.versionId) ?? `${clip.role}.mp4`;
       return {
