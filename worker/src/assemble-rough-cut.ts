@@ -5,6 +5,7 @@ import {
   pickHighestRmsCamera,
   type RmsSample,
 } from '../lib/rough-cut/attribute';
+import { applyCameraRole, applyClipOrder, assemblyFromSnapshot } from '../lib/rough-cut/assembly';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from '../lib/rough-cut/camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from '../lib/rough-cut/decision-list';
 import { computeRoughCutDecisions, computeLinearDecisions } from '../lib/rough-cut/decisions';
@@ -153,6 +154,7 @@ async function assembleLinearLayout(
     wavs: string[];
     warnings: RoughCutWarning[];
     metadataByVideoId: Map<string, Record<string, unknown>>;
+    clipOrder: string[] | null;
   }
 ): Promise<void> {
   const { profile, clips, wavs, warnings } = options;
@@ -162,11 +164,13 @@ async function assembleLinearLayout(
       metadataStringRecord(options.metadataByVideoId.get(clip.videoId) ?? {})
     )
   );
-  const orderedGuess = sortClipsChronologically(guessClips, {
-    num: clips[0]!.frameRateNum,
-    den: clips[0]!.frameRateDen,
-    dropFrame: clips[0]!.dropFrame,
-  });
+  const orderedGuess = options.clipOrder
+    ? applyClipOrder(guessClips, options.clipOrder)
+    : sortClipsChronologically(guessClips, {
+        num: clips[0]!.frameRateNum,
+        den: clips[0]!.frameRateDen,
+        dropFrame: clips[0]!.dropFrame,
+      });
   const byVideoId = new Map(clips.map((clip) => [clip.videoId, clip]));
   const orderedClips = applySequentialOffsets(
     orderedGuess.map((guess) => byVideoId.get(guess.id)).filter((clip): clip is CameraClip => Boolean(clip))
@@ -237,6 +241,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
   const cut = cutRes.rows[0];
   if (!cut) throw new Error('Rough cut not found');
   const profile = profileFromSnapshot(cut.profile_snapshot);
+  const assembly = assemblyFromSnapshot(cut.profile_snapshot);
   const layout = readLayout(cut.layout);
 
   const videosRes = await deps.pool.query(
@@ -287,7 +292,11 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         videoId: row.id,
         versionId: row.version_id,
         title: row.title,
-        role: inferCameraRole(row.title, metadataStringRecord(metadata), profile.cameraRoleMetadataKey),
+        role: applyCameraRole(
+          row.id,
+          inferCameraRole(row.title, metadataStringRecord(metadata), profile.cameraRoleMetadataKey),
+          assembly.cameraRoles
+        ),
         position: row.position,
         offsetSeconds: 0,
         durationSeconds: typeof row.duration === 'number' ? row.duration : 0,
@@ -325,6 +334,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         wavs,
         warnings,
         metadataByVideoId,
+        clipOrder: assembly.clipOrder,
       });
       return;
     }

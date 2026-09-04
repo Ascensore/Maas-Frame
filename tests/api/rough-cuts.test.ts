@@ -349,6 +349,107 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
   });
 
+  it('stores a manual clip order on the snapshot and returns cameras in that order', async () => {
+    const scenario = await seedProject();
+    const first = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Clip_001',
+      position: 0,
+    });
+    const second = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Clip_002',
+      position: 1,
+    });
+    await createVersion({
+      videoParentId: first.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    await createVersion({
+      videoParentId: second.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: {
+          folderId: null,
+          layout: 'SEQUENTIAL',
+          clipOrder: [second.id, first.id],
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string };
+      cameras: Array<{ videoId: string }>;
+    }>(response);
+    expect(payload.cameras.map((camera) => camera.videoId)).toEqual([second.id, first.id]);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    const snapshot = stored.profileSnapshot as { clipOrder?: string[] };
+    expect(snapshot.clipOrder).toEqual([second.id, first.id]);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
+  });
+
+  it('stores camera names and the safety camera on a multicam cut', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: {
+          folderId: null,
+          layout: 'MULTICAM',
+          cameraRoles: { [scenario.camA.id]: 'Interview', [scenario.camB.id]: 'Wide' },
+          wideCameraRole: 'Wide',
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string };
+      cameras: Array<{ videoId: string; role: string }>;
+    }>(response);
+    const roles = Object.fromEntries(
+      payload.cameras.map((camera) => [camera.videoId, camera.role])
+    );
+    expect(roles[scenario.camA.id]).toBe('INTERVIEW');
+    expect(roles[scenario.camB.id]).toBe('WIDE');
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    const snapshot = stored.profileSnapshot as {
+      cameraRoles?: Record<string, string>;
+      wideCameraRole?: string;
+    };
+    expect(snapshot.cameraRoles?.[scenario.camA.id]).toBe('INTERVIEW');
+    expect(snapshot.wideCameraRole).toBe('WIDE');
+  });
+
+  it('returns 400 for a clipOrder id that is not in the folder and writes no row', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, clipOrder: ['not-a-video'] },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(0);
+  });
+
   it('returns 400 for an unknown layout and writes no row', async () => {
     const scenario = await seedMulticam();
     signedInAs(scenario.owner);

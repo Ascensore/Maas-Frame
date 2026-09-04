@@ -5,7 +5,12 @@ import { apiErrors, HttpStatus, successResponse, withCacheControl } from '@/lib/
 import { isRoughCutFeatureEnabled } from '@/lib/feature-flags';
 import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
-import { snapshotFromProfile } from '@/lib/rough-cut/profile';
+import {
+  parseCameraRoles,
+  parseClipOrder,
+  parseWideCameraRole,
+  snapshotWithAssembly,
+} from '@/lib/rough-cut/assembly';
 import {
   guessRoughCutLayout,
   minimumClipsForLayout,
@@ -151,13 +156,25 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.conflict('A rough cut is already running for this folder');
     }
 
-    const cameras = previewCameraRoles(fileBacked, profile.cameraRoleMetadataKey);
-    const orderIds = new Set(guess.orderedIds);
+    const allowedIds = new Set(fileBacked.map((video) => video.id));
+    const clipOrderParsed = parseClipOrder(body?.clipOrder, allowedIds);
+    if (!clipOrderParsed.ok) return apiErrors.badRequest(clipOrderParsed.error);
+    const cameraRolesParsed = parseCameraRoles(body?.cameraRoles, allowedIds);
+    if (!cameraRolesParsed.ok) return apiErrors.badRequest(cameraRolesParsed.error);
+    const wideRoleParsed = parseWideCameraRole(body?.wideCameraRole);
+    if (!wideRoleParsed.ok) return apiErrors.badRequest(wideRoleParsed.error);
+
+    const cameras = previewCameraRoles(fileBacked, profile.cameraRoleMetadataKey).map((camera) => ({
+      ...camera,
+      role: cameraRolesParsed.value?.[camera.videoId] ?? camera.role,
+    }));
+    const orderIds = clipOrderParsed.value ?? guess.orderedIds;
+    const orderSet = new Set(orderIds);
     const orderedCameras = [
-      ...guess.orderedIds
+      ...orderIds
         .map((id) => cameras.find((camera) => camera.videoId === id))
         .filter((camera): camera is (typeof cameras)[number] => Boolean(camera)),
-      ...cameras.filter((camera) => !orderIds.has(camera.videoId)),
+      ...cameras.filter((camera) => !orderSet.has(camera.videoId)),
     ];
     const referenceVersionId =
       orderedCameras.find((camera) => camera.versionId)?.versionId ??
@@ -175,7 +192,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         profileId: profile.id,
         requestedById: session.user.id,
         layout,
-        profileSnapshot: snapshotFromProfile(profile),
+        profileSnapshot: snapshotWithAssembly(profile, {
+          clipOrder: clipOrderParsed.value,
+          cameraRoles: cameraRolesParsed.value,
+          wideCameraRole: wideRoleParsed.value,
+        }),
       },
     });
 

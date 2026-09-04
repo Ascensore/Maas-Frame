@@ -1,5 +1,6 @@
 import { startTimecodeToSeconds, type FrameRate } from '../timecode';
 import { inferCameraRole } from './camera-roles';
+import { parseCreationTimeFromFileName, parseMediaCreationTime } from './probe-timecode';
 import type { CameraClip, RoughCutLayout } from './types';
 
 export const LAYOUT_GUESS_REASONS = [
@@ -40,6 +41,9 @@ const RECORDED_AT_KEYS = [
   'recordedAt',
   'creation_time',
   'creationTime',
+  'creationdate',
+  'encoded_date',
+  'tagged_date',
   'created',
   'date',
   'timestamp',
@@ -74,13 +78,8 @@ export function layoutFromEditMode(
 
 export function parseRecordedAtMs(value: string | null | undefined): number | null {
   if (!value || !value.trim()) return null;
-  const trimmed = value.trim();
-  const isoish = /T/.test(trimmed) ? trimmed : trimmed.replace(' ', 'T');
-  const ms = Date.parse(isoish);
-  if (!Number.isFinite(ms)) return null;
-  const year = new Date(ms).getUTCFullYear();
-  if (year < 1990 || year > 2100) return null;
-  return ms;
+  const parsed = parseMediaCreationTime(value);
+  return parsed ? parsed.getTime() : null;
 }
 
 export function naturalCompare(left: string, right: string): number {
@@ -117,7 +116,14 @@ function recordedAtMs(clip: LayoutGuessClip): number | null {
     const parsed = parseRecordedAtMs(raw);
     if (parsed !== null) return parsed;
   }
-  return null;
+  for (const [key, raw] of Object.entries(clip.metadata)) {
+    if (!raw) continue;
+    if (!/date|time|created|recorded/i.test(key)) continue;
+    const parsed = parseRecordedAtMs(raw);
+    if (parsed !== null) return parsed;
+  }
+  const fromName = parseCreationTimeFromFileName(clip.title);
+  return fromName ? fromName.getTime() : null;
 }
 
 function rangesOverlap(
