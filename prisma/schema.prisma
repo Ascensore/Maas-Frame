@@ -1071,7 +1071,7 @@ model RoughCut {
   frameRateDen     Int?            @map("frame_rate_den")
   dropFrame        Boolean         @default(false) @map("drop_frame")
   profileSnapshot  Json            @map("profile_snapshot")
-  syncReport       Json?
+  syncReport       Json?           @map("sync_report")
   decisions        Json?
   warnings         Json?
   error            String?         @db.Text
