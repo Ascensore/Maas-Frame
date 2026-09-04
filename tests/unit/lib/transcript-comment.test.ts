@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   commentOverlapsSegment,
   commentRangeFromHighlight,
+  commentsAnchoredToSegment,
   commentsForSegment,
+  isCommentAnchorSegment,
+  quoteFromTimedSpans,
   rangeFromSelectionNodes,
+  spanOverlapsComment,
 } from '@/lib/transcript-comment';
 
 describe('rangeFromSelectionNodes', () => {
@@ -57,6 +61,48 @@ describe('commentRangeFromHighlight', () => {
       })
     ).toBeNull();
   });
+
+  it('rebuilds the quote from timed spans when Selection has no spaces', () => {
+    expect(
+      commentRangeFromHighlight({
+        quote: "firsttime,there'saplatform",
+        first: { start: 4, end: 4.4 },
+        last: { start: 7.2, end: 7.6 },
+        spans: [
+          { start: 4, end: 4.4, text: 'first' },
+          { start: 4.4, end: 4.8, text: 'time,' },
+          { start: 6.8, end: 7.2, text: "there's" },
+          { start: 7.2, end: 7.6, text: 'a' },
+          { start: 7.5, end: 8.1, text: 'platform' },
+        ],
+      })
+    ).toEqual({
+      start: 4,
+      end: 7.6,
+      quote: "first time, there's a platform",
+    });
+  });
+});
+
+describe('quoteFromTimedSpans', () => {
+  const words = [
+    { start: 1, end: 1.2, text: 'Cut' },
+    { start: 1.2, end: 1.5, text: 'the' },
+    { start: 1.5, end: 2.1, text: 'wide' },
+  ];
+
+  it('joins overlapping words with spaces in time order', () => {
+    expect(quoteFromTimedSpans([words[2]!, words[0]!, words[1]!], 1, 2.1)).toBe('Cut the wide');
+  });
+
+  it('keeps a word that only partly overlaps In/Out', () => {
+    expect(quoteFromTimedSpans(words, 1.3, 1.6)).toBe('the wide');
+  });
+
+  it('picks the word that contains a point time', () => {
+    expect(quoteFromTimedSpans(words, 1.2, 1.2)).toBe('the');
+    expect(quoteFromTimedSpans(words, 1.5, 1.5)).toBe('wide');
+  });
 });
 
 describe('commentOverlapsSegment', () => {
@@ -94,5 +140,57 @@ describe('commentsForSegment', () => {
     expect(commentsForSegment(comments, { startSec: 10, endSec: 20 }).map((row) => row.id)).toEqual(
       ['b']
     );
+  });
+});
+
+describe('isCommentAnchorSegment', () => {
+  const lines = [
+    { startSec: 4, endSec: 7 },
+    { startSec: 7, endSec: 8 },
+    { startSec: 8, endSec: 10 },
+    { startSec: 12, endSec: 16 },
+  ];
+  const range = { timestamp: 4.2, timestampEnd: 9.5 };
+
+  it('anchors a spanning comment on the first overlapping line only', () => {
+    expect(isCommentAnchorSegment(range, lines, 0)).toBe(true);
+    expect(isCommentAnchorSegment(range, lines, 1)).toBe(false);
+    expect(isCommentAnchorSegment(range, lines, 2)).toBe(false);
+    expect(isCommentAnchorSegment(range, lines, 3)).toBe(false);
+  });
+
+  it('anchors on the first overlapping line when In sits in a gap before it', () => {
+    const lateStart = { timestamp: 10.5, timestampEnd: 14 };
+    expect(isCommentAnchorSegment(lateStart, lines, 3)).toBe(true);
+    expect(isCommentAnchorSegment(lateStart, lines, 2)).toBe(false);
+  });
+});
+
+describe('commentsAnchoredToSegment', () => {
+  const lines = [
+    { startSec: 0, endSec: 5 },
+    { startSec: 5, endSec: 10 },
+    { startSec: 10, endSec: 15 },
+  ];
+
+  it('shows a range comment once, on the line that first overlaps it', () => {
+    const comments = [
+      { id: 'range', timestamp: 3, timestampEnd: 12 },
+      { id: 'point', timestamp: 11, timestampEnd: null },
+    ];
+    expect(commentsAnchoredToSegment(comments, lines, 0).map((row) => row.id)).toEqual(['range']);
+    expect(commentsAnchoredToSegment(comments, lines, 1).map((row) => row.id)).toEqual([]);
+    expect(commentsAnchoredToSegment(comments, lines, 2).map((row) => row.id)).toEqual(['point']);
+  });
+});
+
+describe('spanOverlapsComment', () => {
+  const range = { timestamp: 4.2, timestampEnd: 8.1 };
+
+  it('keeps words that overlap In/Out and drops words that only touch the bounds', () => {
+    expect(spanOverlapsComment({ start: 4.0, end: 4.4 }, range)).toBe(true);
+    expect(spanOverlapsComment({ start: 7.8, end: 8.2 }, range)).toBe(true);
+    expect(spanOverlapsComment({ start: 8.1, end: 8.4 }, range)).toBe(false);
+    expect(spanOverlapsComment({ start: 3.5, end: 4.0 }, range)).toBe(false);
   });
 });

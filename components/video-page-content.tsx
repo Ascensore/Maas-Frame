@@ -1007,6 +1007,11 @@ export function VideoPageContent({
             getCurrentTime={getCurrentTime}
             canManage={canManageCaptions}
             comments={transcriptCommentMarkers}
+            draftRange={
+              commentRangeStart !== null && commentRangeEnd !== null
+                ? { start: commentRangeStart, end: commentRangeEnd }
+                : null
+            }
             onSeek={handleTranscriptSeek}
             onCommentRange={handleTranscriptCommentRange}
             onOpenThread={handleOpenTranscriptThread}
