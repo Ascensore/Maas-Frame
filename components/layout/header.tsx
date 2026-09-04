@@ -4,26 +4,8 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { usePathname } from 'next/navigation';
-import {
-  Settings,
-  LogOut,
-  User,
-  Menu,
-  Keyboard,
-  LayoutDashboard,
-  MessageSquareQuote,
-  Search,
-  Plus,
-} from 'lucide-react';
+import { User, Menu, LayoutDashboard, MessageSquareQuote, Search, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   Sheet,
   SheetContent,
@@ -35,12 +17,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { ThemeToggle } from '@/components/theme-toggle';
 import { BrandLockup, BrandMark } from '@/components/brand/brand-mark';
 import { APP_NAV_ITEMS, navItemActive } from '@/components/layout/app-sidebar';
+import { UserAccountMenu } from '@/components/layout/user-account-menu';
 import { cn } from '@/lib/utils';
-
-const KeyboardShortcutsModal = dynamic(
-  () => import('@/components/keyboard-shortcuts-modal').then((mod) => mod.KeyboardShortcutsModal),
-  { ssr: false }
-);
 
 const SearchModal = dynamic(
   () => import('@/components/search-modal').then((mod) => mod.SearchModal),
@@ -61,7 +39,6 @@ interface HeaderProps {
 
 export function Header({ user, showAppNavigation = false, embedded = false }: HeaderProps) {
   const pathname = usePathname();
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
@@ -133,7 +110,7 @@ export function Header({ user, showAppNavigation = false, embedded = false }: He
               <span className="sr-only">Toggle menu</span>
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-64 bg-sidebar">
+          <SheetContent side="left" className="flex w-64 flex-col bg-sidebar">
             <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
             <SheetDescription className="sr-only">
               Access your projects and workspaces
@@ -142,6 +119,11 @@ export function Header({ user, showAppNavigation = false, embedded = false }: He
               <BrandLockup />
             </div>
             {mobileNav}
+            {user ? (
+              <div className="mt-auto px-1 pb-2">
+                <UserAccountMenu user={user} />
+              </div>
+            ) : null}
           </SheetContent>
         </Sheet>
 
@@ -258,58 +240,7 @@ export function Header({ user, showAppNavigation = false, embedded = false }: He
 
           <ThemeToggle />
 
-          {user ? (
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="relative h-8 w-8 rounded-full">
-                  <Avatar className="h-8 w-8">
-                    <AvatarImage src={user.image ?? undefined} alt={user.name ?? ''} />
-                    <AvatarFallback>{user.name?.charAt(0).toUpperCase() ?? 'U'}</AvatarFallback>
-                  </Avatar>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                sideOffset={10}
-                className="w-64 min-w-64 rounded-xl border bg-popover/98 p-1 shadow-2xl backdrop-blur-md"
-              >
-                <div className="rounded-lg px-3 py-2.5">
-                  <div className="flex flex-col space-y-1 leading-none">
-                    {user.name && <p className="font-medium">{user.name}</p>}
-                    {user.email && (
-                      <p className="truncate text-sm text-muted-foreground">{user.email}</p>
-                    )}
-                  </div>
-                </div>
-                <DropdownMenuSeparator />
-                {user.isAdmin && (
-                  <DropdownMenuItem asChild>
-                    <Link href="/admin">
-                      <LayoutDashboard className="h-4 w-4 mr-2" />
-                      Admin Panel
-                    </Link>
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem asChild>
-                  <Link href="/settings">
-                    <Settings className="h-4 w-4 mr-2" />
-                    Settings
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShortcutsOpen(true)}>
-                  <Keyboard className="h-4 w-4 mr-2" />
-                  Shortcuts
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link href="/signout">
-                    <LogOut className="h-4 w-4 mr-2" />
-                    Sign out
-                  </Link>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
+          {!user && (
             <Button asChild variant="outline" size="sm" className="rounded-full">
               <Link href="/login">
                 <User className="h-4 w-4 mr-1" />
@@ -319,7 +250,6 @@ export function Header({ user, showAppNavigation = false, embedded = false }: He
           )}
         </div>
       </div>
-      <KeyboardShortcutsModal open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       {user && showAppNavigation && <SearchModal open={searchOpen} onOpenChange={setSearchOpen} />}
     </header>
   );

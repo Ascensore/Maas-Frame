@@ -22,11 +22,14 @@ test('the dashboard is usable on a phone viewport', async ({ page, seed, seededU
   // The desktop nav is collapsed behind the sheet trigger on this viewport.
   await expect(page.getByRole('link', { name: 'Workspaces' })).toHaveCount(0);
 
+  await expect(page.getByRole('button', { name: 'Account menu' })).toHaveCount(0);
+
   await page.getByRole('button', { name: 'Toggle menu' }).click();
 
   const menu = page.getByRole('dialog', { name: 'Navigation Menu' });
   await expect(menu.getByRole('link', { name: 'Projects' })).toBeVisible();
   await expect(menu.getByRole('link', { name: 'Workspaces' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Account menu' })).toBeVisible();
 
   await menu.getByRole('link', { name: 'Workspaces' }).click();
   await expect(page).toHaveURL(/\/workspaces$/);
