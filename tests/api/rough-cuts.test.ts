@@ -176,6 +176,7 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
     expect(stored.layout).toBe('LINEAR');
     expect(stored.requestedById).toBe(scenario.owner.id);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
   });
 
   it('returns 400 when MULTICAM is requested with a single video and writes no row', async () => {
@@ -200,6 +201,7 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     );
     expect(response.status).toBe(400);
     expect(await db.roughCut.count()).toBe(0);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(0);
   });
 
   it('guesses SEQUENTIAL from numbered filenames and stores that layout', async () => {
@@ -244,6 +246,7 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(payload.cameras.map((camera) => camera.title)).toEqual(['Clip_001', 'Clip_002']);
     const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
     expect(stored.layout).toBe('SEQUENTIAL');
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
   });
 
   it('stores an explicit SEQUENTIAL layout even when cameras look like multicam', async () => {
@@ -259,10 +262,16 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
       { projectId: scenario.project.id }
     );
     expect(response.status).toBe(201);
-    const payload = await readData<{ roughCut: { id: string }; layout: string }>(response);
+    const payload = await readData<{
+      roughCut: { id: string };
+      layout: string;
+      guessedLayout: string;
+    }>(response);
+    expect(payload.guessedLayout).toBe('MULTICAM');
     expect(payload.layout).toBe('SEQUENTIAL');
     const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
     expect(stored.layout).toBe('SEQUENTIAL');
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
   });
 
   it('returns 400 for an unknown layout and writes no row', async () => {
@@ -277,6 +286,7 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     );
     expect(response.status).toBe(400);
     expect(await db.roughCut.count()).toBe(0);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(0);
   });
 
   it('returns 403 when the feature flag is off and writes no row', async () => {
