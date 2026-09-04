@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -122,6 +123,9 @@ export function RoughCutDialog({
   const [profileId, setProfileId] = useState<string>('default');
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [layout, setLayout] = useState<RoughCutLayout | null>(null);
+  const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
+  const [cameraOverride, setCameraOverride] = useState<Record<string, string>>({});
+  const [focusOverride, setFocusOverride] = useState<string | null>(null);
 
   const guessClips: LayoutGuessClip[] = useMemo(
     () =>
@@ -140,6 +144,46 @@ export function RoughCutDialog({
   const guess = useMemo(() => guessRoughCutLayout(guessClips), [guessClips]);
   const effectiveLayout: RoughCutLayout =
     layout ?? (videos.length > 0 ? guess.layout : videoCount <= 1 ? 'LINEAR' : 'MULTICAM');
+
+  const defaultNames = useMemo(() => {
+    const inferred: Record<string, string> = {};
+    const generic = videos.filter(
+      (video) =>
+        inferCameraRole(video.title, metadataStringRecord(video.metadata), 'camera') === 'CAM'
+    );
+    let genericIndex = 0;
+    for (const video of videos) {
+      const role = inferCameraRole(video.title, metadataStringRecord(video.metadata), 'camera');
+      if (role === 'CAM' && generic.length > 1) {
+        genericIndex += 1;
+        inferred[video.id] = `CAM ${genericIndex}`;
+      } else {
+        inferred[video.id] = role;
+      }
+    }
+    return inferred;
+  }, [videos]);
+  const cameraNames = { ...defaultNames, ...cameraOverride };
+  const clipOrder = useMemo(() => {
+    const ids = videos.map((video) => video.id);
+    const idSet = new Set(ids);
+    const base = orderOverride ?? (guess.orderedIds.length > 0 ? guess.orderedIds : ids);
+    const ordered: string[] = [];
+    const seen = new Set<string>();
+    for (const id of base) {
+      if (!idSet.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      ordered.push(id);
+    }
+    for (const id of ids) {
+      if (!seen.has(id)) ordered.push(id);
+    }
+    return ordered;
+  }, [guess.orderedIds, orderOverride, videos]);
+  const focusVideoId =
+    focusOverride && videos.some((video) => video.id === focusOverride)
+      ? focusOverride
+      : (videos.find((video) => cameraNames[video.id] === 'WIDE')?.id ?? videos[0]?.id ?? null);
 
   useEffect(() => {
     if (!open) {
@@ -191,12 +235,32 @@ export function RoughCutDialog({
   const status = roughCut?.status ?? null;
   const busy = isStarting || status === 'PENDING' || status === 'RUNNING';
 
+  const moveDialogClip = (index: number, direction: -1 | 1) => {
+    const ids = orderPreviewCameras(previewCameras, clipOrder).map((entry) => entry.id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= ids.length) return;
+    const copy = [...ids];
+    const [item] = copy.splice(index, 1);
+    if (!item) return;
+    copy.splice(nextIndex, 0, item);
+    setOrderOverride(copy);
+  };
+
   const handleGenerate = async () => {
+    const roles: Record<string, string> = {};
+    for (const video of videos) {
+      const name = cameraNames[video.id]?.trim();
+      if (name) roles[video.id] = name;
+    }
+    const focusRole = focusVideoId ? cameraNames[focusVideoId] : undefined;
     await start({
       projectId,
       folderId,
       profileId: profileId === 'default' ? null : profileId,
       layout: effectiveLayout,
+      clipOrder: effectiveLayout === 'SEQUENTIAL' ? clipOrder : undefined,
+      cameraRoles: effectiveLayout === 'MULTICAM' ? roles : undefined,
+      wideCameraRole: effectiveLayout === 'MULTICAM' ? focusRole : undefined,
     });
   };
 
@@ -204,7 +268,12 @@ export function RoughCutDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setLayout(null);
+        if (!next) {
+          setLayout(null);
+          setOrderOverride(null);
+          setCameraOverride({});
+          setFocusOverride(null);
+        }
         onOpenChange(next);
       }}
     >
@@ -244,23 +313,68 @@ export function RoughCutDialog({
           {effectiveLayout !== 'LINEAR' && previewCameras.length > 1 ? (
             <div>
               <p className="text-sm font-medium mb-2">
-                {effectiveLayout === 'SEQUENTIAL' ? 'Chronological order' : 'Detected camera roles'}
+                {effectiveLayout === 'SEQUENTIAL' ? 'Edit order' : 'Camera names and safety shot'}
               </p>
-              <ul className="rounded-md border divide-y max-h-40 overflow-y-auto">
+              <ul className="rounded-md border divide-y max-h-52 overflow-y-auto">
                 {(effectiveLayout === 'SEQUENTIAL'
-                  ? orderPreviewCameras(previewCameras, guess.orderedIds)
+                  ? orderPreviewCameras(previewCameras, clipOrder)
                   : previewCameras
-                ).map((camera, index) => (
-                  <li
-                    key={camera.id}
-                    className="flex items-center justify-between px-3 py-2 text-sm"
-                  >
-                    <span className="truncate pr-3">
-                      {effectiveLayout === 'SEQUENTIAL'
-                        ? `${index + 1}. ${camera.title}`
-                        : camera.title}
-                    </span>
-                    <span className="text-muted-foreground shrink-0">{camera.role}</span>
+                ).map((camera, index, list) => (
+                  <li key={camera.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                    {effectiveLayout === 'SEQUENTIAL' ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={`Move ${camera.title} earlier`}
+                          disabled={busy || !!status || index === 0}
+                          onClick={() => moveDialogClip(index, -1)}
+                        >
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={`Move ${camera.title} later`}
+                          disabled={busy || !!status || index >= list.length - 1}
+                          onClick={() => moveDialogClip(index, 1)}
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ) : null}
+                    <span className="truncate min-w-0 flex-1">{camera.title}</span>
+                    {effectiveLayout === 'MULTICAM' ? (
+                      <>
+                        <Input
+                          value={cameraNames[camera.id] ?? camera.role}
+                          maxLength={40}
+                          aria-label={`Camera name for ${camera.title}`}
+                          className="h-8 w-28 shrink-0"
+                          disabled={busy || !!status}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            setCameraOverride((current) => ({ ...current, [camera.id]: next }));
+                          }}
+                        />
+                        <label className="inline-flex items-center gap-1 text-xs shrink-0">
+                          <input
+                            type="radio"
+                            name="dialog-focus-camera"
+                            checked={focusVideoId === camera.id}
+                            disabled={busy || !!status}
+                            onChange={() => setFocusOverride(camera.id)}
+                          />
+                          Safety
+                        </label>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground shrink-0">
+                        {cameraNames[camera.id] ?? camera.role}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>

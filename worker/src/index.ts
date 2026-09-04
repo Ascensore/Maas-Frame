@@ -167,7 +167,11 @@ async function downloadVersionFile(
 
 async function probeMedia(versionId: string): Promise<void> {
   const versionRes = await pool.query(
-    `SELECT id, "providerId", "videoId", "originalUrl" FROM video_versions WHERE id = $1`,
+    `SELECT vv.id, vv."providerId", vv."videoId", vv."originalUrl",
+            v.id AS video_id, v.title, v.metadata
+     FROM video_versions vv
+     JOIN videos v ON v.id = vv."videoParentId"
+     WHERE vv.id = $1`,
     [versionId]
   );
   const version = versionRes.rows[0];
@@ -179,6 +183,10 @@ async function probeMedia(versionId: string): Promise<void> {
     const probed = await run('ffprobe', [
       '-v',
       'error',
+      '-analyzeduration',
+      '50M',
+      '-probesize',
+      '50M',
       '-show_format',
       '-show_streams',
       '-of',
@@ -209,9 +217,18 @@ async function probeMedia(versionId: string): Promise<void> {
         : null;
     const durationFrames = rate && duration ? Math.round((duration * rate.num) / rate.den) : null;
     const dropFrame = Boolean(rate && ((rate.num === 30000 && rate.den === 1001) || (rate.num === 60000 && rate.den === 1001)));
-    const { readEmbeddedTimecode, readEmbeddedCreationTime } = await import('../lib/rough-cut/probe-timecode');
+    const {
+      readEmbeddedTimecode,
+      readEmbeddedCreationTime,
+      readEmbeddedCameraLabel,
+    } = await import('../lib/rough-cut/probe-timecode');
+    const { metadataStringRecord, upsertMetadataField } = await import('../lib/rough-cut/camera-roles');
     const startTimecode = readEmbeddedTimecode(parsed);
-    const recordedAt = readEmbeddedCreationTime(parsed);
+    const recordedAt = readEmbeddedCreationTime(
+      parsed,
+      typeof version.title === 'string' ? version.title : null
+    );
+    const cameraLabel = readEmbeddedCameraLabel(parsed);
 
     await pool.query(
       `UPDATE video_versions
@@ -227,9 +244,23 @@ async function probeMedia(versionId: string): Promise<void> {
         durationFrames,
         duration ? Math.round(duration) : null,
         startTimecode,
-        recordedAt,
+        recordedAt ? recordedAt.toISOString() : null,
       ]
     );
+
+    if (cameraLabel) {
+      const existing = metadataStringRecord(version.metadata);
+      const alreadyNamed = Object.entries(existing).some(
+        ([key, value]) => key.toLowerCase() === 'camera' && value.trim()
+      );
+      if (!alreadyNamed) {
+        const next = upsertMetadataField(existing, 'camera', cameraLabel);
+        await pool.query(
+          `UPDATE videos SET metadata = $2::jsonb, "updatedAt" = NOW() WHERE id = $1`,
+          [version.video_id, JSON.stringify(next)]
+        );
+      }
+    }
 
     await maybeEnqueueReviewProxy(versionId, {
       videoCodec: videoStream?.codec_name ?? null,

@@ -178,6 +178,9 @@ export function useRoughCut() {
       folderId: string | null;
       profileId?: string | null;
       layout?: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR' | null;
+      clipOrder?: string[];
+      cameraRoles?: Record<string, string>;
+      wideCameraRole?: string;
     }) => {
       if (isStarting) return 'A rough cut is already running';
       setIsStarting(true);
@@ -190,6 +193,13 @@ export function useRoughCut() {
             folderId: options.folderId,
             ...(options.profileId ? { profileId: options.profileId } : {}),
             ...(options.layout ? { layout: options.layout } : {}),
+            ...(options.clipOrder && options.clipOrder.length > 0
+              ? { clipOrder: options.clipOrder }
+              : {}),
+            ...(options.cameraRoles && Object.keys(options.cameraRoles).length > 0
+              ? { cameraRoles: options.cameraRoles }
+              : {}),
+            ...(options.wideCameraRole ? { wideCameraRole: options.wideCameraRole } : {}),
           }),
         });
         const payload = await response.json().catch(() => null);
@@ -397,7 +407,14 @@ export function useRoughCutHistory(projectId: string, folderId: string | null) {
   }, [stopPolling]);
 
   const start = useCallback(
-    async (layout: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR') => {
+    async (
+      layout: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR',
+      options?: {
+        clipOrder?: string[];
+        cameraRoles?: Record<string, string>;
+        wideCameraRole?: string;
+      }
+    ) => {
       if (isStarting) return 'A rough cut is already running';
       setIsStarting(true);
       setError(null);
@@ -405,7 +422,17 @@ export function useRoughCutHistory(projectId: string, folderId: string | null) {
         const response = await fetch(`/api/projects/${projectId}/rough-cuts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folderId, layout }),
+          body: JSON.stringify({
+            folderId,
+            layout,
+            ...(options?.clipOrder && options.clipOrder.length > 0
+              ? { clipOrder: options.clipOrder }
+              : {}),
+            ...(options?.cameraRoles && Object.keys(options.cameraRoles).length > 0
+              ? { cameraRoles: options.cameraRoles }
+              : {}),
+            ...(options?.wideCameraRole ? { wideCameraRole: options.wideCameraRole } : {}),
+          }),
         });
         const payload = await response.json().catch(() => null);
         if (!response.ok) {

@@ -67,6 +67,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
       position: video.position,
       providerId,
       cameraRole: inferCameraRole(video.title, metadata, 'camera'),
+      metadata,
       importStatus: readImportStatus(video.metadata),
       fileBacked: isReadyFileBackedVideo(video),
       embedOnly: Boolean(providerId && !isFileBackedProvider(providerId)),
@@ -86,6 +87,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
 
   return (
     <EditWorkspaceClient
+      key={currentFolderId ?? 'root'}
       projectId={project.id}
       projectName={projectRow.name}
       folders={serializedFolders}
@@ -93,6 +95,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
       clips={clips}
       guessedMode={editModeFromLayout(guess.layout)}
       guessReason={guess.reason}
+      guessedOrderedIds={guess.orderedIds}
       launchCount={launchClips.length}
       directUploadsEnabled={isDirectFileUploadEnabled()}
       directUploadProvider={isS3VideoUploadsEnabled() ? 'r2' : 'bunny'}

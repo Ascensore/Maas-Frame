@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { assignStackedTracks, inferCameraRole, pickWideClip } from '@/lib/rough-cut/camera-roles';
+import {
+  assignStackedTracks,
+  inferCameraRole,
+  pickWideClip,
+  upsertMetadataField,
+} from '@/lib/rough-cut/camera-roles';
 
 describe('inferCameraRole', () => {
   it('reads the configured metadata key before the filename', () => {
@@ -16,6 +21,20 @@ describe('inferCameraRole', () => {
 
   it('returns CAM when nothing matches', () => {
     expect(inferCameraRole('clip-001.mp4', {}, 'camera')).toBe('CAM');
+  });
+});
+
+describe('upsertMetadataField', () => {
+  it('replaces a camera field without dropping import keys', () => {
+    expect(upsertMetadataField({ import_source: 'gdrive', Camera: 'A' }, 'camera', 'WIDE')).toEqual(
+      { import_source: 'gdrive', camera: 'WIDE' }
+    );
+  });
+
+  it('removes the field when the value is empty', () => {
+    expect(upsertMetadataField({ camera: 'A', Scene: '12' }, 'camera', '  ')).toEqual({
+      Scene: '12',
+    });
   });
 });
 

@@ -21,6 +21,21 @@ const WIDE_RE = /\b(wide|wideshot|wide-shot|safety|master)\b/i;
 const CAMERA_RE = /\bcam(?:era)?[\s._-]*([a-z0-9]+)/i;
 const ANGLE_RE = /\bangle[\s._-]*([a-z0-9]+)/i;
 
+export function upsertMetadataField(
+  metadata: Record<string, string>,
+  key: string,
+  value: string | null
+): Record<string, string> {
+  const next: Record<string, string> = {};
+  const wanted = key.toLowerCase();
+  for (const [entryKey, entryValue] of Object.entries(metadata)) {
+    if (entryKey.toLowerCase() === wanted) continue;
+    next[entryKey] = entryValue;
+  }
+  if (value && value.trim()) next[key] = value.trim();
+  return next;
+}
+
 export function inferCameraRole(
   title: string,
   metadata: Record<string, string>,

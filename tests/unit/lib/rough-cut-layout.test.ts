@@ -88,6 +88,14 @@ describe('sortClipsChronologically', () => {
     ]);
     expect(ordered.map((entry) => entry.id)).toEqual(['a', 'b']);
   });
+
+  it('orders by a date stamp in the filename when tags are missing', () => {
+    const ordered = sortClipsChronologically([
+      clip({ id: 'late', title: 'VID_20260315_150000.mp4' }),
+      clip({ id: 'early', title: 'VID_20260315_140000.mp4' }),
+    ]);
+    expect(ordered.map((entry) => entry.id)).toEqual(['early', 'late']);
+  });
 });
 
 describe('guessRoughCutLayout', () => {
@@ -219,11 +227,12 @@ describe('applySequentialOffsets', () => {
 });
 
 describe('parseRecordedAtMs', () => {
-  it('parses ffmpeg creation_time and rejects junk', () => {
+  it('parses ffmpeg creation_time, EXIF colon dates, and rejects junk', () => {
     expect(parseRecordedAtMs('2026-01-15T10:22:03.000000Z')).toBe(
       Date.parse('2026-01-15T10:22:03.000Z')
     );
     expect(parseRecordedAtMs('2026-01-15 10:22:03')).toBe(Date.parse('2026-01-15T10:22:03'));
+    expect(parseRecordedAtMs('2026:01:15 10:22:03')).toBe(Date.parse('2026-01-15T10:22:03.000Z'));
     expect(parseRecordedAtMs('not-a-date')).toBeNull();
     expect(parseRecordedAtMs('')).toBeNull();
   });
