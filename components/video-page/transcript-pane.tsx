@@ -1,11 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo, type MouseEvent } from 'react';
 import { Captions, Loader2, Search, Upload } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { commentRangeFromHighlight, commentsForSegment } from '@/lib/transcript-comment';
+import {
+  commentRangeFromHighlight,
+  commentsAnchoredToSegment,
+  spanOverlapsComment,
+} from '@/lib/transcript-comment';
 import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
 import { cn } from '@/lib/utils';
@@ -94,6 +98,7 @@ interface TranscriptPaneProps {
   ) => void;
   onCommentRange: (start: number, end: number, quote: string) => void;
   onOpenThread: (commentId: string) => void;
+  draftRange: { start: number; end: number } | null;
 }
 
 type TranscriptRowProps = {
@@ -105,6 +110,7 @@ type TranscriptRowProps = {
   onSeek: TranscriptPaneProps['onSeek'];
   onCommentRange: TranscriptPaneProps['onCommentRange'];
   onOpenThread: TranscriptPaneProps['onOpenThread'];
+  draftRange: { start: number; end: number } | null;
 };
 
 function TranscriptRow({
@@ -118,18 +124,35 @@ function TranscriptRow({
   onSeek,
   onCommentRange,
   onOpenThread,
+  draftRange,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
   const words = asWords(segment.words);
   const timed = isTranscriptSegmentTimed(segment);
-  const markers = commentsForSegment(comments, segment);
+  const markers = commentsAnchoredToSegment(comments, segments, index);
+  const highlightComments = draftRange
+    ? [...comments, { timestamp: draftRange.start, timestampEnd: draftRange.end }]
+    : comments;
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (event: MouseEvent<HTMLDivElement>) => {
     const selection = window.getSelection();
+    const list = event.currentTarget.closest('[data-transcript-list]');
+    const spans = list
+      ? Array.from(
+          list.querySelectorAll<HTMLElement>('button[data-transcript-range][data-start][data-end]')
+        )
+          .map((node) => ({
+            start: Number(node.getAttribute('data-start')),
+            end: Number(node.getAttribute('data-end')),
+            text: node.textContent ?? '',
+          }))
+          .filter((span) => Number.isFinite(span.start) && Number.isFinite(span.end))
+      : [];
     const highlight = commentRangeFromHighlight({
       quote: selection?.toString() ?? '',
       first: rangeNodeFromDom(selection?.anchorNode ?? null),
       last: rangeNodeFromDom(selection?.focusNode ?? null),
+      spans,
     });
     if (!highlight) return;
     if (highlight.end > highlight.start) {
@@ -207,7 +230,17 @@ function TranscriptRow({
             </div>
           )}
         </div>
-        <p className="leading-relaxed line-clamp-2">
+        <p
+          className={cn(
+            'leading-relaxed line-clamp-2',
+            timed &&
+              words.length === 0 &&
+              highlightComments.some((comment) =>
+                spanOverlapsComment({ start: segment.startSec, end: segment.endSec }, comment)
+              ) &&
+              'bg-primary/25 rounded-sm'
+          )}
+        >
           {timed && words.length > 0 ? (
             words.map((word, wordIndex) => {
               return (
@@ -220,7 +253,9 @@ function TranscriptRow({
                   data-active="false"
                   className={cn(
                     'mr-1 rounded-sm px-0.5 hover:bg-accent',
-                    'data-[active=true]:bg-primary data-[active=true]:text-primary-foreground'
+                    'data-[active=true]:bg-primary data-[active=true]:text-primary-foreground',
+                    highlightComments.some((comment) => spanOverlapsComment(word, comment)) &&
+                      'bg-primary/25'
                   )}
                   onClick={() => onSeek(word.start, { pauseAfterSeek: false })}
                 >
@@ -253,6 +288,7 @@ export const TranscriptPane = memo(function TranscriptPane({
   onSeek,
   onCommentRange,
   onOpenThread,
+  draftRange,
 }: TranscriptPaneProps) {
   const [transcript, setTranscript] = useState<TranscriptPayload>(null);
   const [loading, setLoading] = useState(false);
@@ -316,8 +352,18 @@ export const TranscriptPane = memo(function TranscriptPane({
       onSeek,
       onCommentRange,
       onOpenThread,
+      draftRange,
     }),
-    [filtered, comments, openCommentId, getCurrentTime, onSeek, onCommentRange, onOpenThread]
+    [
+      filtered,
+      comments,
+      openCommentId,
+      getCurrentTime,
+      onSeek,
+      onCommentRange,
+      onOpenThread,
+      draftRange,
+    ]
   );
 
   useEffect(() => {
@@ -493,7 +539,7 @@ export const TranscriptPane = memo(function TranscriptPane({
             : 'No transcript yet. Listen to this version and transcribe it, or upload a .srt, .vtt, .txt, or .docx file.'}
         </p>
       ) : (
-        <div ref={listRef} className="flex-1 min-h-0">
+        <div ref={listRef} data-transcript-list="" className="flex-1 min-h-0">
           <List
             rowComponent={TranscriptRow}
             rowCount={filtered.length}
