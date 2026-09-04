@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { openaiProvider } from '@/lib/transcription/openai';
 
 vi.mock('node:fs/promises', () => ({
@@ -54,5 +55,33 @@ describe('openaiProvider', () => {
     await openaiProvider.transcribe({ audioPath: '/tmp/clip.wav', language: 'en' });
 
     expect(captured.form?.get('language')).toBe('en');
+  });
+
+  it('refuses a video filename without calling fetch', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'sk-test');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(openaiProvider.transcribe({ audioPath: '/tmp/clip.mp4' })).rejects.toThrow(
+      'OpenAI transcription only accepts audio files, not video'
+    );
+    await expect(openaiProvider.transcribe({ audioPath: '/tmp/clip.webm' })).rejects.toThrow(
+      'OpenAI transcription only accepts audio files, not video'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses oversized wav without calling fetch', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'sk-test');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.mocked(readFile).mockResolvedValueOnce({
+      byteLength: 25165825,
+    } as unknown as Awaited<ReturnType<typeof readFile>>);
+
+    await expect(openaiProvider.transcribe({ audioPath: '/tmp/clip.wav' })).rejects.toThrow(
+      "Audio exceeds OpenAI's 25 MiB upload limit"
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

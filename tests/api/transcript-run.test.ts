@@ -26,16 +26,18 @@ vi.mock('@/lib/transcription', () => ({
   }),
 }));
 
-const OBJECT_KEY = 'videos/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.mp4';
+const OBJECT_KEY = 'videos/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.wav';
+const VIDEO_OBJECT_KEY = 'videos/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.mp4';
 
-async function seedR2Version() {
+async function seedR2Version(kind: 'AUDIO' | 'VIDEO' = 'AUDIO') {
   const scenario = await seedProject();
-  const video = await createVideo({ projectId: scenario.project.id, kind: 'VIDEO' });
+  const video = await createVideo({ projectId: scenario.project.id, kind });
+  const objectKey = kind === 'AUDIO' ? OBJECT_KEY : VIDEO_OBJECT_KEY;
   const version = await createVersion({
     videoParentId: video.id,
     providerId: 'r2',
-    providerVideoId: OBJECT_KEY,
-    originalUrl: '/api/upload/video/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.mp4',
+    providerVideoId: objectKey,
+    originalUrl: `/api/upload/video/${objectKey.slice('videos/'.length)}`,
   });
   const transcript = await db.transcript.create({
     data: {
@@ -86,7 +88,7 @@ describe('runTranscriptionForVersion', () => {
     expect(row.segments[0]?.words).toEqual([{ start: 0, end: 1.5, text: 'Hello' }]);
     expect(transcribe).toHaveBeenCalledWith(
       expect.objectContaining({
-        audioPath: expect.stringMatching(/source\.mp4$/),
+        audioPath: expect.stringMatching(/source\.wav$/),
         language: 'en',
       })
     );
@@ -140,7 +142,7 @@ describe('runTranscriptionForVersion', () => {
     expect(row.translatedTexts).toBeNull();
     expect(transcribe).toHaveBeenCalledTimes(1);
     expect(transcribe).toHaveBeenCalledWith({
-      audioPath: expect.stringMatching(/source\.mp4$/),
+      audioPath: expect.stringMatching(/source\.wav$/),
     });
   });
 
@@ -198,20 +200,64 @@ describe('runTranscriptionForVersion', () => {
     expect(downloadVideoObject).not.toHaveBeenCalled();
   });
 
-  it('fails when the object is larger than 25 MiB without downloading it', async () => {
-    const { version, transcript } = await seedR2Version();
+  it('leaves VIDEO pending for the worker without downloading', async () => {
+    const { version, transcript } = await seedR2Version('VIDEO');
+
+    await runTranscriptionForVersion({ versionId: version.id, language: 'en' });
+
+    const row = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    expect(row.status).toBe(TranscriptStatus.PENDING);
+    expect(row.error).toBeNull();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(downloadVideoObject).not.toHaveBeenCalled();
+    expect(headVideoObject).not.toHaveBeenCalled();
+
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: version.id },
+      select: { kind: true, status: true },
+    });
+    expect(jobs.every((job) => job.status === MediaJobStatus.PENDING)).toBe(true);
+  });
+
+  it('leaves oversized AUDIO pending without downloading it', async () => {
+    const { version, transcript } = await seedR2Version('AUDIO');
     vi.mocked(headVideoObject).mockResolvedValueOnce({
-      contentLength: BigInt(26214401),
-      contentType: 'video/mp4',
+      contentLength: BigInt(25165825),
+      contentType: 'audio/wav',
     });
 
     await runTranscriptionForVersion({ versionId: version.id, language: 'en' });
 
     const row = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
-    expect(row.status).toBe(TranscriptStatus.FAILED);
-    expect(row.error).toBe(
-      'This file is too large to transcribe here (25 MiB limit). Start the media worker for larger files.'
-    );
+    expect(row.status).toBe(TranscriptStatus.PENDING);
+    expect(row.error).toBeNull();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(downloadVideoObject).not.toHaveBeenCalled();
+
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: version.id },
+      select: { status: true },
+    });
+    expect(jobs.every((job) => job.status === MediaJobStatus.PENDING)).toBe(true);
+  });
+
+  it('resets to PENDING when the download later exceeds the inline cap', async () => {
+    const { version, transcript } = await seedR2Version('AUDIO');
+    vi.mocked(headVideoObject)
+      .mockResolvedValueOnce({
+        contentLength: BigInt(1024),
+        contentType: 'audio/wav',
+      })
+      .mockResolvedValueOnce({
+        contentLength: BigInt(25165825),
+        contentType: 'audio/wav',
+      });
+
+    await runTranscriptionForVersion({ versionId: version.id, language: 'en' });
+
+    const row = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    expect(row.status).toBe(TranscriptStatus.PENDING);
+    expect(row.error).toBeNull();
     expect(transcribe).not.toHaveBeenCalled();
     expect(downloadVideoObject).not.toHaveBeenCalled();
   });

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -13,6 +13,12 @@ import { materializeRoughCut } from './materialize-rough-cut';
 import {
   createWhisperLocalProvider,
   getWorkerTranscriptionProvider,
+  mergeChunkTranscriptions,
+  openaiChunkOffsets,
+  OPENAI_CHUNK_OVERLAP_SECONDS,
+  OPENAI_WAV_CHUNK_SECONDS,
+  shouldSplitForOpenAI,
+  type TranscriptionProvider,
   type TranscriptionResult,
 } from './transcription';
 
@@ -409,6 +415,102 @@ async function extractAudio(versionId: string): Promise<void> {
   }
 }
 
+async function probeDurationSeconds(wavPath: string): Promise<number> {
+  const probed = await run('ffprobe', [
+    '-v',
+    'error',
+    '-show_entries',
+    'format=duration',
+    '-of',
+    'default=noprint_wrappers=1:nokey=1',
+    wavPath,
+  ]);
+  if (probed.code !== 0) throw new Error(probed.stderr || 'ffprobe failed');
+  const duration = Number(probed.stdout.trim());
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error('Could not read audio duration');
+  }
+  return duration;
+}
+
+async function splitWavForOpenAI(
+  wavPath: string,
+  dir: string,
+  durationSeconds: number
+): Promise<Array<{ path: string; offsetSeconds: number; overlapSeconds: number }>> {
+  const offsets = openaiChunkOffsets(durationSeconds);
+  const chunks: Array<{ path: string; offsetSeconds: number; overlapSeconds: number }> = [];
+  for (let index = 0; index < offsets.length; index += 1) {
+    const offset = offsets[index] ?? 0;
+    const chunkPath = join(dir, `chunk-${index}.wav`);
+    const extracted = await run('ffmpeg', [
+      '-y',
+      '-ss',
+      String(offset),
+      '-t',
+      String(OPENAI_WAV_CHUNK_SECONDS),
+      '-i',
+      wavPath,
+      '-vn',
+      '-ac',
+      '1',
+      '-ar',
+      '16000',
+      chunkPath,
+    ]);
+    if (extracted.code !== 0) throw new Error(extracted.stderr || 'ffmpeg chunk failed');
+    chunks.push({
+      path: chunkPath,
+      offsetSeconds: offset,
+      overlapSeconds: index === 0 ? 0 : OPENAI_CHUNK_OVERLAP_SECONDS,
+    });
+  }
+  return chunks;
+}
+
+async function transcribeOpenAiAudio(
+  provider: TranscriptionProvider,
+  wavPath: string,
+  languageHint?: string
+): Promise<TranscriptionResult> {
+  const fileStat = await stat(wavPath);
+  if (!shouldSplitForOpenAI(fileStat.size)) {
+    return provider.transcribe({
+      audioPath: wavPath,
+      ...(languageHint ? { language: languageHint } : {}),
+    });
+  }
+
+  const duration = await probeDurationSeconds(wavPath);
+  const dir = await mkdtemp(join(tmpdir(), 'of-tr-chunks-'));
+  try {
+    const chunks = await splitWavForOpenAI(wavPath, dir, duration);
+    const results: Array<{
+      offsetSeconds: number;
+      overlapSeconds: number;
+      result: TranscriptionResult;
+    }> = [];
+    let detectedLanguage = languageHint;
+    for (const chunk of chunks) {
+      const result = await provider.transcribe({
+        audioPath: chunk.path,
+        ...(detectedLanguage ? { language: detectedLanguage } : {}),
+      });
+      if (!detectedLanguage && result.language && result.language !== 'und') {
+        detectedLanguage = result.language;
+      }
+      results.push({
+        offsetSeconds: chunk.offsetSeconds,
+        overlapSeconds: chunk.overlapSeconds,
+        result,
+      });
+    }
+    return mergeChunkTranscriptions(results);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function toVttTime(seconds: number): string {
   const clamped = Math.max(0, seconds);
   const hours = Math.floor(clamped / 3600);
@@ -528,10 +630,13 @@ async function transcribe(versionId: string, payload: { language?: string; trans
       await downloadObject(audioKey, wav);
     }
 
-    const result = await provider.transcribe({
-      audioPath: wav,
-      ...(languageHint ? { language: languageHint } : {}),
-    });
+    const result =
+      provider.name === 'openai'
+        ? await transcribeOpenAiAudio(provider, wav, languageHint)
+        : await provider.transcribe({
+            audioPath: wav,
+            ...(languageHint ? { language: languageHint } : {}),
+          });
 
     const searchText = result.segments.map((segment) => segment.text).join(' ');
     const detected = result.language || (autoDetect ? 'und' : language);

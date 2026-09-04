@@ -1,7 +1,6 @@
 /**
- * Content-Type for a file we send to a cloud STT API. OpenAI and Deepgram both
- * sniff the name as well, but a hard-coded `audio/wav` on an `.mp4` made
- * Whisper reject WhatsApp videos that otherwise fit the 25 MiB cap.
+ * Content-Type for a file we send to a cloud STT API. OpenAI is audio-only;
+ * video is never uploaded. Deepgram sniffs the name as well.
  */
 export function mediaTypeFromFileName(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
@@ -27,4 +26,8 @@ export function mediaTypeFromFileName(fileName: string): string {
     default:
       return 'application/octet-stream';
   }
+}
+
+export function isAudioFileName(fileName: string): boolean {
+  return mediaTypeFromFileName(fileName).startsWith('audio/');
 }

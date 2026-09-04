@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { MediaJobKind, MediaJobStatus, Prisma, TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { logError } from '@/lib/logger';
-import { canAutoTranscribe } from '@/lib/review-kind';
+import { headVideoObject } from '@/lib/r2';
+import { canAutoTranscribe, type ReviewKind } from '@/lib/review-kind';
 import { transcribeWithCloudFallback } from '@/lib/transcription/fallback';
 import {
   AUTO_DETECT_TRANSCRIPT_LANGUAGE,
@@ -12,9 +13,31 @@ import {
   languageForProvider,
   normalizeDetectedLanguage,
 } from '@/lib/transcription/language';
-import { downloadVersionMedia, sourceFileExtension } from '@/lib/transcription/source';
+import {
+  canRunInlineTranscription,
+  downloadVersionMedia,
+  INLINE_TRANSCRIPTION_TOO_LARGE_MESSAGE,
+  isTooLargeForInlineTranscription,
+  r2ObjectKeyFromVersion,
+  sourceFileExtension,
+} from '@/lib/transcription/source';
 
 const TERMINAL_JOB_KINDS: MediaJobKind[] = [MediaJobKind.EXTRACT_AUDIO, MediaJobKind.TRANSCRIBE];
+
+async function canAttemptInlineTranscription(version: {
+  providerId: string;
+  videoId: string;
+  originalUrl: string;
+  video: { kind: ReviewKind };
+}): Promise<boolean> {
+  if (!canRunInlineTranscription(version.video.kind)) return false;
+  if (version.providerId !== 'r2') return true;
+  const key = r2ObjectKeyFromVersion(version);
+  if (!key) return false;
+  const head = await headVideoObject(key);
+  if (!head) return false;
+  return !isTooLargeForInlineTranscription(head.contentLength);
+}
 
 function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : 'Transcription failed';
@@ -117,6 +140,10 @@ export async function runTranscriptionForVersion(options: {
     return;
   }
 
+  if (!(await canAttemptInlineTranscription(version))) {
+    return;
+  }
+
   const claimed = await db.transcript.updateMany({
     where: {
       id: transcript.id,
@@ -176,6 +203,13 @@ export async function runTranscriptionForVersion(options: {
     await markJobs(version.id, MediaJobStatus.SUCCEEDED);
   } catch (error) {
     const message = errorMessage(error);
+    if (message === INLINE_TRANSCRIPTION_TOO_LARGE_MESSAGE) {
+      await db.transcript.update({
+        where: { id: transcript.id },
+        data: { status: TranscriptStatus.PENDING, error: null },
+      });
+      return;
+    }
     logError('Inline transcription failed:', error);
     await db.transcript.update({
       where: { id: transcript.id },

@@ -1,15 +1,23 @@
+import { OPENAI_MAX_AUDIO_BYTES } from '@/lib/transcription/chunk';
 import { resolveServerBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { downloadVideoObject, headVideoObject } from '@/lib/r2';
+import type { ReviewKind } from '@/lib/review-kind';
 import { VIDEO_OBJECT_KEY_PREFIX, VIDEO_PROXY_PREFIX } from '@/lib/video-upload-validation';
 
-/** OpenAI Whisper's file cap, and the in-app memory budget on Vercel. */
-export const INLINE_TRANSCRIPTION_MAX_BYTES = 25 * 1024 * 1024;
+/** Match the OpenAI upload budget, including multipart headroom. */
+export const INLINE_TRANSCRIPTION_MAX_BYTES = OPENAI_MAX_AUDIO_BYTES;
 
 const BUNNY_FALLBACK_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240];
 const BUNNY_DOWNLOAD_TIMEOUT_MS = 60 * 1000;
 
 export function isTooLargeForInlineTranscription(contentLength: bigint): boolean {
   return contentLength > BigInt(INLINE_TRANSCRIPTION_MAX_BYTES);
+}
+
+export function canRunInlineTranscription(kind: ReviewKind, contentLength?: bigint): boolean {
+  if (kind !== 'AUDIO') return false;
+  if (contentLength === undefined) return true;
+  return !isTooLargeForInlineTranscription(contentLength);
 }
 
 export const INLINE_TRANSCRIPTION_TOO_LARGE_MESSAGE =
