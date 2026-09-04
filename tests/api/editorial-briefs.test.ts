@@ -20,6 +20,8 @@ import {
   addWorkspaceMember,
   createEditorialBrief,
   createFolder,
+  createRoughCut,
+  createRoughCutProfile,
   createUser,
   createWorkspace,
   seedProject,
@@ -57,14 +59,31 @@ describe('GET /api/workspaces/[workspaceId]/editorial-briefs', () => {
     expect(response.status).toBe(403);
   });
 
-  it('lists briefs with their parsed config for a workspace commentator', async () => {
+  it('lists only this workspace’s briefs, by type then default then name, with a parsed config', async () => {
     const owner = await createUser();
     const workspace = await createWorkspace({ ownerId: owner.id });
+    const other = await createWorkspace({ ownerId: owner.id });
+    await createEditorialBrief({ workspaceId: other.id, name: 'Elsewhere' });
     const brief = await createEditorialBrief({
       workspaceId: workspace.id,
       name: 'Pitch night',
       projectType: 'ASCENSORE',
       config: { pacing: { silenceAggressiveness: 'low' } },
+    });
+    // Stored by hand as a bare partial: the list must still return a whole brief.
+    const partial = await db.editorialBrief.create({
+      data: {
+        workspaceId: workspace.id,
+        name: 'Zed interview',
+        projectType: 'INTERVIEW',
+        config: { pacing: { silenceAggressiveness: 'high' } },
+      },
+    });
+    const interviewDefault = await createEditorialBrief({
+      workspaceId: workspace.id,
+      name: 'Alpha interview',
+      projectType: 'INTERVIEW',
+      isDefault: true,
     });
     const commentator = await createUser();
     await addWorkspaceMember({
@@ -82,17 +101,23 @@ describe('GET /api/workspaces/[workspaceId]/editorial-briefs', () => {
       })
     );
 
-    expect(payload.briefs).toEqual([
-      expect.objectContaining({
-        id: brief.id,
-        name: 'Pitch night',
-        projectType: 'ASCENSORE',
-        config: expect.objectContaining({
-          pacing: { silenceAggressiveness: 'low' },
-          cameraGrammar: { followSpeaker: true, holdWideOnChaos: true },
-        }),
-      }),
+    expect(payload.briefs.map((entry) => entry.id)).toEqual([
+      brief.id,
+      interviewDefault.id,
+      partial.id,
     ]);
+    expect(payload.briefs[0]).toMatchObject({
+      name: 'Pitch night',
+      projectType: 'ASCENSORE',
+      config: expect.objectContaining({
+        pacing: { silenceAggressiveness: 'low' },
+        cameraGrammar: { followSpeaker: true, holdWideOnChaos: true },
+      }),
+    });
+    expect(payload.briefs[2]?.config).toEqual({
+      ...BUILTIN_BRIEF_TEMPLATES.INTERVIEW,
+      pacing: { silenceAggressiveness: 'high' },
+    });
   });
 });
 
@@ -226,6 +251,46 @@ describe('POST /api/workspaces/[workspaceId]/editorial-briefs', () => {
     expect(await db.editorialBrief.count({ where: { workspaceId: workspace.id } })).toBe(1);
   });
 
+  it('refuses a profile pointer from another workspace and accepts its own', async () => {
+    const { owner, workspace } = await seedProject();
+    const ours = await createRoughCutProfile({ workspaceId: workspace.id, name: 'Ours' });
+    const theirs = await createRoughCutProfile({
+      workspaceId: (await seedProject()).workspace.id,
+      name: 'Theirs',
+    });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createBriefRoute,
+      apiRequest(briefsUrl(workspace.id), {
+        body: {
+          name: 'Foreign',
+          projectType: 'INTERVIEW',
+          config: { technical: { roughCutProfileId: theirs.id } },
+        },
+      }),
+      { workspaceId: workspace.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.editorialBrief.count({ where: { workspaceId: workspace.id } })).toBe(0);
+
+    const accepted = await callRoute(
+      createBriefRoute,
+      apiRequest(briefsUrl(workspace.id), {
+        body: {
+          name: 'Ours',
+          projectType: 'INTERVIEW',
+          config: { technical: { roughCutProfileId: ours.id } },
+        },
+      }),
+      { workspaceId: workspace.id }
+    );
+    expect(accepted.status).toBe(201);
+    const stored = await db.editorialBrief.findFirstOrThrow({ where: { name: 'Ours' } });
+    expect(stored.config).toMatchObject({ technical: { roughCutProfileId: ours.id } });
+  });
+
   it('returns 403 when the feature flag is off and writes no row', async () => {
     const { owner, workspace } = await seedProject();
     signedInAs(owner);
@@ -332,6 +397,111 @@ describe('PATCH /api/workspaces/[workspaceId]/editorial-briefs/[briefId]', () =>
     expect(byId.get(otherType.id)).toBe(true);
   });
 
+  it('returns 404 for another workspace’s brief through this workspace’s URL and leaves it', async () => {
+    const mine = await seedProject();
+    const theirs = await seedProject();
+    const brief = await createEditorialBrief({ workspaceId: theirs.workspace.id, name: 'Theirs' });
+    signedInAs(mine.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const patched = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(mine.workspace.id, brief.id), {
+        method: 'PATCH',
+        body: { name: 'Hijacked' },
+      }),
+      { workspaceId: mine.workspace.id, briefId: brief.id }
+    );
+    const deleted = await callRoute(
+      deleteBriefRoute,
+      apiRequest(briefUrl(mine.workspace.id, brief.id), { method: 'DELETE' }),
+      { workspaceId: mine.workspace.id, briefId: brief.id }
+    );
+
+    expect(patched.status).toBe(404);
+    expect(deleted.status).toBe(404);
+    expect(await db.editorialBrief.findUniqueOrThrow({ where: { id: brief.id } })).toMatchObject({
+      name: 'Theirs',
+    });
+  });
+
+  it('moving a default brief to another type drops its default flag unless the patch keeps it', async () => {
+    const { owner, workspace } = await seedProject();
+    const showDefault = await createEditorialBrief({
+      workspaceId: workspace.id,
+      projectType: 'ASCENSORE',
+      isDefault: true,
+    });
+    const interviewDefault = await createEditorialBrief({
+      workspaceId: workspace.id,
+      projectType: 'INTERVIEW',
+      isDefault: true,
+    });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const moved = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, showDefault.id), {
+        method: 'PATCH',
+        body: { projectType: 'INTERVIEW' },
+      }),
+      { workspaceId: workspace.id, briefId: showDefault.id }
+    );
+    expect(moved.status).toBe(200);
+    expect(
+      await db.editorialBrief.findUniqueOrThrow({ where: { id: showDefault.id } })
+    ).toMatchObject({ projectType: 'INTERVIEW', isDefault: false });
+    expect(
+      (await db.editorialBrief.findUniqueOrThrow({ where: { id: interviewDefault.id } })).isDefault
+    ).toBe(true);
+
+    const claimed = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, showDefault.id), {
+        method: 'PATCH',
+        body: { projectType: 'ASCENSORE', isDefault: true },
+      }),
+      { workspaceId: workspace.id, briefId: showDefault.id }
+    );
+    expect(claimed.status).toBe(200);
+    expect(
+      await db.editorialBrief.findUniqueOrThrow({ where: { id: showDefault.id } })
+    ).toMatchObject({ projectType: 'ASCENSORE', isDefault: true });
+  });
+
+  it('rejects a config type that disagrees with the brief and a name already taken', async () => {
+    const { owner, workspace } = await seedProject();
+    const brief = await createEditorialBrief({
+      workspaceId: workspace.id,
+      projectType: 'ASCENSORE',
+    });
+    await createEditorialBrief({ workspaceId: workspace.id, name: 'Taken' });
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const mismatched = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, brief.id), {
+        method: 'PATCH',
+        body: { config: { projectType: 'INTERVIEW' } },
+      }),
+      { workspaceId: workspace.id, briefId: brief.id }
+    );
+    const duplicate = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, brief.id), { method: 'PATCH', body: { name: 'Taken' } }),
+      { workspaceId: workspace.id, briefId: brief.id }
+    );
+
+    expect(mismatched.status).toBe(400);
+    expect(duplicate.status).toBe(409);
+    expect(await db.editorialBrief.findUniqueOrThrow({ where: { id: brief.id } })).toMatchObject({
+      name: brief.name,
+      projectType: 'ASCENSORE',
+    });
+  });
+
   it('rejects an empty patch', async () => {
     const { owner, workspace } = await seedProject();
     const brief = await createEditorialBrief({ workspaceId: workspace.id });
@@ -370,11 +540,13 @@ describe('DELETE /api/workspaces/[workspaceId]/editorial-briefs/[briefId]', () =
     expect(await db.editorialBrief.count({ where: { id: brief.id } })).toBe(1);
   });
 
-  it('deletes the row and unbinds the folders and projects that pointed at it', async () => {
+  it('deletes the row and unbinds the folders, projects and past runs that pointed at it', async () => {
     const { owner, workspace, project } = await seedProject();
     const brief = await createEditorialBrief({ workspaceId: workspace.id });
     const folder = await createFolder({ projectId: project.id, editorialBriefId: brief.id });
     await db.project.update({ where: { id: project.id }, data: { editorialBriefId: brief.id } });
+    const run = await createRoughCut({ projectId: project.id, requestedById: owner.id });
+    await db.roughCut.update({ where: { id: run.id }, data: { briefId: brief.id } });
     signedInAs(owner);
     vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
 
@@ -392,6 +564,7 @@ describe('DELETE /api/workspaces/[workspaceId]/editorial-briefs/[briefId]', () =
     expect(
       (await db.project.findUniqueOrThrow({ where: { id: project.id } })).editorialBriefId
     ).toBeNull();
+    expect((await db.roughCut.findUniqueOrThrow({ where: { id: run.id } })).briefId).toBeNull();
   });
 });
 

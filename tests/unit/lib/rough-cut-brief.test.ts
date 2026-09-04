@@ -70,19 +70,22 @@ describe('BUILTIN_BRIEF_TEMPLATES', () => {
       layoutBias: null,
       pacing: { silenceAggressiveness: 'medium' },
       cameraGrammar: { followSpeaker: false, holdWideOnChaos: false },
-      markers: { infographicOnJargon: false },
+      markers: { infographicOnJargon: false, brollOnIllustration: true },
       takeSelection: { enabled: true, groupBy: 'semantic_beat' },
     });
     expect(BUILTIN_BRIEF_TEMPLATES.INTERVIEW).toMatchObject({
       layoutBias: null,
       pacing: { silenceAggressiveness: 'medium' },
       cameraGrammar: { followSpeaker: true, holdWideOnChaos: true },
+      markers: { infographicOnJargon: false, brollOnIllustration: true },
       takeSelection: { enabled: true, groupBy: 'semantic_beat' },
     });
-    for (const template of Object.values(BUILTIN_BRIEF_TEMPLATES)) {
-      expect(template.ranking).toEqual(['cleanliness', 'energy']);
-      expect(template.technical).toEqual({ roughCutProfileId: null });
-    }
+    expect(BUILTIN_BRIEF_TEMPLATES.ASCENSORE.ranking).toEqual(['cleanliness', 'energy']);
+    expect(BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD.ranking).toEqual(['cleanliness', 'energy']);
+    expect(BUILTIN_BRIEF_TEMPLATES.INTERVIEW.ranking).toEqual(['cleanliness', 'energy']);
+    expect(BUILTIN_BRIEF_TEMPLATES.ASCENSORE.technical).toEqual({ roughCutProfileId: null });
+    expect(BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD.technical).toEqual({ roughCutProfileId: null });
+    expect(BUILTIN_BRIEF_TEMPLATES.INTERVIEW.technical).toEqual({ roughCutProfileId: null });
   });
 });
 
@@ -289,6 +292,17 @@ describe('resolveEffectiveBrief', () => {
         projectType: 'TALKING_HEAD',
       })
     ).toMatchObject({ briefId: 'brief-folder', source: 'folder' });
+    // A folder still pointing at a deleted brief falls through to the project.
+    expect(
+      resolveEffectiveBrief({
+        folderId: 'episode',
+        folders: [{ id: 'episode', parentId: null, name: 'Episode', editorialBriefId: 'gone' }],
+        projectBriefId: 'brief-project',
+        briefsById,
+        defaultsByType,
+        projectType: 'TALKING_HEAD',
+      })
+    ).toMatchObject({ briefId: 'brief-project', source: 'project' });
   });
 });
 
@@ -313,7 +327,8 @@ describe('applyLayoutBias', () => {
   });
 
   it('never forces multicam on one clip and reports a matching bias as the guess', () => {
-    expect(applyLayoutBias(guess('single-clip', 'LINEAR'), 'MULTICAM', 1)).toEqual({
+    // A weak guess would let the bias through; the clip count still refuses it.
+    expect(applyLayoutBias(guess('default-multicam', 'LINEAR'), 'MULTICAM', 1)).toEqual({
       layout: 'LINEAR',
       source: 'guess',
     });
@@ -339,6 +354,13 @@ describe('briefConfigFromStored', () => {
     expect(
       briefConfigFromStored({ pacing: { silenceAggressiveness: 'brutal' } }, 'ASCENSORE')
     ).toEqual(BUILTIN_BRIEF_TEMPLATES.ASCENSORE);
+  });
+
+  it('lets the row’s project type win over a disagreeing stored config', () => {
+    expect(briefConfigFromStored({ projectType: 'INTERVIEW' }, 'ASCENSORE')).toMatchObject({
+      projectType: 'ASCENSORE',
+      layoutBias: 'MULTICAM',
+    });
   });
 });
 

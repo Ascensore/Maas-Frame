@@ -57,7 +57,21 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
             projectType,
           })
         : null;
-    const willBeDefault = parsed.value.isDefault ?? existing.isDefault;
+    const pointer = parsed.value.config?.technical?.roughCutProfileId;
+    if (pointer) {
+      const profile = await db.roughCutProfile.findFirst({
+        where: { id: pointer, workspaceId },
+        select: { id: true },
+      });
+      if (!profile) {
+        return apiErrors.badRequest('technical.roughCutProfileId was not found in this workspace');
+      }
+    }
+    // Moving a brief to another project type does not carry its default flag
+    // along: that would silently unseat the other type's default. The patch
+    // has to say isDefault: true to make it the default there.
+    const typeChanged = projectType !== existing.projectType;
+    const willBeDefault = parsed.value.isDefault ?? (typeChanged ? false : existing.isDefault);
 
     const updated = await db.$transaction(async (tx) => {
       if (willBeDefault) {
@@ -71,7 +85,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         data: {
           ...(parsed.value.name !== undefined ? { name: parsed.value.name } : {}),
           ...(parsed.value.projectType !== undefined ? { projectType } : {}),
-          ...(parsed.value.isDefault !== undefined ? { isDefault: parsed.value.isDefault } : {}),
+          ...(parsed.value.isDefault !== undefined || typeChanged
+            ? { isDefault: willBeDefault }
+            : {}),
           ...(nextConfig ? { config: nextConfig as Prisma.InputJsonValue } : {}),
         },
       });

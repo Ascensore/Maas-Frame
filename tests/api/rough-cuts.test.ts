@@ -16,6 +16,7 @@ import {
   createEditorialBrief,
   createFolder,
   createRoughCut,
+  createRoughCutProfile,
   createUser,
   createVersion,
   createVideo,
@@ -613,8 +614,69 @@ describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', ()
         technical: { roughCutProfileId: null, minShotSeconds: 3 },
       },
     });
-    // The brief's technical block beats the profile; the dialog value beats both.
+    // The brief's technical block beats the profile; dialog values still land on the snapshot.
     expect(stored.profileSnapshot).toMatchObject({ minShotSeconds: 3, wideCameraRole: 'B' });
+
+    const fetched = await readData<{
+      roughCut: { briefId: string | null; briefSnapshot: { source: string } | null };
+    }>(
+      await callRoute(getRoughCutRoute, apiRequest(`/api/rough-cuts/${stored.id}`), {
+        roughCutId: stored.id,
+      })
+    );
+    expect(fetched.roughCut.briefId).toBe(brief.id);
+    expect(fetched.roughCut.briefSnapshot).toMatchObject({ source: 'folder' });
+  });
+
+  it('a brief’s profile pointer picks the profile, and an explicit profileId still wins', async () => {
+    const scenario = await seedMulticam();
+    const pointed = await createRoughCutProfile({
+      workspaceId: scenario.workspace.id,
+      name: 'Pointed',
+      minShotSeconds: 4,
+    });
+    const explicit = await createRoughCutProfile({
+      workspaceId: scenario.workspace.id,
+      name: 'Explicit',
+      minShotSeconds: 5,
+    });
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      config: { technical: { roughCutProfileId: pointed.id } },
+    });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: brief.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const viaBrief = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(viaBrief.status).toBe(201);
+    const first = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(viaBrief)).roughCut.id },
+    });
+    expect(first.profileId).toBe(pointed.id);
+    expect(first.profileSnapshot).toMatchObject({ minShotSeconds: 4 });
+    await db.roughCut.delete({ where: { id: first.id } });
+
+    const viaDialog = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, profileId: explicit.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(viaDialog.status).toBe(201);
+    const second = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(viaDialog)).roughCut.id },
+    });
+    expect(second.profileId).toBe(explicit.id);
+    expect(second.profileSnapshot).toMatchObject({ minShotSeconds: 5 });
   });
 
   it('an explicit briefId wins over the folder binding; an unknown one is refused', async () => {
@@ -686,14 +748,16 @@ describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', ()
       }),
     });
 
-    const workspaceDefault = await createEditorialBrief({
-      workspaceId: scenario.workspace.id,
-      projectType: 'INTERVIEW',
-      isDefault: true,
-    });
+    // The other type's default is stored first, so keying defaults by the
+    // first isDefault row rather than by type would pick the wrong brief.
     await createEditorialBrief({
       workspaceId: scenario.workspace.id,
       projectType: 'ASCENSORE',
+      isDefault: true,
+    });
+    const workspaceDefault = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'INTERVIEW',
       isDefault: true,
     });
     expect(await create()).toMatchObject({

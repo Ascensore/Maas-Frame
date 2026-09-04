@@ -66,6 +66,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const body = await request.json().catch(() => null);
     const parsed = parseEditorialBriefCreate(body ?? {});
     if (!parsed.ok) return apiErrors.badRequest(parsed.error);
+    const pointer = parsed.value.config.technical.roughCutProfileId;
+    if (pointer) {
+      const profile = await db.roughCutProfile.findFirst({
+        where: { id: pointer, workspaceId },
+        select: { id: true },
+      });
+      if (!profile) {
+        return apiErrors.badRequest('technical.roughCutProfileId was not found in this workspace');
+      }
+    }
 
     // One default per project type: the new default unseats the old one.
     const created = await db.$transaction(async (tx) => {

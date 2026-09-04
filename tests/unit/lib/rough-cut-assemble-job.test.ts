@@ -617,6 +617,45 @@ describe('assembleRoughCut with a transcript', () => {
     ]);
   });
 
+  it('applies the brief’s silence policy to the multicam transcript as well', async () => {
+    const run = async (briefSnapshot: unknown) => {
+      const h = harness({
+        layout: 'MULTICAM',
+        createdAt: ONE_MINUTE_AGO,
+        videos: [
+          video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+          video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+        ],
+        transcripts: [
+          { id: 't-wide', version_id: 'ver-wide', status: 'READY', created_at: NOW_DATE() },
+        ],
+        segments: { 't-wide': [segment(2, 4.4, 'one thought'), segment(4.9, 8, 'and another')] },
+        rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+        briefSnapshot,
+      });
+      await assembleRoughCut(h.deps, 'cut-1');
+      return h.runs
+        .filter((args) => args[1] === '--rms' && versionIdFromWav(args[2]) === 'ver-a')
+        .map((args) => [args[3], args[4]]);
+    };
+
+    // Medium keeps the 0.5 s pause: one turn, one attribution window.
+    expect(await run(null)).toEqual([['2', '8']]);
+    // High cuts it: two turns, attributed separately.
+    expect(
+      await run({
+        version: 1,
+        briefId: null,
+        source: 'builtin',
+        layoutSource: 'guess',
+        brief: { projectType: 'ASCENSORE', pacing: { silenceAggressiveness: 'high' } },
+      })
+    ).toEqual([
+      ['2', '4.4'],
+      ['4.9', '8'],
+    ]);
+  });
+
   it('marks the run FAILED with the error when the fallback cannot get audio', async () => {
     const h = harness({
       layout: 'LINEAR',
