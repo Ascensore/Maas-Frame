@@ -58,6 +58,20 @@ export function minimumClipsForLayout(layout: RoughCutLayout): number {
   return layout === 'MULTICAM' ? 2 : 1;
 }
 
+export type EditWorkspaceMode = 'single-camera' | 'multicam';
+
+export function editModeFromLayout(layout: RoughCutLayout): EditWorkspaceMode {
+  return layout === 'MULTICAM' ? 'multicam' : 'single-camera';
+}
+
+export function layoutFromEditMode(
+  mode: EditWorkspaceMode,
+  fileBackedCount: number
+): RoughCutLayout {
+  if (mode === 'multicam') return 'MULTICAM';
+  return fileBackedCount <= 1 ? 'LINEAR' : 'SEQUENTIAL';
+}
+
 export function parseRecordedAtMs(value: string | null | undefined): number | null {
   if (!value || !value.trim()) return null;
   const trimmed = value.trim();

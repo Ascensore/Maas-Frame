@@ -6,7 +6,7 @@ import {
   type RmsSample,
 } from '../lib/rough-cut/attribute';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from '../lib/rough-cut/camera-roles';
-import { assembleDecisionList } from '../lib/rough-cut/decision-list';
+import { assembleDecisionList, parseRoughCutDecisionList } from '../lib/rough-cut/decision-list';
 import { computeRoughCutDecisions, computeLinearDecisions } from '../lib/rough-cut/decisions';
 import { isDiarizationEnvEnabled } from '../lib/rough-cut/env';
 import {
@@ -120,6 +120,16 @@ async function persistReady(
       rate.den,
       rate.dropFrame,
     ]
+  );
+
+  const parsed = parseRoughCutDecisionList(decisions);
+  const firstVersionId = parsed?.edits[0]?.sourceVersionId;
+  if (!firstVersionId) return;
+
+  await deps.pool.query(
+    `INSERT INTO media_jobs (id, kind, status, version_id, payload, attempts, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, 'MATERIALIZE_ROUGH_CUT', 'PENDING', $1, $2::jsonb, 0, NOW(), NOW())`,
+    [firstVersionId, JSON.stringify({ roughCutId })]
   );
 }
 
@@ -245,6 +255,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
      WHERE v."projectId" = $1 AND v.kind = 'VIDEO'
        AND (($2::text IS NULL AND v.folder_id IS NULL) OR v.folder_id = $2)
        AND vv."providerId" IN ('r2', 'bunny')
+       AND COALESCE(v.metadata->>'import_status', 'ready') = 'ready'
      ORDER BY v.position ASC, v.id ASC`,
     [cut.project_id, cut.folder_id]
   );

@@ -8,6 +8,8 @@ import PgBoss from 'pg-boss';
 import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
+import { importDriveFile } from './import-drive';
+import { materializeRoughCut } from './materialize-rough-cut';
 
 const { Pool } = pg;
 
@@ -444,6 +446,8 @@ const QUEUE = {
   TRANSCODE_PROXY: 'transcode-proxy',
   DIARIZE: 'diarize',
   ASSEMBLE_ROUGH_CUT: 'assemble-rough-cut',
+  IMPORT_DRIVE: 'import-drive',
+  MATERIALIZE_ROUGH_CUT: 'materialize-rough-cut',
 } as const;
 
 type MediaJobData = {
@@ -459,6 +463,8 @@ function queueForKind(kind: string): string {
   if (kind === 'TRANSCODE_PROXY') return QUEUE.TRANSCODE_PROXY;
   if (kind === 'DIARIZE') return QUEUE.DIARIZE;
   if (kind === 'ASSEMBLE_ROUGH_CUT') return QUEUE.ASSEMBLE_ROUGH_CUT;
+  if (kind === 'IMPORT_DRIVE') return QUEUE.IMPORT_DRIVE;
+  if (kind === 'MATERIALIZE_ROUGH_CUT') return QUEUE.MATERIALIZE_ROUGH_CUT;
   throw new Error(`Unknown job kind ${kind}`);
 }
 
@@ -521,6 +527,24 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
           objectKeyFromProvider,
           extractAudio,
           scriptDir: join(import.meta.dir, '..'),
+        },
+        roughCutId
+      );
+    } else if (kind === 'IMPORT_DRIVE') {
+      await importDriveFile({ pool, uploadObject }, data.versionId);
+    } else if (kind === 'MATERIALIZE_ROUGH_CUT') {
+      const roughCutId =
+        data.payload && typeof data.payload === 'object' && 'roughCutId' in data.payload
+          ? String((data.payload as { roughCutId?: unknown }).roughCutId ?? '')
+          : '';
+      if (!roughCutId) throw new Error('MATERIALIZE_ROUGH_CUT payload is missing roughCutId');
+      await materializeRoughCut(
+        {
+          pool,
+          run,
+          downloadObject,
+          uploadObject,
+          objectKeyFromProvider,
         },
         roughCutId
       );
@@ -624,6 +648,16 @@ async function start(): Promise<void> {
   await boss.work(QUEUE.ASSEMBLE_ROUGH_CUT, async (jobs) => {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'ASSEMBLE_ROUGH_CUT');
+    }
+  });
+  await boss.work(QUEUE.IMPORT_DRIVE, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'IMPORT_DRIVE');
+    }
+  });
+  await boss.work(QUEUE.MATERIALIZE_ROUGH_CUT, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'MATERIALIZE_ROUGH_CUT');
     }
   });
 

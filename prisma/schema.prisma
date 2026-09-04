@@ -369,9 +369,10 @@ model Video {
   updatedAt   DateTime @updatedAt
   
   // Relations
-  versions    VideoVersion[]
-  assets      VideoAsset[]
-  shareLinks  ShareLink[]
+  versions         VideoVersion[]
+  assets           VideoAsset[]
+  shareLinks       ShareLink[]
+  roughCutOutputs  RoughCut[]     @relation("RoughCutOutput")
   
   @@index([projectId])
   @@index([folderId])
@@ -1000,6 +1001,8 @@ enum MediaJobKind {
   TRANSCODE_PROXY
   DIARIZE
   ASSEMBLE_ROUGH_CUT
+  IMPORT_DRIVE
+  MATERIALIZE_ROUGH_CUT
 }
 
 enum RoughCutStatus {
@@ -1072,11 +1075,14 @@ model RoughCut {
   decisions        Json?
   warnings         Json?
   error            String?         @db.Text
+  outputVideoId    String?         @map("output_video_id")
+  outputVideo      Video?          @relation("RoughCutOutput", fields: [outputVideoId], references: [id], onDelete: SetNull)
   createdAt        DateTime        @default(now()) @map("created_at")
   updatedAt        DateTime        @updatedAt @map("updated_at")
 
   @@index([projectId, folderId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+  @@index([outputVideoId])
   @@map("rough_cuts")
 }
 

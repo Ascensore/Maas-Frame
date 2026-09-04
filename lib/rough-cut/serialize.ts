@@ -52,6 +52,7 @@ export function shapeRoughCut(row: {
   decisions: Prisma.JsonValue | null;
   warnings: Prisma.JsonValue | null;
   error: string | null;
+  outputVideoId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -70,6 +71,7 @@ export function shapeRoughCut(row: {
     syncReport: row.syncReport,
     warnings: row.warnings,
     error: row.error,
+    outputVideoId: row.outputVideoId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     hasDecisions: row.decisions !== null,

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, Loader2, UploadCloud, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +29,7 @@ import {
   cleanupPendingProjectUpload,
   getDefaultTitleFromFile,
   isReviewFile,
+  REVIEW_FILE_ACCEPT,
   uploadProjectVideo,
   type ActiveTusUpload,
   type PendingProjectUploadCleanup,
@@ -60,6 +62,10 @@ interface VideoDragDropUploaderProps {
   canUpload?: boolean;
   directUploadProvider?: DirectUploadProvider;
   folderId?: string | null;
+  /** On-page drop zone and file picker for a source bin (camera cards, disk). */
+  showBinPicker?: boolean;
+  pickerTitle?: string;
+  pickerDescription?: string;
 }
 
 function hasFileData(dataTransfer: DataTransfer | null): boolean {
@@ -84,6 +90,9 @@ export function VideoDragDropUploader({
   canUpload = false,
   directUploadProvider = 'bunny',
   folderId = null,
+  showBinPicker = false,
+  pickerTitle = 'Upload from this computer or a camera card',
+  pickerDescription = 'Drop files here or browse a card, disk, or folder. They land in the selected bin folder.',
 }: VideoDragDropUploaderProps) {
   const router = useRouter();
 
@@ -101,6 +110,7 @@ export function VideoDragDropUploader({
     fixedProjectName ?? null
   );
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const activeTusUploadRef = useRef<ActiveTusUpload | null>(null);
   const pendingUploadRef = useRef<(PendingProjectUploadCleanup & { projectId: string }) | null>(
     null
@@ -457,6 +467,35 @@ export function VideoDragDropUploader({
 
   return (
     <>
+      {showBinPicker && canUpload && (
+        <div className="rounded-2xl border-2 border-dashed border-border bg-muted/20 p-6 text-center">
+          <UploadCloud className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+          <p className="text-sm font-medium">{pickerTitle}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{pickerDescription}</p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            multiple
+            accept={REVIEW_FILE_ACCEPT}
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              event.target.value = '';
+              if (files.length > 0) handleDropFiles(files);
+            }}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-4"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Choose files
+          </Button>
+        </div>
+      )}
+
       {isDragActive && (
         <div className="pointer-events-none fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm">
           <div className="flex h-full items-center justify-center px-4">

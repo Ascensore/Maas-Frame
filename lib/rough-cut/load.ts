@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { inferCameraRole, metadataStringRecord } from '@/lib/rough-cut/camera-roles';
+import { readImportStatus } from '@/lib/rough-cut/drive-import';
 import type { LayoutGuessClip } from '@/lib/rough-cut/layout';
 import {
   BUILTIN_ROUGH_CUT_PROFILE,
@@ -80,6 +81,16 @@ export function isFileBackedProvider(providerId: string): boolean {
   return providerId === 'r2' || providerId === 'bunny';
 }
 
+export function isReadyFileBackedVideo(video: {
+  metadata: unknown;
+  versions: Array<{ providerId: string }>;
+}): boolean {
+  const version = video.versions[0];
+  if (!version || !isFileBackedProvider(version.providerId)) return false;
+  const status = readImportStatus(video.metadata);
+  return status !== 'pending' && status !== 'failed';
+}
+
 export function previewCameraRoles(
   videos: Awaited<ReturnType<typeof loadFolderVideos>>,
   metadataKey: string
@@ -92,7 +103,7 @@ export function previewCameraRoles(
       title: video.title,
       role: inferCameraRole(video.title, metadataStringRecord(video.metadata), metadataKey),
       providerId: version?.providerId ?? null,
-      fileBacked: version ? isFileBackedProvider(version.providerId) : false,
+      fileBacked: isReadyFileBackedVideo(video),
     };
   });
 }
