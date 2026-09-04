@@ -29,6 +29,13 @@ import {
   cameraClipToLayoutGuess,
   sortClipsChronologically,
 } from './layout';
+import {
+  illustrationCuesFor,
+  markersForBeat,
+  placeMarkers,
+  type MarkerRules,
+  type SourceMarker,
+} from './markers';
 import { assignClipExportFileNames } from './media-paths';
 import { profileFromSnapshot } from './profile';
 import { packTimeline, subtractTimelineRanges, toCutIsland } from './program';
@@ -53,6 +60,7 @@ import type {
   CameraClip,
   CutIsland,
   EditDecision,
+  Marker,
   RoughCutLayout,
   RoughCutWarning,
   SyncReport,
@@ -99,6 +107,7 @@ type Editorial = {
   ranking: BriefRankingCriterion[];
   followSpeaker: boolean;
   holdWideOnChaos: boolean;
+  markers: MarkerRules;
 };
 
 function editorialFromSnapshot(snapshot: BriefSnapshot | null): Editorial {
@@ -111,6 +120,7 @@ function editorialFromSnapshot(snapshot: BriefSnapshot | null): Editorial {
     ranking: brief?.ranking ?? DEFAULT_BRIEF_RANKING,
     followSpeaker: brief?.cameraGrammar.followSpeaker ?? true,
     holdWideOnChaos: brief?.cameraGrammar.holdWideOnChaos ?? false,
+    markers: brief?.markers ?? { infographicOnJargon: false, brollOnIllustration: false },
   };
 }
 
@@ -371,6 +381,8 @@ type EditorialResult = {
   /** Surviving beats per version, in source order. */
   beatsByVersion: Map<string, Beat[]>;
   cuts: SourceCut[];
+  /** Placeholder markers on the surviving beats, still in source time. */
+  markers: SourceMarker[];
 };
 
 /**
@@ -451,7 +463,22 @@ async function editorialPass(
     }
   }
 
-  return { beatsByVersion, cuts };
+  const markers: SourceMarker[] = [];
+  if (editorial.markers.infographicOnJargon || editorial.markers.brollOnIllustration) {
+    for (const material of transcripts) {
+      const own = material.language ?? language;
+      const markerOptions = {
+        rules: editorial.markers,
+        cues: illustrationCuesFor(own),
+        fillers: fillerWordsFor(own),
+      };
+      for (const beat of beatsByVersion.get(material.clip.versionId) ?? []) {
+        markers.push(...markersForBeat(beat, markerOptions));
+      }
+    }
+  }
+
+  return { beatsByVersion, cuts, markers };
 }
 
 function turnsFromBeats(beats: Beat[], versionId: string, offsetSeconds: number): AttributedTurn[] {
@@ -558,6 +585,13 @@ async function assembleLinearLayout(
     den: orderedClips[0]!.frameRateDen,
     dropFrame: orderedClips[0]!.dropFrame,
   };
+  const offsetByVersion = new Map(orderedClips.map((clip) => [clip.versionId, clip.offsetSeconds]));
+  const markers: Marker[] = placeMarkers(
+    result.markers,
+    edits,
+    (versionId) => offsetByVersion.get(versionId) ?? 0,
+    rate
+  );
   const fileNames = assignClipExportFileNames(orderedClips);
   const decisions = assembleDecisionList({
     edits,
@@ -566,6 +600,7 @@ async function assembleLinearLayout(
     mediaPathPrefix: profile.mediaPathPrefix,
     rate,
     cuts: result.cuts.map((cut) => toCutIsland(cut, rate)),
+    markers,
   });
   const syncReport: SyncReport = {
     strategy: 'AUTO',
@@ -829,6 +864,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     const refWav = wavs[refIndex] ?? wavs[0]!;
     let rawTurns: Array<{ start: number; end: number; speaker: string | null }> = [];
     let sourceCuts: SourceCut[] = [];
+    let sourceMarkers: SourceMarker[] = [];
     let cutOffset = 0;
 
     // Timeline-time speech from the session transcript. Its times are local
@@ -867,6 +903,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         wavFor,
       });
       sourceCuts = result.cuts;
+      sourceMarkers = result.markers;
       cutOffset = source.offsetSeconds;
       rawTurns = turnsFromBeats(
         result.beatsByVersion.get(source.versionId) ?? [],
@@ -972,6 +1009,13 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       )
     );
     const cuts: CutIsland[] = sourceCuts.map((cut) => toCutIsland(cut, rate));
+    const offsetByVersion = new Map(clips.map((clip) => [clip.versionId, clip.offsetSeconds]));
+    const markers: Marker[] = placeMarkers(
+      sourceMarkers,
+      edits,
+      (versionId) => offsetByVersion.get(versionId) ?? 0,
+      rate
+    );
     const fileNames = assignClipExportFileNames(clips);
     const decisions = assembleDecisionList({
       edits,
@@ -980,6 +1024,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       mediaPathPrefix: profile.mediaPathPrefix,
       rate,
       cuts,
+      markers,
     });
 
     const syncReport: SyncReport = { strategy, clips: syncClips };

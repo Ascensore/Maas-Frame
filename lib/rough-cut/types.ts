@@ -86,6 +86,22 @@ export type CutIsland = {
   transcriptText: string | null;
 };
 
+export const MARKER_KINDS = ['INFOGRAPHIC', 'BROLL'] as const;
+export type MarkerKind = (typeof MARKER_KINDS)[number];
+
+export const MARKER_REASON_CODES = ['MARKER_JARGON', 'MARKER_ILLUSTRATION'] as const;
+export type MarkerReasonCode = (typeof MARKER_REASON_CODES)[number];
+
+/** A placeholder for material to layer on later, placed on the program timeline. */
+export type Marker = {
+  key: string;
+  kind: MarkerKind;
+  timelineSeconds: number;
+  durationSeconds: number | null;
+  title: string;
+  reason: { code: MarkerReasonCode; summary: string };
+};
+
 export type RoughCutDecisionList = {
   version: 1;
   edits: EditDecision[];
@@ -106,6 +122,8 @@ export type RoughCutDecisionList = {
   };
   /** Only actual removals. Absent on runs made before the editorial pass existed. */
   cuts?: CutIsland[];
+  /** Placeholder markers on kept material. Absent on runs made before the editorial pass existed. */
+  markers?: Marker[];
 };
 
 export type RoughCutWarning = {
