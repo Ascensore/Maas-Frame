@@ -383,8 +383,9 @@ format because it has no stable keys.
    project type; folders and projects bind through `editorialBriefId`; the rough-cut POST
    accepts `briefId` and `projectType`, snapshots `{ briefId, source, layoutSource, brief }` on
    the run, and the assembler already reads the brief's silence policy for the kept-gap. UI:
-   a briefs card on workspace settings and a selector in the rough-cut dialog. Binding a
-   folder or project from the UI is API-only for now, as it is for profiles.
+   a briefs card on workspace settings, a selector in the rough-cut dialog, a project-level
+   binding on the project settings page, and a folder-or-project binding in the edit
+   workspace's destination card.
 3. Assembly: dead air, false starts, take selection (talking head / interview), multicam
    grammar with `holdWideOnChaos`.
 4. Additive decision-list fields with reasons; placeholder markers.
