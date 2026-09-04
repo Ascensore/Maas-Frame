@@ -829,6 +829,7 @@ async function publishPending(boss: PgBoss): Promise<void> {
       `SELECT id, kind, version_id, payload
        FROM media_jobs
        WHERE status = 'PENDING'
+         AND (run_after IS NULL OR run_after <= NOW())
        ORDER BY created_at ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 20`

@@ -7,7 +7,7 @@
   infographics on top later.
 
 Revision 2 folds in a review against the code on `master` (`lib/rough-cut/`,
-`worker/src/assemble-rough-cut.ts`, `lib/transcription/`, `prisma/schema.prisma`). Where the
+`lib/rough-cut/assemble-job.ts`, `lib/transcription/`, `prisma/schema.prisma`). Where the
 first draft proposed something the repo already has, this revision names the existing piece and
 scopes the work to the gap.
 
@@ -32,15 +32,15 @@ instead. Every editorial decision below depends on closing that gap first.
 
 ## Decision summary
 
-| Choice              | Decision                                                                                                  |
-| ------------------- | --------------------------------------------------------------------------------------------------------- |
-| Style system        | Structured editorial brief (workspace templates + folder/project binding), not knobs-only or example-driven learning |
-| Default ranking     | Cleanliness first, energy second, most-recent take as the deterministic tiebreak; optional script-match when the brief needs it |
-| v1 Ascensore scope  | A-roll + placeholder markers for infographics / B-roll (no real media resolution yet)                       |
-| Transcription       | Reuse the existing per-version `Transcript`; the assembler consumes it and waits for it (bounded)          |
-| Quality loop        | Post-edit Program + cuts view with restore / keep overrides applied in-app, re-materialize only            |
-| Decision list       | Extend `version: 1` additively (cuts, markers, per-edit reason); no version bump                          |
-| Overrides           | Stored on the `RoughCut` row, keyed by source range, copied forward on regenerate                         |
+| Choice             | Decision                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Style system       | Structured editorial brief (workspace templates + folder/project binding), not knobs-only or example-driven learning            |
+| Default ranking    | Cleanliness first, energy second, most-recent take as the deterministic tiebreak; optional script-match when the brief needs it |
+| v1 Ascensore scope | A-roll + placeholder markers for infographics / B-roll (no real media resolution yet)                                           |
+| Transcription      | Reuse the existing per-version `Transcript`; the assembler consumes it and waits for it (bounded)                               |
+| Quality loop       | Post-edit Program + cuts view with restore / keep overrides applied in-app, re-materialize only                                 |
+| Decision list      | Extend `version: 1` additively (cuts, markers, per-edit reason); no version bump                                                |
+| Overrides          | Stored on the `RoughCut` row, keyed by source range, copied forward on regenerate                                               |
 
 ## Architecture
 
@@ -58,13 +58,13 @@ Media
 
 ### Roles
 
-| Piece            | Responsibility                                                                 |
-| ---------------- | ------------------------------------------------------------------------------ |
-| Editorial brief  | Intent and policy — what "good" means for this project                         |
-| Material model   | Facts about footage (derived from the canonical transcript + clip metadata)    |
-| Assembler        | Applies brief to material → timeline + cut islands + markers + reasons         |
-| Overrides        | Human decisions stored explicitly on the run; `applyOverrides` is a pure function |
-| RoughCutProfile  | Technical defaults under the brief; the brief's `technical` block overrides sparsely |
+| Piece           | Responsibility                                                                       |
+| --------------- | ------------------------------------------------------------------------------------ |
+| Editorial brief | Intent and policy — what "good" means for this project                               |
+| Material model  | Facts about footage (derived from the canonical transcript + clip metadata)          |
+| Assembler       | Applies brief to material → timeline + cut islands + markers + reasons               |
+| Overrides       | Human decisions stored explicitly on the run; `applyOverrides` is a pure function    |
+| RoughCutProfile | Technical defaults under the brief; the brief's `technical` block overrides sparsely |
 
 ## Editorial brief
 
@@ -160,15 +160,15 @@ winning source (dialog, bias, guess) is recorded in the run's warnings/provenanc
 
 ### Project-type templates (v1)
 
-|                  | Ascensore                                   | Talking head                              | Interview / multi-person                          |
-| ---------------- | ------------------------------------------- | ----------------------------------------- | ------------------------------------------------- |
-| Intent           | Shark Tank–like continuous show take        | Single-speaker content, often with retries | Interviews, 24h founder, multi-person sessions   |
-| Layout bias      | MULTICAM                                    | null (guess; usually LINEAR / SEQUENTIAL) | null (guess; MULTICAM or sequential by session)   |
-| Silence          | high                                        | medium                                    | medium; never cut inside a beat                   |
-| Takes            | disabled                                    | enabled, `semantic_beat`                  | enabled, `semantic_beat`; keep strong reactions   |
-| Camera           | followSpeaker, holdWideOnChaos              | followSpeaker off (A-cam), no chaos rule  | followSpeaker, holdWideOnChaos                    |
-| Markers          | jargon → INFOGRAPHIC, illustration → BROLL  | occasional BROLL                          | sparse BROLL; no infographic                      |
-| Review defaults  | show all removed dead-air islands           | show dropped false starts / alt takes     | show trimmed tangents + rejected takes            |
+|                 | Ascensore                                  | Talking head                               | Interview / multi-person                        |
+| --------------- | ------------------------------------------ | ------------------------------------------ | ----------------------------------------------- |
+| Intent          | Shark Tank–like continuous show take       | Single-speaker content, often with retries | Interviews, 24h founder, multi-person sessions  |
+| Layout bias     | MULTICAM                                   | null (guess; usually LINEAR / SEQUENTIAL)  | null (guess; MULTICAM or sequential by session) |
+| Silence         | high                                       | medium                                     | medium; never cut inside a beat                 |
+| Takes           | disabled                                   | enabled, `semantic_beat`                   | enabled, `semantic_beat`; keep strong reactions |
+| Camera          | followSpeaker, holdWideOnChaos             | followSpeaker off (A-cam), no chaos rule   | followSpeaker, holdWideOnChaos                  |
+| Markers         | jargon → INFOGRAPHIC, illustration → BROLL | occasional BROLL                           | sparse BROLL; no infographic                    |
+| Review defaults | show all removed dead-air islands          | show dropped false starts / alt takes      | show trimmed tangents + rejected takes          |
 
 Default ranking for all templates: `['cleanliness', 'energy']`.
 
@@ -189,15 +189,20 @@ explainable.
   timings are file-local; the assembler shifts them by the clip's sync offset, as it already
   does for VAD turns. Reducing transcription cost for secondary cameras is a follow-up, not v1.
 - **Waiting rule.** ASSEMBLE_ROUGH_CUT is enqueued at POST time and there is no job dependency.
-  If the canonical transcript is PENDING or RUNNING and younger than 15 minutes, the job
-  requeues itself with a delay (pg-boss retry) and the run stays RUNNING with warning
-  `waiting-for-transcript`. Past the timeout, or when the transcript is FAILED or absent, it
-  falls back to the current VAD path and emits `weak-transcript`. This bounds the case where no
-  worker is attached and inline transcription refused a large file.
+  While nothing is READY, an in-progress transcript is worth waiting for as long as the run is
+  younger than 15 minutes: the job writes warning `waiting-for-transcript` on the run, leaves it
+  RUNNING, and inserts a fresh ASSEMBLE_ROUGH_CUT media job with `run_after` set 60 s out, which
+  the worker's publish loop skips until due. Past the limit, or when the transcript is FAILED,
+  absent, or READY with no segments, it falls back to the VAD path and emits `weak-transcript`.
+  The limit is measured from the run's creation, not the transcript's age: the worker running
+  this job is the worker that finishes transcripts, so a long queue is not a reason to give up
+  early, and a stuck job is caught by the limit. (Implemented in phase 1.)
 - **Confidence.** Word JSON carries start, end, text only; providers' per-segment scores are not
   stored. v1 defines "weak transcript" on data that exists: transcript FAILED or absent, words
-  per second outside 0.5–6 over the whole file, or more than 20% of segments empty. Adding an
-  optional per-segment `confidence` when a provider exposes it is a follow-up.
+  per second outside 0.5–6 measured over speech time, or more than 20% of segments empty. A
+  weak transcript is still used; the warning tells the reviewer to look closely. Adding an
+  optional per-segment `confidence` when a provider exposes it is a follow-up. (Implemented in
+  phase 1 as `assessTranscriptQuality` in `lib/rough-cut/transcript-source.ts`.)
 - **Language.** The transcript row carries `language`. Filler lists, restart detection and
   false-start matching are language-aware; v1 ships English and Italian tables and treats other
   languages as "no filler list" (cleanliness then scores restarts and internal pauses only).
@@ -206,7 +211,7 @@ explainable.
 
 | Unit       | Meaning                                                                                |
 | ---------- | -------------------------------------------------------------------------------------- |
-| Clip       | File + camera role + sync offset (existing `CameraClip`)                                |
+| Clip       | File + camera role + sync offset (existing `CameraClip`)                               |
 | Segment    | Timed speech / silence from the transcript (VAD turns when falling back)               |
 | Beat       | Editorial unit: a run of segments with no gap above the between-beat threshold         |
 | Take group | Beats whose normalized text overlaps (see Take selection); usually empty for Ascensore |
@@ -218,7 +223,8 @@ consumer needs it.
 
 ### Assembly steps
 
-1. Transcript → segments (fallback: VAD turns)
+1. Transcript → segments (fallback: VAD turns). Until the brief exists, pauses up to 0.8 s (the
+   medium inside-a-beat value) are absorbed into one turn; a speaker change is never absorbed.
 2. Segments → beats using the between-beat gap threshold
 3. When `takeSelection.enabled`: group beats into take groups, score, pick one, record the others
    as `REJECTED_TAKE`
@@ -338,15 +344,15 @@ timeline. That is the practical bar for "~95% of a pro editor".
 
 ## Data model changes
 
-| Change                                     | Shape                                                                 |
-| ------------------------------------------ | --------------------------------------------------------------------- |
-| `EditorialBrief` (new)                     | workspace-scoped; `projectType` enum column; `config` JSON; `isDefault` |
-| `Folder.editorialBriefId`                  | nullable, SetNull on delete, same as `roughCutProfileId`               |
-| `Project.editorialBriefId`                 | nullable, SetNull on delete; covers root-level cuts                    |
-| `RoughCut.briefSnapshot`                   | JSON, resolved brief at run time                                       |
-| `RoughCut.overrides`                       | JSON, nullable                                                         |
-| `RoughCut.basedOnRoughCutId`               | nullable self-relation                                                 |
-| Decision list                              | additive `cuts`, `markers`, `edits[].reason`; version stays 1          |
+| Change                       | Shape                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `EditorialBrief` (new)       | workspace-scoped; `projectType` enum column; `config` JSON; `isDefault` |
+| `Folder.editorialBriefId`    | nullable, SetNull on delete, same as `roughCutProfileId`                |
+| `Project.editorialBriefId`   | nullable, SetNull on delete; covers root-level cuts                     |
+| `RoughCut.briefSnapshot`     | JSON, resolved brief at run time                                        |
+| `RoughCut.overrides`         | JSON, nullable                                                          |
+| `RoughCut.basedOnRoughCutId` | nullable self-relation                                                  |
+| Decision list                | additive `cuts`, `markers`, `edits[].reason`; version stays 1           |
 
 No `RoughCutRevision` table: a `RoughCut` row is already one run. No `TranscriptAsset`: the
 transcript tables already fill that role. The existing `EditPlan` (`lib/agents/edit-plan.ts`,
@@ -355,20 +361,22 @@ format because it has no stable keys.
 
 ## Error handling
 
-| Situation                                        | Behaviour                                                                 |
-| ------------------------------------------------ | ------------------------------------------------------------------------- |
-| Transcript pending, under 15 min                 | requeue with delay; warning `waiting-for-transcript`                       |
-| Transcript failed / absent / timed out           | VAD fallback; warning `weak-transcript`; review UI shows "review carefully" |
-| Sync failure (multicam)                          | existing sync report warnings; camera grammar degrades to wide/hold        |
-| Program empty after silence policy               | keep the existing full-clip fallback; warning `empty-program` suggesting lower aggressiveness (do not fail the run) |
-| Pinned override no longer maps after regenerate  | keep the rest; warning `override-unmapped` listing keys                     |
-| `script_match` requested                          | ignored; warning `script-match-unavailable`                                |
+| Situation                                       | Behaviour                                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Transcript pending, under 15 min                | requeue with delay; warning `waiting-for-transcript`                                                                |
+| Transcript failed / absent / timed out          | VAD fallback; warning `weak-transcript`; review UI shows "review carefully"                                         |
+| Sync failure (multicam)                         | existing sync report warnings; camera grammar degrades to wide/hold                                                 |
+| Program empty after silence policy              | keep the existing full-clip fallback; warning `empty-program` suggesting lower aggressiveness (do not fail the run) |
+| Pinned override no longer maps after regenerate | keep the rest; warning `override-unmapped` listing keys                                                             |
+| `script_match` requested                        | ignored; warning `script-match-unavailable`                                                                         |
 
 ## Phasing
 
 ### v1 — Trustworthy A-roll + audit
 
-1. Assembler reads the canonical transcript with the waiting rule and VAD fallback.
+1. Assembler reads the canonical transcript with the waiting rule and VAD fallback. **Done.**
+   The job moved from `worker/src` to `lib/rough-cut/assemble-job.ts` so it is type-checked,
+   linted and unit tested with the app; the worker re-exports it.
 2. Brief model, three templates, folder/project binding, merge order, `briefSnapshot`.
 3. Assembly: dead air, false starts, take selection (talking head / interview), multicam
    grammar with `holdWideOnChaos`.
@@ -436,5 +444,6 @@ classified in `tests/api/auth-matrix.test.ts` or the suite fails.
 
 - Whether `Project.editorialBriefId` should also carry a `roughCutProfileId` so root-level cuts
   stop skipping folder profiles entirely (small, related fix).
-- Exact pg-boss retry configuration for the waiting rule (retry limit vs. explicit delayed
-  re-send).
+- ~~Exact pg-boss retry configuration for the waiting rule.~~ Resolved: a delayed `media_jobs`
+  row (`run_after`) rather than pg-boss retries, so the wait survives a worker restart and shows
+  up in the same table as every other job.

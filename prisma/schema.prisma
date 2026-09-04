@@ -1164,6 +1164,7 @@ model MediaJob {
   payload    Json?
   error      String?        @db.Text
   attempts   Int            @default(0)
+  runAfter   DateTime?      @map("run_after")
   startedAt  DateTime?      @map("started_at")
   finishedAt DateTime?      @map("finished_at")
   createdAt  DateTime       @default(now()) @map("created_at")
