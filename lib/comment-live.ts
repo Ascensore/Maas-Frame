@@ -26,6 +26,19 @@ export function formatSseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function quotePgIdent(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+/**
+ * LISTEN holds a dedicated session-mode connection for the whole SSE lifetime.
+ * On Vercel that pins a slot in a 15-client pooler and takes down every
+ * dashboard page (`EMAXCONNSESSION`). The client already polls comments.
+ */
+export function shouldListenForCommentLive(): boolean {
+  return process.env.VERCEL !== '1';
+}
+
 export async function connectCommentLiveListener(
   versionId: string
 ): Promise<{ client: Client; channel: string } | null> {
@@ -35,23 +48,25 @@ export async function connectCommentLiveListener(
   const client = new Client({
     connectionString,
     application_name: `ofc-live:${versionId}`,
+    connectionTimeoutMillis: 5000,
   });
-  await client.connect();
-  await client.query(`LISTEN ${channel}`);
-  return { client, channel };
+  try {
+    await client.connect();
+    await client.query(`LISTEN ${quotePgIdent(channel)}`);
+    return { client, channel };
+  } catch (error) {
+    await client.end().catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function notifyCommentChanged(versionId: string): Promise<void> {
   const channel = commentLiveChannel(versionId);
-  const connectionString = process.env.DATABASE_URL;
-  if (!channel || !connectionString) return;
-  const client = new Client({ connectionString });
+  if (!channel) return;
   try {
-    await client.connect();
-    await client.query('SELECT pg_notify($1, $2)', [channel, encodeCommentLiveEvent(versionId)]);
+    const { db } = await import('@/lib/db');
+    await db.$executeRaw`SELECT pg_notify(${channel}, ${encodeCommentLiveEvent(versionId)})`;
   } catch (error) {
     logError('Failed to notify comment listeners:', error);
-  } finally {
-    await client.end().catch(() => undefined);
   }
 }

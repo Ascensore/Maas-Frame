@@ -52,14 +52,20 @@ On Vercel, `DATABASE_URL` must use the Supabase **session pooler** (IPv4), not
 the direct `db.<ref>.supabase.co` host. That host is IPv6-only, so serverless
 functions cannot reach it (`P1001`). Session pooler is
 `postgres.<ref>@aws-1-eu-west-1.pooler.supabase.com:5432` with
-`sslmode=no-verify`. Transaction mode (`:6543`) breaks `LISTEN`/`NOTIFY` used
-by live comments.
+`sslmode=no-verify`.
 
 The session pooler admits only `pool_size` clients at once (15 on the current
 compute). Each Vercel isolate therefore opens **one** pooled connection and
 drops it after 5 idle seconds (`lib/db-pool.ts`). A pool of 20 per isolate
 exceeds that cap immediately (`EMAXCONNSESSION`) and takes down the dashboard
 and video player together.
+
+Live comments use `LISTEN`/`NOTIFY` only off Vercel (Docker / a long-running
+Node process). A dedicated `LISTEN` connection per open review page used to pin
+a pooler slot for up to 300 seconds and exhausted the cap. On Vercel the live
+route keeps the SSE open without `LISTEN`; the client already polls comments
+every 10s. The media worker also caps its `pg` and pg-boss pools at 2 each so
+it cannot take the remaining slots.
 
 A blank Postgres cannot be bootstrapped with `bun run db:migrate` alone (the
 migration history was applied with `db push` and then marked applied). Use
