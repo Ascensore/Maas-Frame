@@ -2,17 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building2, FolderOpen, LayoutDashboard, MessageSquareQuote, Settings } from 'lucide-react';
+import { Building2, FolderOpen, LayoutDashboard, MessageSquareQuote } from 'lucide-react';
 import { BrandLockup } from '@/components/brand/brand-mark';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { UserAccountMenu, type AppNavUser } from '@/components/layout/user-account-menu';
 import { cn } from '@/lib/utils';
 
-export interface AppNavUser {
-  name?: string | null;
-  email?: string | null;
-  image?: string | null;
-  isAdmin?: boolean;
-}
+export type { AppNavUser };
 
 export const APP_NAV_ITEMS = [
   {
@@ -95,28 +90,7 @@ export function AppSidebar({
       ) : null}
 
       <div className="mt-auto flex flex-col gap-3 px-1">
-        {user ? (
-          <Link
-            href="/settings"
-            className="flex items-center gap-2.5 rounded-[10px] py-1 hover:bg-accent"
-          >
-            <Avatar className="h-[26px] w-[26px]">
-              <AvatarImage src={user.image ?? undefined} alt={user.name ?? ''} />
-              <AvatarFallback className="text-[10px]">
-                {user.name?.charAt(0).toUpperCase() ?? 'U'}
-              </AvatarFallback>
-            </Avatar>
-            <span className="min-w-0">
-              <span className="block truncate text-xs font-semibold text-foreground">
-                {user.name ?? 'Account'}
-              </span>
-              <span className="flex items-center gap-1 text-[10.5px] font-medium text-muted-foreground">
-                <Settings className="size-3" />
-                Settings
-              </span>
-            </span>
-          </Link>
-        ) : null}
+        {user ? <UserAccountMenu user={user} /> : null}
       </div>
     </aside>
   );
