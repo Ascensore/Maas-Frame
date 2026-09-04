@@ -107,6 +107,43 @@ describe('runTranscriptionForVersion', () => {
     expect(jobs.find((job) => job.kind === MediaJobKind.TRANSCRIBE)?.error).toBeNull();
   });
 
+  it('stores the detected language and does not tell the provider the audio is English', async () => {
+    const { version, transcript } = await seedR2Version();
+    await db.transcript.update({
+      where: { id: transcript.id },
+      data: { language: 'und' },
+    });
+    transcribe.mockResolvedValueOnce({
+      language: 'it',
+      segments: [
+        {
+          start: 0,
+          end: 1,
+          text: 'Ciao dal mock',
+          words: [{ start: 0, end: 1, text: 'Ciao' }],
+        },
+      ],
+    });
+
+    await runTranscriptionForVersion({
+      versionId: version.id,
+      language: 'und',
+      transcriptId: transcript.id,
+    });
+
+    const row = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    expect(row.status).toBe(TranscriptStatus.READY);
+    expect(row.language).toBe('it');
+    expect(row.searchText).toBe('Ciao dal mock');
+    expect(row.translationLanguage).toBeNull();
+    expect(row.translationStatus).toBeNull();
+    expect(row.translatedTexts).toBeNull();
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith({
+      audioPath: expect.stringMatching(/source\.mp4$/),
+    });
+  });
+
   it('marks the transcript and transcribe jobs FAILED when download throws', async () => {
     const { version, transcript } = await seedR2Version();
     vi.mocked(downloadVideoObject).mockRejectedValueOnce(new Error('R2 exploded'));

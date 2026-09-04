@@ -44,6 +44,17 @@ describe('pickYoutubeCaptionTrack', () => {
     );
     expect(chosen?.baseUrl).toBe('https://example.test/de');
   });
+
+  it('picks the original-language human track when no language is requested', () => {
+    const chosen = pickYoutubeCaptionTrack(
+      [
+        { languageCode: 'it', baseUrl: 'https://example.test/it' },
+        { languageCode: 'en', baseUrl: 'https://example.test/en' },
+      ],
+      ''
+    );
+    expect(chosen?.baseUrl).toBe('https://example.test/it');
+  });
 });
 
 describe('parseYoutubeJson3Events', () => {

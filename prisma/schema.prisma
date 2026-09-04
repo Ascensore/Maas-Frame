@@ -1200,18 +1200,22 @@ model AgentRun {
 }
 
 model Transcript {
-  id           String            @id @default(cuid())
-  versionId    String            @map("version_id")
-  version      VideoVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  language     String            @default("en")
-  provider     String
-  status       TranscriptStatus  @default(PENDING)
-  searchText   String            @default("") @db.Text @map("search_text")
-  searchVector Unsupported("tsvector")? @map("search_vector")
-  error        String?           @db.Text
-  createdAt    DateTime          @default(now()) @map("created_at")
-  updatedAt    DateTime          @updatedAt @map("updated_at")
-  segments     TranscriptSegment[]
+  id                   String            @id @default(cuid())
+  versionId            String            @map("version_id")
+  version              VideoVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  language             String            @default("und")
+  provider             String
+  status               TranscriptStatus  @default(PENDING)
+  searchText           String            @default("") @db.Text @map("search_text")
+  searchVector         Unsupported("tsvector")? @map("search_vector")
+  error                String?           @db.Text
+  translationLanguage  String?           @map("translation_language")
+  translationStatus    TranscriptStatus? @map("translation_status")
+  translationError     String?           @db.Text @map("translation_error")
+  translatedTexts      Json?             @map("translated_texts")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+  segments             TranscriptSegment[]
 
   @@unique([versionId, language])
   @@index([versionId])

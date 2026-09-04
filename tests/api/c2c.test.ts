@@ -345,13 +345,13 @@ describe('C2C ingest', () => {
       'TRANSCRIBE',
     ]);
     const transcript = await db.transcript.findFirstOrThrow({
-      where: { versionId, language: 'en' },
+      where: { versionId, language: 'und' },
     });
     expect(transcript.status).toBe(TranscriptStatus.PENDING);
     const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
-    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(transcribe?.payload).toEqual({ language: 'und', transcriptId: transcript.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(versionId, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(versionId, 'und', transcript.id);
   });
 
   it('lands files in the connection folder', async () => {

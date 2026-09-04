@@ -1,4 +1,5 @@
 import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
+import { AUTO_DETECT_TRANSCRIPT_LANGUAGE, languageForProvider } from '@/lib/transcription/language';
 import type { TranscriptionProvider, TranscriptionResult } from '@/lib/transcription/types';
 
 export const openaiProvider: TranscriptionProvider = {
@@ -13,12 +14,14 @@ export const openaiProvider: TranscriptionProvider = {
     const path = await import('node:path');
     const audio = await fs.readFile(input.audioPath);
     const fileName = path.basename(input.audioPath) || 'audio.wav';
+    const language = languageForProvider(input.language);
 
     const form = new FormData();
     form.set('model', 'whisper-1');
     form.set('response_format', 'verbose_json');
     form.set('timestamp_granularities[]', 'word');
-    if (input.language) form.set('language', input.language);
+    form.set('temperature', '0');
+    if (language) form.set('language', language);
     form.set(
       'file',
       new Blob([new Uint8Array(audio)], { type: mediaTypeFromFileName(fileName) }),
@@ -41,6 +44,7 @@ export const openaiProvider: TranscriptionProvider = {
       segments?: Array<{ start?: number; end?: number; text?: string }>;
     };
 
+    const detected = body.language ?? language ?? AUTO_DETECT_TRANSCRIPT_LANGUAGE;
     const words = (body.words ?? [])
       .filter((word) => typeof word.word === 'string')
       .map((word) => ({
@@ -51,13 +55,13 @@ export const openaiProvider: TranscriptionProvider = {
 
     if (words.length > 0) {
       return {
-        language: body.language ?? input.language ?? 'en',
+        language: detected,
         segments: groupWords(words),
       };
     }
 
     return {
-      language: body.language ?? input.language ?? 'en',
+      language: detected,
       segments: (body.segments ?? [])
         .filter((segment) => typeof segment.text === 'string' && segment.text.trim())
         .map((segment) => ({

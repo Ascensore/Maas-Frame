@@ -1,5 +1,6 @@
 import { cueToTimedSegment, MAX_TRANSCRIPT_SEGMENTS } from '@/lib/transcript-import';
 import type { TranscriptImportSegment } from '@/lib/transcript-import';
+import { AUTO_DETECT_TRANSCRIPT_LANGUAGE } from '@/lib/transcription/language';
 
 /**
  * Public Android InnerTube key shipped in the YouTube Android client.
@@ -113,7 +114,7 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
 
 export async function fetchYoutubeTranscript(
   videoId: string,
-  language = 'en'
+  language = ''
 ): Promise<YoutubeTranscriptResult> {
   if (!isYoutubeVideoId(videoId)) {
     return { ok: false, error: 'This YouTube version has no usable video id' };
@@ -174,7 +175,7 @@ export async function fetchYoutubeTranscript(
 
     return {
       ok: true,
-      language: track.languageCode?.toLowerCase() || language || 'en',
+      language: track.languageCode?.toLowerCase() || language || AUTO_DETECT_TRANSCRIPT_LANGUAGE,
       segments,
     };
   } catch (error) {

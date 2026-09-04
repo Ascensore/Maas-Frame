@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type MouseEvent } from 'react';
-import { Captions, Loader2, Search, Upload } from 'lucide-react';
+import { Captions, Languages, Loader2, Search, Upload } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,6 +12,11 @@ import {
 } from '@/lib/transcript-comment';
 import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
+import {
+  canShowTranscriptTranslation,
+  overlayTranslatedSegmentTexts,
+  type TranscriptTranslationPayload,
+} from '@/lib/transcript-translation';
 import { cn } from '@/lib/utils';
 
 export type TranscriptWord = {
@@ -37,6 +42,7 @@ export type TranscriptPayload = {
   provider: string;
   status: 'PENDING' | 'RUNNING' | 'READY' | 'FAILED';
   error?: string | null;
+  translation?: TranscriptTranslationPayload | null;
   segments: TranscriptSegment[];
 } | null;
 
@@ -297,6 +303,8 @@ export const TranscriptPane = memo(function TranscriptPane({
   const [loading, setLoading] = useState(false);
   const [enqueueing, setEnqueueing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [showTranslated, setShowTranslated] = useState(false);
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
@@ -330,24 +338,37 @@ export const TranscriptPane = memo(function TranscriptPane({
   );
 
   useEffect(() => {
+    setShowTranslated(false);
     void fetchTranscript();
   }, [fetchTranscript]);
 
   useEffect(() => {
     if (!versionId) return;
-    if (transcript?.status !== 'PENDING' && transcript?.status !== 'RUNNING') return;
+    const status = transcript?.status;
+    const translationStatus = transcript?.translation?.status;
+    const shouldPoll =
+      status === 'PENDING' ||
+      status === 'RUNNING' ||
+      translationStatus === 'PENDING' ||
+      translationStatus === 'RUNNING';
+    if (!shouldPoll) return;
     const timer = window.setInterval(() => {
       void fetchTranscript({ silent: true });
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [versionId, transcript?.status, fetchTranscript]);
+  }, [versionId, transcript?.status, transcript?.translation?.status, fetchTranscript]);
+
+  const visibleSegments = useMemo(() => {
+    const segments = transcript?.segments ?? [];
+    if (!showTranslated) return segments;
+    return overlayTranslatedSegmentTexts(segments, transcript?.translation?.texts);
+  }, [transcript, showTranslated]);
 
   const filtered = useMemo(() => {
-    const segments = transcript?.segments ?? [];
     const needle = query.trim().toLowerCase();
-    if (!needle) return segments;
-    return segments.filter((segment) => segment.text.toLowerCase().includes(needle));
-  }, [transcript, query]);
+    if (!needle) return visibleSegments;
+    return visibleSegments.filter((segment) => segment.text.toLowerCase().includes(needle));
+  }, [visibleSegments, query]);
 
   const showList = transcript?.status === 'READY' && filtered.length > 0;
   const rowProps = useMemo(
@@ -391,8 +412,9 @@ export const TranscriptPane = memo(function TranscriptPane({
   }, [showList, getCurrentTime, filtered]);
 
   const handleDownloadVtt = () => {
-    if (!transcript || transcript.segments.length === 0) return;
-    const body = transcript.segments
+    const segments = visibleSegments;
+    if (!transcript || segments.length === 0) return;
+    const body = segments
       .map((segment) => {
         const start = toVttTime(segment.startSec);
         const end = toVttTime(segment.endSec);
@@ -422,7 +444,7 @@ export const TranscriptPane = memo(function TranscriptPane({
       const response = await fetch(`/api/versions/${versionId}/transcript`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ language: 'en' }),
+        body: JSON.stringify({}),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
@@ -435,6 +457,31 @@ export const TranscriptPane = memo(function TranscriptPane({
       setError(err instanceof Error ? err.message : 'Failed to start transcription');
     } finally {
       setEnqueueing(false);
+    }
+  };
+
+  const handleTranslate = async () => {
+    if (!versionId) return;
+    setTranslating(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/versions/${versionId}/transcript/translate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ language: 'en' }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          typeof body?.error === 'string' ? body.error : 'Failed to translate transcript'
+        );
+      }
+      setShowTranslated(true);
+      await fetchTranscript({ silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to translate transcript');
+    } finally {
+      setTranslating(false);
     }
   };
 
@@ -473,7 +520,7 @@ export const TranscriptPane = memo(function TranscriptPane({
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -527,6 +574,36 @@ export const TranscriptPane = memo(function TranscriptPane({
             <span className="ml-1">{transcript ? 'Re-run' : 'Transcribe'}</span>
           </Button>
         )}
+        {transcript?.status === 'READY' &&
+          transcript.segments.length > 0 &&
+          (transcript.translation?.status === 'READY' ? (
+            <Button
+              size="sm"
+              variant={showTranslated ? 'default' : 'outline'}
+              className="h-8"
+              onClick={() => setShowTranslated((current) => !current)}
+            >
+              <Languages className="h-4 w-4" />
+              <span className="ml-1">{showTranslated ? 'Original' : 'English'}</span>
+            </Button>
+          ) : canTranscribe && canShowTranscriptTranslation(transcript.language) ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => void handleTranslate()}
+              disabled={translating || transcript.translation?.status === 'RUNNING'}
+            >
+              {translating || transcript.translation?.status === 'RUNNING' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Languages className="h-4 w-4" />
+              )}
+              <span className="ml-1">
+                {transcript.translation?.status === 'RUNNING' ? 'Translating' : 'Translate'}
+              </span>
+            </Button>
+          ) : null)}
         {transcript?.status === 'READY' && transcript.segments.length > 0 && (
           <Button size="sm" variant="outline" className="h-8" onClick={handleDownloadVtt}>
             VTT

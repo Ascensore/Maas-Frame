@@ -11,7 +11,11 @@ def main() -> int:
         return 2
 
     audio_path = sys.argv[1]
-    language = sys.argv[2] if len(sys.argv) > 2 else None
+    language_arg = sys.argv[2] if len(sys.argv) > 2 else None
+    if not language_arg or language_arg in ("und", "auto"):
+        language = None
+    else:
+        language = language_arg
 
     try:
         from faster_whisper import WhisperModel
@@ -50,7 +54,7 @@ def main() -> int:
 
     json.dump(
         {
-            "language": info.language or language or "en",
+            "language": info.language or language or "und",
             "segments": segments,
         },
         sys.stdout,
