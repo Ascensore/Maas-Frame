@@ -52,6 +52,11 @@ describe('readEmbeddedTimecode', () => {
         streams: [
           {
             codec_type: 'data',
+            codec_name: 'other',
+            tags: { timecode: '09:00:00:00' },
+          },
+          {
+            codec_type: 'data',
             codec_name: 'unknown',
             tags: { handler_name: 'Time Code Media Handler', time_code: '15:41:07:10' },
           },
@@ -113,13 +118,20 @@ describe('readEmbeddedCreationTime', () => {
     ).toBe('2026-03-15T14:22:01.000Z');
   });
 
-  it('reads a QuickTime date tag, then a generic date tag', () => {
+  it('prefers QuickTime creationdate over a generic date tag on the same bag', () => {
     expect(
       readEmbeddedCreationTime({
-        format: { tags: { 'com.apple.quicktime.creationdate': '2026-03-15T14:22:01+0100' } },
+        format: {
+          tags: {
+            date: '2026:01:01 00:00:00',
+            'com.apple.quicktime.creationdate': '2026-03-15T14:22:01+0100',
+          },
+        },
       })?.toISOString()
     ).toBe('2026-03-15T13:22:01.000Z');
+  });
 
+  it('reads a generic date tag when creation_time is missing', () => {
     expect(
       readEmbeddedCreationTime({
         format: { tags: { date: '2026:03:15 14:22:01' } },
@@ -169,10 +181,10 @@ describe('readEmbeddedCameraLabel', () => {
     ).toBe('Apple iPhone 15 Pro');
   });
 
-  it('ignores muxer encoder strings', () => {
+  it('ignores muxer encoder strings on make or model', () => {
     expect(
       readEmbeddedCameraLabel({
-        format: { tags: { encoder: 'Lavf60.16.100' } },
+        format: { tags: { model: 'Lavf60.16.100', make: 'Lavc' } },
       })
     ).toBeNull();
   });

@@ -3,12 +3,13 @@ import {
   applyCameraRole,
   applyClipOrder,
   assemblyFromSnapshot,
+  orderClipsForLinearLayout,
   parseCameraRoles,
   parseClipOrder,
   parseWideCameraRole,
   snapshotWithAssembly,
 } from '@/lib/rough-cut/assembly';
-import { BUILTIN_ROUGH_CUT_PROFILE } from '@/lib/rough-cut/profile';
+import { BUILTIN_ROUGH_CUT_PROFILE, snapshotFromProfile } from '@/lib/rough-cut/profile';
 
 const ALLOWED = new Set(['a', 'b', 'c']);
 
@@ -18,14 +19,20 @@ describe('parseClipOrder', () => {
     expect(parseClipOrder([], ALLOWED)).toEqual({ ok: true, value: null });
   });
 
-  it('appends folder clips that the caller omitted, in allowed-set order', () => {
-    const parsed = parseClipOrder(['c', 'a'], ALLOWED);
-    expect(parsed).toEqual({ ok: true, value: ['c', 'a', 'b'] });
+  it('appends omitted clips in allowed-set insertion order, not sorted order', () => {
+    const mixed = new Set(['z', 'a', 'm']);
+    expect(parseClipOrder(['m'], mixed)).toEqual({ ok: true, value: ['m', 'z', 'a'] });
   });
 
   it('rejects an unknown id and a duplicate', () => {
-    expect(parseClipOrder(['a', 'nope'], ALLOWED).ok).toBe(false);
-    expect(parseClipOrder(['a', 'a'], ALLOWED).ok).toBe(false);
+    expect(parseClipOrder(['a', 'nope'], ALLOWED)).toEqual({
+      ok: false,
+      error: 'clipOrder includes a video that is not in this folder',
+    });
+    expect(parseClipOrder(['a', 'a'], ALLOWED)).toEqual({
+      ok: false,
+      error: 'clipOrder must not repeat a video id',
+    });
     expect(parseClipOrder('a', ALLOWED).ok).toBe(false);
   });
 });
@@ -40,16 +47,25 @@ describe('parseCameraRoles', () => {
   });
 
   it('rejects a video that is not in the folder', () => {
-    expect(parseCameraRoles({ nope: 'A' }, ALLOWED).ok).toBe(false);
+    expect(parseCameraRoles({ nope: 'A' }, ALLOWED)).toEqual({
+      ok: false,
+      error: 'cameraRoles includes a video that is not in this folder',
+    });
+  });
+
+  it('rejects an empty camera name', () => {
     expect(parseCameraRoles({ a: '' }, ALLOWED).ok).toBe(false);
   });
 });
 
 describe('parseWideCameraRole', () => {
   it('accepts a named safety camera and nothing else', () => {
-    expect(parseWideCameraRole(' wide ')).toEqual({ ok: true, value: 'WIDE' });
+    expect(parseWideCameraRole(' interview ')).toEqual({ ok: true, value: 'INTERVIEW' });
     expect(parseWideCameraRole(null)).toEqual({ ok: true, value: null });
-    expect(parseWideCameraRole('')).toEqual({ ok: false, error: expect.any(String) });
+    expect(parseWideCameraRole('')).toEqual({
+      ok: false,
+      error: 'wideCameraRole must be 1-40 characters',
+    });
     expect(parseWideCameraRole(1).ok).toBe(false);
   });
 });
@@ -61,9 +77,23 @@ describe('applyClipOrder', () => {
   });
 });
 
+describe('orderClipsForLinearLayout', () => {
+  it('uses clipOrder when present and otherwise calls chronological sort', () => {
+    const clips = [{ id: 'late' }, { id: 'early' }];
+    const chronological = (entries: typeof clips) => [...entries].reverse();
+    expect(
+      orderClipsForLinearLayout(clips, ['late', 'early'], chronological).map((clip) => clip.id)
+    ).toEqual(['late', 'early']);
+    expect(orderClipsForLinearLayout(clips, null, chronological).map((clip) => clip.id)).toEqual([
+      'early',
+      'late',
+    ]);
+  });
+});
+
 describe('applyCameraRole', () => {
-  it('uses the override when present', () => {
-    expect(applyCameraRole('a', 'CAM', { a: 'A' })).toBe('A');
+  it('uses the override when present and uppercases it', () => {
+    expect(applyCameraRole('a', 'CAM', { a: 'wide' })).toBe('WIDE');
     expect(applyCameraRole('a', 'CAM', null)).toBe('CAM');
     expect(applyCameraRole('b', 'CAM', { a: 'A' })).toBe('CAM');
   });
@@ -74,11 +104,14 @@ describe('snapshotWithAssembly', () => {
     const snapshot = snapshotWithAssembly(BUILTIN_ROUGH_CUT_PROFILE, {
       clipOrder: ['b', 'a'],
       cameraRoles: { a: 'A', b: 'WIDE' },
-      wideCameraRole: 'WIDE',
+      wideCameraRole: 'INTERVIEW',
     });
     expect(snapshot.clipOrder).toEqual(['b', 'a']);
     expect(snapshot.cameraRoles).toEqual({ a: 'A', b: 'WIDE' });
-    expect(snapshot.wideCameraRole).toBe('WIDE');
+    expect(snapshot.wideCameraRole).toBe('INTERVIEW');
+    expect(snapshot.minShotSeconds).toBe(BUILTIN_ROUGH_CUT_PROFILE.minShotSeconds);
+    expect(snapshot.syncStrategy).toBe(BUILTIN_ROUGH_CUT_PROFILE.syncStrategy);
+    expect(snapshot.mediaPathPrefix).toBe(BUILTIN_ROUGH_CUT_PROFILE.mediaPathPrefix);
     expect(assemblyFromSnapshot(snapshot)).toEqual({
       clipOrder: ['b', 'a'],
       cameraRoles: { a: 'A', b: 'WIDE' },
@@ -91,8 +124,8 @@ describe('snapshotWithAssembly', () => {
       cameraRoles: null,
       wideCameraRole: null,
     });
-    expect(snapshot.clipOrder).toBeUndefined();
-    expect(snapshot.cameraRoles).toBeUndefined();
+    expect(snapshot).toEqual(snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE));
+    expect(snapshot.wideCameraRole).toBe('WIDE');
     expect(assemblyFromSnapshot(snapshot)).toEqual({ clipOrder: null, cameraRoles: null });
   });
 });

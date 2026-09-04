@@ -21,7 +21,7 @@ const CAMERA_MODEL_KEYS = [
 
 const CAMERA_MAKE_KEYS = ['com.apple.quicktime.make', 'make', 'manufacturer'];
 
-const MUXER_ENCODER_RE = /\b(lavf|lavc|ffmpeg|libx264|libx265|aac|premiere|media encoder)\b/i;
+const MUXER_ENCODER_RE = /(^|[^a-z])(lavf|lavc|ffmpeg|libx264|libx265|premiere|media encoder)/i;
 
 export type ProbeJson = {
   format?: { tags?: Record<string, string | number | undefined> };
