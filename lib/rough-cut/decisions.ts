@@ -160,6 +160,14 @@ function chooseCamera(
       rank: RANK_SPEAKER,
     };
   }
+  // A deliberate hold (chaos, or a brief that stays on the primary camera)
+  // is not undone by whoever happens to overlap it.
+  const held = active.find((turn) => turn.hold);
+  if (held) {
+    return held.hold === 'chaos'
+      ? holdWide('Several people at once; holding wide', held.versionId, RANK_DELIBERATE)
+      : holdWide('The brief holds the primary camera', held.versionId, RANK_DELIBERATE);
+  }
   if (overlap === 'WIDE') {
     return holdWide('Overlapping speech; wide', wideVersionId, RANK_DELIBERATE);
   }

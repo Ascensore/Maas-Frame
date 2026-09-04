@@ -3,7 +3,6 @@ import { applyCameraGrammar, chaoticTurnIndexes } from '@/lib/rough-cut/camera-g
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import {
   cutIslandKey,
-  mergeContiguous,
   mergeRanges,
   packTimeline,
   subtractTimelineRanges,
@@ -93,19 +92,14 @@ describe('subtractTimelineRanges', () => {
   });
 });
 
-describe('packTimeline and mergeContiguous', () => {
-  it('packs edits back to back and heals a split whose hole was empty', () => {
+describe('packTimeline', () => {
+  it('packs edits back to back from zero, keeping order, durations and source ranges', () => {
     const packed = packTimeline([edit(4, 9, 9, 'a'), edit(12, 18, 2, 'b')]);
     expect(packed.map((entry) => [entry.timelineStartSeconds, entry.timelineEndSeconds])).toEqual([
       [0, 5],
       [5, 11],
     ]);
     expect(packed[1]).toMatchObject({ inSeconds: 2, outSeconds: 8 });
-
-    expect(mergeContiguous([edit(0, 5, 0, 'a'), edit(5, 8, 5, 'a'), edit(8, 9, 20, 'a')])).toEqual([
-      edit(0, 8, 0, 'a'),
-      edit(8, 9, 20, 'a'),
-    ]);
   });
 });
 

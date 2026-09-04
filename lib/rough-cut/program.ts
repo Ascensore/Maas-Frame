@@ -100,24 +100,3 @@ export function packTimeline(edits: EditDecision[]): EditDecision[] {
     return packed;
   });
 }
-
-/** Join edits that continue the same source without a gap, so a split around a hole heals when the hole was empty. */
-export function mergeContiguous(edits: EditDecision[]): EditDecision[] {
-  const out: EditDecision[] = [];
-  for (const edit of edits) {
-    const last = out[out.length - 1];
-    if (
-      last &&
-      last.sourceVersionId === edit.sourceVersionId &&
-      last.targetTrack === edit.targetTrack &&
-      Math.abs(last.outSeconds - edit.inSeconds) < EPSILON &&
-      Math.abs(last.timelineEndSeconds - edit.timelineStartSeconds) < EPSILON
-    ) {
-      last.outSeconds = edit.outSeconds;
-      last.timelineEndSeconds = edit.timelineEndSeconds;
-      continue;
-    }
-    out.push({ ...edit });
-  }
-  return out;
-}

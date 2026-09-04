@@ -83,6 +83,7 @@ describe('text helpers', () => {
   it('spots a sentence end and a restart within three seconds', () => {
     expect(endsSentence('done.')).toBe(true);
     expect(endsSentence('done?”')).toBe(true);
+    expect(endsSentence('wait…')).toBe(true);
     expect(endsSentence('done, and')).toBe(false);
     const words = [
       { start: 0, end: 0.2, text: 'so' },
@@ -98,10 +99,15 @@ describe('text helpers', () => {
 
 describe('groupTakes', () => {
   it('groups similar beats within the window, transitively, and leaves short lines alone', () => {
+    // 0 and 2 share only three trigrams (well under the threshold); both are
+    // similar to 1, so the group exists through 1 alone.
     const candidates = [
       candidate(0, 'our revenue this year doubled to four million dollars'),
-      candidate(30, 'um our revenue this year doubled to four million dollars and'),
-      candidate(60, 'our revenue this year doubled to four million dollars and we are profitable'),
+      candidate(
+        30,
+        'um our revenue this year doubled to four million dollars and we are now profitable in europe'
+      ),
+      candidate(60, 'doubled to four million dollars and we are now profitable in europe and asia'),
       candidate(90, 'the team is now twelve people across two offices'),
       candidate(120, 'thank you'),
       candidate(150, 'thank you'),
@@ -109,6 +115,7 @@ describe('groupTakes', () => {
     ];
 
     expect(groupTakes(candidates, { fillers: EN })).toEqual([[0, 1, 2]]);
+    expect(groupTakes([candidates[0]!, candidates[2]!], { fillers: EN })).toEqual([]);
   });
 });
 
@@ -123,6 +130,28 @@ describe('cleanlinessScore', () => {
       -2 / (3.1 / 60),
       3
     );
+
+    // One restart ("so the, so the") in a 3.1 s beat counts twice: 2 / (3.1 / 60).
+    const restarted = beatAt(0, 'so the so the market grew very fast');
+    expect(cleanlinessScore(restarted, EN, MEDIUM.maxKeptGapInsideBeatSeconds)).toBeCloseTo(
+      -2 / (3.1 / 60),
+      3
+    );
+
+    // Seven words (2.7 s) with a 1.0 s stall inserted: one long pause over 3.7 s.
+    const stalled = beatAt(0, 'we shipped the product on time and');
+    stalled.words.slice(4).forEach((word) => {
+      word.start += 1.0;
+      word.end += 1.0;
+    });
+    stalled.end += 1.0;
+    expect(cleanlinessScore(stalled, EN, MEDIUM.maxKeptGapInsideBeatSeconds)).toBeCloseTo(
+      -1 / (3.7 / 60),
+      3
+    );
+
+    // A beat shorter than a second is scored as if it lasted one: one filler → −60.
+    expect(cleanlinessScore(beatAt(0, 'um'), EN, MEDIUM.maxKeptGapInsideBeatSeconds)).toBe(-60);
   });
 });
 

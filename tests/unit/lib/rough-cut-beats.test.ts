@@ -243,12 +243,38 @@ describe('detectFalseStarts', () => {
     expect(result.beats.map(beatText)).toEqual(['so the market for this is enormous.']);
   });
 
+  it('needs three opening words, a beat under four seconds, and a retake that goes on', () => {
+    // Nine words at 0.4 s pitch last 3.5 s: still a false start.
+    const nineWords = analyseSpeech(
+      [
+        spoken(0, 'so the market for this is enormous and growing'),
+        spoken(6, 'so the market for this is enormous and growing fast every year.'),
+      ],
+      { versionId: 'v', durationSeconds: 30, policy }
+    ).beats;
+    expect(ranges(detectFalseStarts(nineWords, EN).cuts)).toEqual([[0, 3.5]]);
+
+    // Two opening words are not enough to call it a false start.
+    const twoWords = analyseSpeech([spoken(0, 'so the'), spoken(3, 'so the market is huge')], {
+      versionId: 'v',
+      durationSeconds: 30,
+      policy,
+    }).beats;
+    expect(detectFalseStarts(twoWords, EN).cuts).toEqual([]);
+
+    // A repeat of exactly the same words is a take, not a false start.
+    const sameLength = analyseSpeech([spoken(0, 'so the market'), spoken(3, 'so the market')], {
+      versionId: 'v',
+      durationSeconds: 30,
+      policy,
+    }).beats;
+    expect(detectFalseStarts(sameLength, EN).cuts).toEqual([]);
+  });
+
   it('leaves a long beat, a different opening, a different speaker, and a shorter retake alone', () => {
     const long = analyseSpeech(
       [
-        spoken(0, 'this is a deliberately long sentence that runs well past the limit ok', {
-          gap: 0.1,
-        }),
+        spoken(0, 'this is a deliberately long sentence that runs well past the limit ok'),
         spoken(9, 'this is a deliberately long sentence that runs well past the limit ok and on'),
       ],
       { versionId: 'v', durationSeconds: 30, policy }

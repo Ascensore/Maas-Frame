@@ -31,7 +31,7 @@ import {
 } from './layout';
 import { assignClipExportFileNames } from './media-paths';
 import { profileFromSnapshot } from './profile';
-import { mergeContiguous, packTimeline, subtractTimelineRanges, toCutIsland } from './program';
+import { packTimeline, subtractTimelineRanges, toCutIsland } from './program';
 import { computeTimecodeOffsets } from './sync';
 import { rejectedTakeCuts, selectTakes, type TakeCandidate } from './takes';
 import { fillerWordsFor } from './text';
@@ -966,11 +966,9 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     // Removed source ranges come out of the continuous program, which is then
     // packed tight: the show does not keep its dead air either.
     const edits: EditDecision[] = packTimeline(
-      mergeContiguous(
-        subtractTimelineRanges(
-          continuous,
-          sourceCuts.map((cut) => ({ start: cut.start + cutOffset, end: cut.end + cutOffset }))
-        )
+      subtractTimelineRanges(
+        continuous,
+        sourceCuts.map((cut) => ({ start: cut.start + cutOffset, end: cut.end + cutOffset }))
       )
     );
     const cuts: CutIsland[] = sourceCuts.map((cut) => toCutIsland(cut, rate));

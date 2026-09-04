@@ -41,6 +41,53 @@ describe('fcp7Rate', () => {
 });
 
 describe('buildFcp7Xml', () => {
+  it('produces the same XML whether or not edits carry reasons and the list carries cuts', () => {
+    const clips = [clip('A', 'ver-a')];
+    const edit: EditDecision = {
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 2,
+      inSeconds: 1,
+      outSeconds: 3,
+      sourceVersionId: 'ver-a',
+      cameraRole: 'A',
+      targetTrack: 1,
+    };
+    const build = (
+      edits: EditDecision[],
+      cuts?: Parameters<typeof assembleDecisionList>[0]['cuts']
+    ) =>
+      buildFcp7Xml({
+        name: 'Rough Cut',
+        decisions: assembleDecisionList({
+          edits,
+          clips,
+          fileNames: new Map([['ver-a', '01-Cam A-v1.mp4']]),
+          mediaPathPrefix: './media/',
+          rate: { num: 24, den: 1, dropFrame: false },
+          cuts,
+        }),
+        clips,
+        handleFrames: 0,
+      });
+
+    const plain = build([edit]);
+    const annotated = build(
+      [{ ...edit, reason: { code: 'KEPT', summary: 'Speech' } }],
+      [
+        {
+          key: 'ver-a:72-96',
+          sourceVersionId: 'ver-a',
+          inSeconds: 3,
+          outSeconds: 4,
+          reason: { code: 'DEAD_AIR', summary: '1.0s of dead air' },
+          transcriptText: null,
+        },
+      ]
+    );
+
+    expect(annotated).toBe(plain);
+  });
+
   it('writes xmeml with frame-denominated in/out and a shared file id', () => {
     const clips = [clip('A', 'ver-a')];
     const edits: EditDecision[] = [

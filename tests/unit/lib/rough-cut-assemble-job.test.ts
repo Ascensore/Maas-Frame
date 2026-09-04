@@ -40,6 +40,8 @@ type TranscriptRow = {
   version_id: string;
   status: 'PENDING' | 'RUNNING' | 'READY' | 'FAILED';
   created_at: Date;
+  /** Picks the filler list; the job reads it off the row. */
+  language?: string | null;
 };
 
 type SegmentRow = {
@@ -624,12 +626,20 @@ describe('assembleRoughCut with a transcript', () => {
         briefSnapshot,
       });
       await assembleRoughCut(h.deps, 'cut-1');
-      return h.persisted()?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds]);
+      const decisions = h.persisted()?.decisions;
+      return {
+        edits: decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds]),
+        cuts: decisions?.cuts?.map((cut) => [cut.key, cut.reason.summary]) ?? [],
+      };
     };
 
     // No brief: the 0.5 s pause is under the medium 0.8 s and survives.
-    expect(await run(null)).toEqual([[1, 8]]);
-    // A high-aggressiveness brief keeps only 0.4 s, so the same pause is cut.
+    expect(await run(null)).toEqual({
+      edits: [[1, 8]],
+      cuts: [['ver-a:192-720', '22.0s of dead air after the last word']],
+    });
+    // A high-aggressiveness brief keeps only 0.4 s, so the same pause is cut
+    // as a stall inside the beat, and the island says so.
     expect(
       await run({
         version: 1,
@@ -638,10 +648,17 @@ describe('assembleRoughCut with a transcript', () => {
         layoutSource: 'guess',
         brief: { projectType: 'TALKING_HEAD', pacing: { silenceAggressiveness: 'high' } },
       })
-    ).toEqual([
-      [1, 4],
-      [4.5, 8],
-    ]);
+    ).toEqual({
+      edits: [
+        [1, 4],
+        [4.5, 8],
+      ],
+      cuts: [
+        ['ver-a:0-24', '1.0s of dead air before the first word'],
+        ['ver-a:96-108', '0.5s of dead air mid-sentence'],
+        ['ver-a:192-720', '22.0s of dead air after the last word'],
+      ],
+    });
   });
 
   it('applies the brief’s silence policy to the multicam transcript as well', async () => {
@@ -809,6 +826,8 @@ describe('assembleRoughCut editorial pass', () => {
 
   it('keeps the cleaner of two takes across a sequential cut and measures loudness only for the group', async () => {
     const line = 'our revenue this year doubled to four million dollars';
+    // The later take is the dirtier one, so recency alone would pick wrong:
+    // only the English filler list makes cleanliness decide.
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,
@@ -817,12 +836,12 @@ describe('assembleRoughCut editorial pass', () => {
         video({ version_id: 'ver-b', title: 'Clip 2', position: 1, duration: 20 }),
       ],
       transcripts: [
-        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() },
-        { id: 't-b', version_id: 'ver-b', status: 'READY', created_at: NOW_DATE() },
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+        { id: 't-b', version_id: 'ver-b', status: 'READY', created_at: NOW_DATE(), language: 'en' },
       ],
       segments: {
-        't-a': [spokenSegment(1, `um ${line}`), spokenSegment(8, 'and thanks for coming tonight.')],
-        't-b': [spokenSegment(1, line)],
+        't-a': [spokenSegment(1, line), spokenSegment(8, 'and thanks for coming tonight.')],
+        't-b': [spokenSegment(1, `um ${line}`)],
       },
       rms: () => 0.5,
       briefSnapshot: briefSnapshotFor('TALKING_HEAD', {
@@ -833,16 +852,17 @@ describe('assembleRoughCut editorial pass', () => {
     await assembleRoughCut(h.deps, 'cut-1');
 
     const result = h.persisted();
-    // Clip 1's take has a filler, so clip 2's wins; clip 1 keeps its other beat.
+    // Clip 1's clean take wins over clip 2's later, filler-laden one; clip 1
+    // keeps its other beat and clip 2 contributes nothing.
     expect(timing(result?.decisions?.edits ?? [])).toEqual([
-      ['ver-a', 0, 1.9, 8, 9.9],
-      ['ver-b', 1.9, 5.4, 1, 4.5],
+      ['ver-a', 0, 3.5, 1, 4.5],
+      ['ver-a', 3.5, 5.4, 8, 9.9],
     ]);
     const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
     expect(rejected?.map((cut) => [cut.sourceVersionId, cut.transcriptText])).toEqual([
-      ['ver-a', `um ${line}`],
+      ['ver-b', `um ${line}`],
     ]);
-    expect(rejected?.[0]?.reason.summary).toBe(`Take 1 of 2; kept take 2 (“${line}”)`);
+    expect(rejected?.[0]?.reason.summary).toBe(`Take 2 of 2; kept take 1 (“${line}”)`);
     // Loudness was measured for the two grouped beats and nothing else.
     const rms = h.runs
       .filter((args) => args[1] === '--rms')
@@ -852,12 +872,88 @@ describe('assembleRoughCut editorial pass', () => {
         Number(Number(args[4]).toFixed(3)),
       ]);
     expect(rms).toEqual([
-      ['ver-a', 1, 4.9],
-      ['ver-b', 1, 4.5],
+      ['ver-a', 1, 4.5],
+      ['ver-b', 1, 4.9],
     ]);
     expect(h.downloads).toEqual(['audio/ver-a.wav', 'audio/ver-b.wav']);
     expect(result?.warnings).toEqual([
       { code: 'script-match-unavailable', message: expect.stringContaining('script match') },
+    ]);
+  });
+
+  it('picks a take on the multicam session transcript and removes the loser from the program', async () => {
+    const line = 'our revenue this year doubled to four million dollars';
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      transcripts: [
+        {
+          id: 't-wide',
+          version_id: 'ver-wide',
+          status: 'READY',
+          created_at: NOW_DATE(),
+          language: 'en',
+        },
+      ],
+      segments: { 't-wide': [spokenSegment(2, line, 'S0'), spokenSegment(12, line, 'S0')] },
+      rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+      briefSnapshot: briefSnapshotFor('INTERVIEW'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // Two equally clean takes: the later one wins, and only it is in the program.
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([['ver-a', 0, 3.5, 12, 15.5]]);
+    expect(result?.decisions?.cuts?.map((cut) => [cut.key, cut.reason.code])).toEqual([
+      ['ver-wide:0-48', 'DEAD_AIR'],
+      ['ver-wide:132-288', 'DEAD_AIR'],
+      ['ver-wide:372-720', 'DEAD_AIR'],
+      ['ver-wide:48-132', 'REJECTED_TAKE'],
+    ]);
+    expect(result?.decisions?.cuts?.[3]?.reason.summary).toBe(
+      `Take 1 of 2; kept take 2 (“${line}”)`
+    );
+  });
+
+  it('under a low policy keeps a restart as speech rather than calling it a false start', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 20 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(0, 'so the market'),
+          spokenSegment(3, 'so the market for this is enormous.'),
+          spokenSegment(9, 'and that is why we are here.'),
+        ],
+      },
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD', {
+        pacing: { silenceAggressiveness: 'low' },
+      }),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The 1.9 s stall is over low's inside limit (1.5) but under its between
+    // limit (2.5), so the two attempts stay one beat and no false start exists;
+    // the 1.1 s fragment then falls to the minimum shot length.
+    expect(result?.decisions?.cuts?.map((cut) => [cut.key, cut.reason.code])).toEqual([
+      ['ver-a:26-72', 'DEAD_AIR'],
+      ['ver-a:136-216', 'DEAD_AIR'],
+      ['ver-a:280-480', 'DEAD_AIR'],
+    ]);
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-a', 0, 2.7, 3, 5.7],
+      ['ver-a', 2.7, 5.4, 9, 11.7],
     ]);
   });
 
