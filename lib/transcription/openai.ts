@@ -1,3 +1,4 @@
+import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
 import type { TranscriptionProvider, TranscriptionResult } from '@/lib/transcription/types';
 
 export const openaiProvider: TranscriptionProvider = {
@@ -18,7 +19,11 @@ export const openaiProvider: TranscriptionProvider = {
     form.set('response_format', 'verbose_json');
     form.set('timestamp_granularities[]', 'word');
     if (input.language) form.set('language', input.language);
-    form.set('file', new Blob([audio], { type: 'audio/wav' }), fileName);
+    form.set(
+      'file',
+      new Blob([new Uint8Array(audio)], { type: mediaTypeFromFileName(fileName) }),
+      fileName
+    );
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',

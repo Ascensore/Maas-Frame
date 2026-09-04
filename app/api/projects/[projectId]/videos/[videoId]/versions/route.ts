@@ -13,6 +13,8 @@ import { enqueueJobsForNewVersion } from '@/lib/media-jobs';
 
 type RouteParams = { params: Promise<{ projectId: string; videoId: string }> };
 
+export const maxDuration = 300;
+
 // GET /api/projects/[projectId]/videos/[videoId]/versions
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {

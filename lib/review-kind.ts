@@ -61,14 +61,21 @@ export function shouldEnqueueProbe(kind: ReviewKind, providerId: string): boolea
   return kind === 'VIDEO' || kind === 'AUDIO';
 }
 
+/**
+ * File-backed VIDEO and AUDIO can be sent to STT. YouTube/Vimeo have no
+ * downloadable master, and stills/PDFs have no audio.
+ */
+export function canAutoTranscribe(kind: ReviewKind, providerId: string): boolean {
+  const fileBacked = providerId === 'r2' || providerId === 'bunny';
+  return fileBacked && (kind === 'VIDEO' || kind === 'AUDIO');
+}
+
 export function shouldEnqueueTranscribe(
   kind: ReviewKind,
   providerId: string,
   transcriptionEnabled: boolean
 ): boolean {
-  if (!transcriptionEnabled) return false;
-  const fileBacked = providerId === 'r2' || providerId === 'bunny';
-  return fileBacked && kind === 'VIDEO';
+  return transcriptionEnabled && canAutoTranscribe(kind, providerId);
 }
 
 export function reviewPlayerMode(

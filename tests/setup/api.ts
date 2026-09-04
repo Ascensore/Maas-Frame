@@ -18,6 +18,7 @@ import '../helpers/env';
 import { afterEach, beforeAll, beforeEach, vi } from 'vitest';
 import { resetDb } from '../helpers/db';
 import { resetSentMail } from '../helpers/mail';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 
 // lib/db.ts registers a SIGINT and a SIGTERM listener at module scope. With one
 // module registry per test file that is two listeners per file, which trips
@@ -111,6 +112,10 @@ vi.mock('@/lib/r2', async (importOriginal) => {
       header.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
       return header.slice(0, Math.min(header.length, byteLength));
     }),
+    downloadVideoObject: vi.fn(async (key: string) => {
+      if (!key.startsWith('videos/')) return null;
+      return Buffer.from('fake-media');
+    }),
     ensureR2BucketExists: vi.fn(async () => undefined),
     ensureR2UploadCors: vi.fn(async () => []),
   };
@@ -192,6 +197,17 @@ vi.mock('nodemailer', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// In-app transcription
+// ---------------------------------------------------------------------------
+// VIDEO/AUDIO creates enqueue STT then scheduleVersionTranscription(), which
+// would download the object and call Whisper. Replace the scheduler so those
+// tests keep asserting on PENDING rows; tests that want the runner call
+// runTranscriptionForVersion directly.
+vi.mock('@/lib/transcription/schedule', () => ({
+  scheduleVersionTranscription: vi.fn(),
+}));
+
+// ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 // A stale database from a crashed previous run would otherwise leak into the
@@ -202,6 +218,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetSentMail();
+  vi.mocked(scheduleVersionTranscription).mockClear();
 });
 
 // Every test creates the data it needs and nothing survives it, so no test can

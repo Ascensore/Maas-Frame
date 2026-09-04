@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
 import { readVideoObjectBytes } from '@/lib/r2';
+import { TranscriptStatus } from '@prisma/client';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 import { GET as listVideos, POST as addVideo } from '@/app/api/projects/[projectId]/videos/route';
 import { POST as addVersion } from '@/app/api/projects/[projectId]/videos/[videoId]/versions/route';
 import { POST as bulkDelete } from '@/app/api/projects/[projectId]/videos/bulk-delete/route';
@@ -247,6 +249,8 @@ describe('POST /api/projects/[projectId]/videos', () => {
     expect(created.versions[0].isActive).toBe(true);
     expect(created.versions[0].sizeBytes).toBe(BigInt(0));
     expect(created.kind).toBe('VIDEO');
+    expect(await db.mediaJob.count()).toBe(0);
+    expect(await db.transcript.count()).toBe(0);
   });
 
   it('creates an IMAGE review from a jpeg r2 upload and skips media jobs', async () => {
@@ -306,6 +310,7 @@ describe('POST /api/projects/[projectId]/videos', () => {
     expect(created.versions[0].proxyStatus).toBe('SKIPPED');
     expect(created.versions[0].thumbnailUrl).toBe(init.proxyUrl);
     expect(await db.mediaJob.count()).toBe(0);
+    expect(await db.transcript.count()).toBe(0);
   });
 
   it('adds a still version to an IMAGE review without enqueueing media jobs', async () => {
@@ -358,6 +363,64 @@ describe('POST /api/projects/[projectId]/videos', () => {
     expect(version.proxyStatus).toBe('SKIPPED');
     expect(version.thumbnailUrl).toBe(init.proxyUrl);
     expect(await db.mediaJob.count()).toBe(0);
+  });
+
+  it('adds an mp4 version to a VIDEO review and enqueues transcription', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id, kind: 'VIDEO' });
+    await createVersion({ videoParentId: video.id, versionNumber: 1, isActive: true });
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'cut.mp4', sizeBytes: '2048', contentType: 'video/mp4' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+    }>(initResponse);
+
+    const response = await callRoute(
+      addVersion,
+      apiRequest(`/api/projects/${scenario.project.id}/videos/${video.id}/versions`, {
+        body: {
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+          setActive: true,
+        },
+      }),
+      { projectId: scenario.project.id, videoId: video.id }
+    );
+
+    expect(response.status).toBe(201);
+    const version = await db.videoVersion.findFirstOrThrow({
+      where: { videoParentId: video.id, versionNumber: 2 },
+    });
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: version.id },
+      select: { kind: true, payload: true },
+    });
+    expect(jobs.map((job) => job.kind).sort()).toEqual([
+      'EXTRACT_AUDIO',
+      'PROBE_MEDIA',
+      'TRANSCRIBE',
+    ]);
+    const transcript = await db.transcript.findFirstOrThrow({
+      where: { versionId: version.id, language: 'en' },
+    });
+    expect(transcript.status).toBe(TranscriptStatus.PENDING);
+    expect(transcript.provider).toBe('whisper-local');
+    const transcribeJob = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribeJob?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(version.id, 'en');
   });
 
   it('creates a PDF review from an r2 upload', async () => {
@@ -416,6 +479,8 @@ describe('POST /api/projects/[projectId]/videos', () => {
     expect(created.versions[0].proxyStatus).toBe('SKIPPED');
     expect(created.versions[0].originalUrl).toBe(init.proxyUrl);
     expect(await db.mediaJob.count()).toBe(0);
+    expect(await db.transcript.count()).toBe(0);
+    expect(scheduleVersionTranscription).not.toHaveBeenCalled();
   });
 
   it('creates an AUDIO review from a wav r2 upload', async () => {
@@ -470,8 +535,82 @@ describe('POST /api/projects/[projectId]/videos', () => {
     });
     expect(created.kind).toBe('AUDIO');
     expect(created.versions[0].proxyStatus).toBe('NONE');
-    const jobs = await db.mediaJob.findMany();
-    expect(jobs.map((job) => job.kind).sort()).toEqual(['PROBE_MEDIA']);
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: created.versions[0].id },
+      select: { kind: true, payload: true },
+    });
+    expect(jobs.map((job) => job.kind).sort()).toEqual([
+      'EXTRACT_AUDIO',
+      'PROBE_MEDIA',
+      'TRANSCRIBE',
+    ]);
+    const transcript = await db.transcript.findFirstOrThrow({
+      where: { versionId: created.versions[0].id, language: 'en' },
+    });
+    expect(transcript.status).toBe(TranscriptStatus.PENDING);
+    expect(transcript.provider).toBe('whisper-local');
+    const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(created.versions[0].id, 'en');
+  });
+
+  it('creates a VIDEO review from an mp4 r2 upload and enqueues transcription', async () => {
+    enableS3VideoUploads();
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const initResponse = await callRoute(
+      initR2Upload,
+      apiRequest(`${videosUrl(scenario.project.id)}/r2-init`, {
+        body: { fileName: 'cut.mp4', sizeBytes: '2048', contentType: 'video/mp4' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    const init = await readData<{
+      objectKey: string;
+      proxyUrl: string;
+      uploadToken: string;
+    }>(initResponse);
+
+    const response = await callRoute(
+      addVideo,
+      apiRequest(videosUrl(scenario.project.id), {
+        body: {
+          title: 'Cut',
+          videoUrl: init.proxyUrl,
+          providerId: 'r2',
+          objectKey: init.objectKey,
+          uploadToken: init.uploadToken,
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const created = await db.video.findFirstOrThrow({
+      where: { title: 'Cut' },
+      include: { versions: true },
+    });
+    expect(created.kind).toBe('VIDEO');
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: created.versions[0].id },
+      select: { kind: true, payload: true },
+    });
+    expect(jobs.map((job) => job.kind).sort()).toEqual([
+      'EXTRACT_AUDIO',
+      'PROBE_MEDIA',
+      'TRANSCRIBE',
+    ]);
+    const transcript = await db.transcript.findFirstOrThrow({
+      where: { versionId: created.versions[0].id, language: 'en' },
+    });
+    expect(transcript.status).toBe(TranscriptStatus.PENDING);
+    expect(transcript.provider).toBe('whisper-local');
+    const transcribeJob = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribeJob?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(created.versions[0].id, 'en');
   });
 
   it('refuses a still whose r2 session never existed and inserts nothing', async () => {

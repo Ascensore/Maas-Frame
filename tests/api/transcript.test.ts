@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
 import { ProjectMemberRole, TranscriptStatus } from '@prisma/client';
 import { createShareSessionValue, getShareSessionCookieName } from '@/lib/share-session';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 import {
   GET as getTranscript,
   POST as enqueueTranscript,
@@ -157,6 +158,36 @@ describe('GET /api/versions/[versionId]/transcript', () => {
     expect(body.transcript.segments).toEqual([
       expect.objectContaining({ text: 'Hello', startSec: 1 }),
     ]);
+    expect(body.transcript).toEqual(expect.objectContaining({ error: null, status: 'READY' }));
+  });
+
+  it('returns the stored error for a FAILED transcript', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    await db.transcript.create({
+      data: {
+        versionId: scenario.version.id,
+        language: 'en',
+        provider: 'whisper-local',
+        status: TranscriptStatus.FAILED,
+        error: 'whisper failed',
+        searchText: '',
+      },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      getTranscript,
+      apiRequest(transcriptUrl(scenario.version.id)),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readData<{
+      transcript: { status: string; error: string | null; segments: unknown[] };
+    }>(response);
+    expect(body.transcript.status).toBe('FAILED');
+    expect(body.transcript.error).toBe('whisper failed');
+    expect(body.transcript.segments).toEqual([]);
   });
 
   it('returns null when the version has no transcript', async () => {
@@ -338,7 +369,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
-  it('enqueues a PENDING transcript for the project owner', async () => {
+  it('enqueues a PENDING transcript for the project owner of an r2 version', async () => {
     const scenario = await seedVersion({ providerId: 'r2' });
     signedInAs(scenario.owner);
 
@@ -361,6 +392,8 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     expect(jobs.map((job) => job.kind).sort()).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE']);
     const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
     expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: row.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'en');
   });
 
   it('re-enqueues an existing READY transcript as PENDING', async () => {
@@ -384,6 +417,15 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     expect(rows[0]?.id).toBe(existing.id);
     expect(rows[0]?.status).toBe(TranscriptStatus.PENDING);
     expect(rows[0]?.error).toBeNull();
+    const jobs = await db.mediaJob.findMany({
+      where: { versionId: scenario.version.id },
+      select: { kind: true, payload: true },
+    });
+    expect(jobs.map((job) => job.kind).sort()).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE']);
+    const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
+    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: existing.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'en');
   });
 
   it('imports YouTube captions immediately and does not enqueue a worker job', async () => {
@@ -449,6 +491,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
       expect(row.provider).toBe('youtube');
       expect(row.segments.map((segment) => segment.text)).toEqual(['Hello world']);
       expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(0);
+      expect(scheduleVersionTranscription).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }

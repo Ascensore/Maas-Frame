@@ -11,6 +11,8 @@ export { POST } from '@/app/api/v1/versions/[versionId]/transcript/route';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
+export const maxDuration = 300;
+
 function shapeTranscript(transcript: {
   id: string;
   versionId: string;

@@ -92,6 +92,7 @@ interface TranscriptPaneProps {
   versionId: string | null;
   getCurrentTime: () => number;
   canManage: boolean;
+  canTranscribe: boolean;
   comments: TranscriptCommentMarker[];
   onSeek: (
     seconds: number,
@@ -285,6 +286,7 @@ export const TranscriptPane = memo(function TranscriptPane({
   versionId,
   getCurrentTime,
   canManage,
+  canTranscribe,
   comments,
   onSeek,
   onCommentRange,
@@ -301,26 +303,31 @@ export const TranscriptPane = memo(function TranscriptPane({
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchTranscript = useCallback(async () => {
-    if (!versionId) {
-      setTranscript(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(`/api/versions/${versionId}/transcript`);
-      if (!response.ok) {
-        throw new Error('Failed to load transcript');
+  const fetchTranscript = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!versionId) {
+        setTranscript(null);
+        return;
       }
-      const body = (await response.json()) as { data?: { transcript: TranscriptPayload } };
-      setTranscript(body.data?.transcript ?? null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load transcript');
-    } finally {
-      setLoading(false);
-    }
-  }, [versionId]);
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const response = await fetch(`/api/versions/${versionId}/transcript`);
+        if (!response.ok) {
+          throw new Error('Failed to load transcript');
+        }
+        const body = (await response.json()) as { data?: { transcript: TranscriptPayload } };
+        setTranscript(body.data?.transcript ?? null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load transcript');
+      } finally {
+        if (!options?.silent) setLoading(false);
+      }
+    },
+    [versionId]
+  );
 
   useEffect(() => {
     void fetchTranscript();
@@ -330,7 +337,7 @@ export const TranscriptPane = memo(function TranscriptPane({
     if (!versionId) return;
     if (transcript?.status !== 'PENDING' && transcript?.status !== 'RUNNING') return;
     const timer = window.setInterval(() => {
-      void fetchTranscript();
+      void fetchTranscript({ silent: true });
     }, 4000);
     return () => window.clearInterval(timer);
   }, [versionId, transcript?.status, fetchTranscript]);
@@ -503,20 +510,22 @@ export const TranscriptPane = memo(function TranscriptPane({
               )}
               <span className="ml-1">Upload file</span>
             </Button>
-            <Button
-              size="sm"
-              className="h-8"
-              onClick={() => void handleEnqueue()}
-              disabled={enqueueing}
-            >
-              {enqueueing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Captions className="h-4 w-4" />
-              )}
-              <span className="ml-1">{transcript ? 'Re-run AI' : 'Generate with AI'}</span>
-            </Button>
           </>
+        )}
+        {canTranscribe && (
+          <Button
+            size="sm"
+            className="h-8"
+            onClick={() => void handleEnqueue()}
+            disabled={enqueueing}
+          >
+            {enqueueing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Captions className="h-4 w-4" />
+            )}
+            <span className="ml-1">{transcript ? 'Re-run' : 'Transcribe'}</span>
+          </Button>
         )}
         {transcript?.status === 'READY' && transcript.segments.length > 0 && (
           <Button size="sm" variant="outline" className="h-8" onClick={handleDownloadVtt}>
@@ -533,7 +542,7 @@ export const TranscriptPane = memo(function TranscriptPane({
         <p className="text-sm text-muted-foreground">Transcription in progress…</p>
       ) : transcript?.status === 'FAILED' ? (
         <p className="text-sm text-destructive">
-          {transcript.error?.trim() ? transcript.error : 'Transcription failed. Try again.'}
+          {transcript.error?.trim() || 'Transcription failed. Try again.'}
         </p>
       ) : !showList ? (
         <p className="text-sm text-muted-foreground">

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canAutoTranscribe,
   hasKnownReviewMagicBytes,
   reviewKindFromFileName,
   reviewKindFromUploadPath,
@@ -89,13 +90,26 @@ describe('media job gates', () => {
     expect(shouldEnqueueProbe('VIDEO', 'youtube')).toBe(false);
   });
 
-  it('transcribes only file-backed video when the flag is on', () => {
+  it('transcribes file-backed video and audio when the flag is on', () => {
     expect(shouldEnqueueTranscribe('VIDEO', 'r2', true)).toBe(true);
+    expect(shouldEnqueueTranscribe('AUDIO', 'r2', true)).toBe(true);
+    expect(shouldEnqueueTranscribe('VIDEO', 'bunny', true)).toBe(true);
+    expect(shouldEnqueueTranscribe('AUDIO', 'bunny', true)).toBe(true);
     expect(shouldEnqueueTranscribe('VIDEO', 'r2', false)).toBe(false);
     expect(shouldEnqueueTranscribe('IMAGE', 'r2', true)).toBe(false);
     expect(shouldEnqueueTranscribe('PDF', 'r2', true)).toBe(false);
-    expect(shouldEnqueueTranscribe('AUDIO', 'r2', true)).toBe(false);
     expect(shouldEnqueueTranscribe('VIDEO', 'youtube', true)).toBe(false);
+  });
+
+  it('treats only r2 and bunny video or audio as auto-transcribable', () => {
+    expect(canAutoTranscribe('VIDEO', 'r2')).toBe(true);
+    expect(canAutoTranscribe('AUDIO', 'r2')).toBe(true);
+    expect(canAutoTranscribe('VIDEO', 'bunny')).toBe(true);
+    expect(canAutoTranscribe('AUDIO', 'bunny')).toBe(true);
+    expect(canAutoTranscribe('IMAGE', 'r2')).toBe(false);
+    expect(canAutoTranscribe('PDF', 'r2')).toBe(false);
+    expect(canAutoTranscribe('VIDEO', 'youtube')).toBe(false);
+    expect(canAutoTranscribe('AUDIO', 'youtube')).toBe(false);
   });
 });
 
