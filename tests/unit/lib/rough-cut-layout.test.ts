@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   applySequentialOffsets,
+  editModeFromLayout,
   guessRoughCutLayout,
+  layoutFromEditMode,
   naturalCompare,
   parseRecordedAtMs,
   parseRoughCutLayout,
@@ -32,6 +34,18 @@ describe('parseRoughCutLayout', () => {
     expect(parseRoughCutLayout('stacked')).toBeNull();
     expect(parseRoughCutLayout(1)).toBeNull();
     expect(parseRoughCutLayout(null)).toBeNull();
+  });
+});
+
+describe('layoutFromEditMode', () => {
+  it('maps the two editor radios onto LINEAR, SEQUENTIAL, or MULTICAM', () => {
+    expect(layoutFromEditMode('single-camera', 1)).toBe('LINEAR');
+    expect(layoutFromEditMode('single-camera', 0)).toBe('LINEAR');
+    expect(layoutFromEditMode('single-camera', 2)).toBe('SEQUENTIAL');
+    expect(layoutFromEditMode('multicam', 1)).toBe('MULTICAM');
+    expect(editModeFromLayout('LINEAR')).toBe('single-camera');
+    expect(editModeFromLayout('SEQUENTIAL')).toBe('single-camera');
+    expect(editModeFromLayout('MULTICAM')).toBe('multicam');
   });
 });
 

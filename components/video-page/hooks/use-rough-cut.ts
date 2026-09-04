@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { downloadNamedFile } from '@/lib/client/download-file';
+import { isWaitingForMediaWorker } from '@/lib/rough-cut/workspace';
 
 export const ROUGH_CUT_POLL_MS = 4000;
 
@@ -32,6 +33,7 @@ export type RoughCutRecord = {
   warnings: RoughCutWarning[] | null;
   error: string | null;
   hasDecisions: boolean;
+  outputVideoId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -84,6 +86,7 @@ function parseRoughCut(value: unknown): RoughCutRecord | null {
     warnings: parseWarnings(row.warnings),
     error: typeof row.error === 'string' ? row.error : null,
     hasDecisions: row.hasDecisions === true,
+    outputVideoId: typeof row.outputVideoId === 'string' ? row.outputVideoId : null,
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : '',
     updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : '',
   };
@@ -99,6 +102,7 @@ export function useRoughCut() {
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isCanceling, setIsCanceling] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
 
@@ -165,6 +169,7 @@ export function useRoughCut() {
     setError(null);
     setIsStarting(false);
     setIsDownloading(false);
+    setIsCanceling(false);
   }, [stopPolling]);
 
   const start = useCallback(
@@ -243,15 +248,245 @@ export function useRoughCut() {
     [roughCut]
   );
 
+  const cancel = useCallback(async () => {
+    if (!roughCut) return 'Rough cut is not running';
+    if (isCanceling) return null;
+    setIsCanceling(true);
+    try {
+      const response = await fetch(`/api/rough-cuts/${roughCut.id}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = readClientApiError(payload, 'Failed to cancel rough cut');
+        setError(message);
+        return message;
+      }
+      stopPolling();
+      setRoughCut(null);
+      setCameras([]);
+      return null;
+    } catch {
+      const message = 'Failed to cancel rough cut';
+      setError(message);
+      return message;
+    } finally {
+      setIsCanceling(false);
+    }
+  }, [isCanceling, roughCut, stopPolling]);
+
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!roughCut || roughCut.status !== 'PENDING') return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [roughCut]);
+
+  const waitingForWorker = Boolean(
+    roughCut && isWaitingForMediaWorker(roughCut.status, roughCut.createdAt, nowMs)
+  );
+
   return {
     roughCut,
     cameras,
     error,
     isStarting,
     isDownloading,
+    isCanceling,
     isPolling: intervalRef.current !== null,
+    waitingForWorker,
     start,
     download,
+    cancel,
     reset,
+  };
+}
+
+function folderQueryValue(folderId: string | null): string {
+  return folderId ?? 'root';
+}
+
+function shouldKeepPolling(cuts: RoughCutRecord[]): boolean {
+  const now = Date.now();
+  return cuts.some((cut) => {
+    if (cut.status === 'PENDING' || cut.status === 'RUNNING') return true;
+    if (cut.status === 'READY' && !cut.outputVideoId) {
+      const updated = Date.parse(cut.updatedAt || cut.createdAt);
+      return Number.isFinite(updated) && now - updated < 15 * 60 * 1000;
+    }
+    return false;
+  });
+}
+
+export function useRoughCutHistory(projectId: string, folderId: string | null) {
+  const [cuts, setCuts] = useState<RoughCutRecord[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isCancelingId, setIsCancelingId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inFlightRef = useRef(false);
+
+  const stopPolling = useCallback(() => {
+    if (intervalRef.current !== null) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/rough-cuts?folderId=${encodeURIComponent(folderQueryValue(folderId))}`,
+        { cache: 'no-store' }
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(readClientApiError(payload, 'Failed to load rough cuts'));
+        return;
+      }
+      const rows =
+        payload && typeof payload === 'object'
+          ? (payload as { data?: { roughCuts?: unknown } }).data?.roughCuts
+          : null;
+      const next = Array.isArray(rows)
+        ? rows.map(parseRoughCut).filter((row): row is RoughCutRecord => Boolean(row))
+        : [];
+      setCuts(next);
+      if (!shouldKeepPolling(next)) {
+        stopPolling();
+      }
+    } catch {
+      setError('Failed to load rough cuts');
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [folderId, projectId, stopPolling]);
+
+  const startPolling = useCallback(() => {
+    if (intervalRef.current !== null) return;
+    intervalRef.current = setInterval(() => {
+      void load();
+    }, ROUGH_CUT_POLL_MS);
+  }, [load]);
+
+  useEffect(() => {
+    setIsLoading(true);
+    void load().finally(() => setIsLoading(false));
+  }, [load]);
+
+  useEffect(() => {
+    if (shouldKeepPolling(cuts)) {
+      startPolling();
+    } else {
+      stopPolling();
+    }
+  }, [cuts, startPolling, stopPolling]);
+
+  useEffect(() => {
+    if (!cuts.some((cut) => cut.status === 'PENDING')) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [cuts]);
+
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, [stopPolling]);
+
+  const start = useCallback(
+    async (layout: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR') => {
+      if (isStarting) return 'A rough cut is already running';
+      setIsStarting(true);
+      setError(null);
+      try {
+        const response = await fetch(`/api/projects/${projectId}/rough-cuts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folderId, layout }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          const message = readClientApiError(payload, 'Failed to start rough cut');
+          setError(message);
+          return message;
+        }
+        const created = parseRoughCut(
+          payload && typeof payload === 'object'
+            ? (payload as { data?: { roughCut?: unknown } }).data?.roughCut
+            : null
+        );
+        if (!created) {
+          const message = 'Failed to start rough cut';
+          setError(message);
+          return message;
+        }
+        setCuts((current) => [created, ...current.filter((cut) => cut.id !== created.id)]);
+        startPolling();
+        return null;
+      } catch {
+        const message = 'Failed to start rough cut';
+        setError(message);
+        return message;
+      } finally {
+        setIsStarting(false);
+      }
+    },
+    [folderId, isStarting, projectId, startPolling]
+  );
+
+  const cancel = useCallback(
+    async (cutId: string) => {
+      if (isCancelingId) return null;
+      setIsCancelingId(cutId);
+      try {
+        const response = await fetch(`/api/rough-cuts/${cutId}`, { method: 'DELETE' });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          const message = readClientApiError(payload, 'Failed to cancel rough cut');
+          setError(message);
+          return message;
+        }
+        setCuts((current) => current.filter((cut) => cut.id !== cutId));
+        return null;
+      } catch {
+        const message = 'Failed to cancel rough cut';
+        setError(message);
+        return message;
+      } finally {
+        setIsCancelingId(null);
+      }
+    },
+    [isCancelingId]
+  );
+
+  const download = useCallback(async (cutId: string, format: 'otio' | 'xml') => {
+    const saved = await downloadNamedFile(
+      `/api/rough-cuts/${cutId}/download?format=${format}`,
+      `rough-cut.${format}`
+    );
+    if (!saved) {
+      const message = 'Failed to download rough cut';
+      setError(message);
+      return message;
+    }
+    return null;
+  }, []);
+
+  return {
+    cuts,
+    error,
+    isLoading,
+    isStarting,
+    isCancelingId,
+    isPolling: intervalRef.current !== null,
+    waitingForWorker: (cut: RoughCutRecord) =>
+      isWaitingForMediaWorker(cut.status, cut.createdAt, nowMs),
+    refresh: load,
+    start,
+    cancel,
+    download,
   };
 }

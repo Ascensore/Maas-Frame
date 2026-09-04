@@ -52,7 +52,6 @@ import { VideoCard } from '@/components/video-card';
 import { VideoDragDropUploader } from '@/components/video-drag-drop-uploader';
 import { MoveVideosDialog } from '@/components/move-videos-dialog';
 import { MoveToFolderDialog, type ProjectFolder } from '@/components/move-to-folder-dialog';
-import { RoughCutDialog } from '@/components/rough-cut-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -157,12 +156,6 @@ export function ProjectContentClient({
   const [folderPendingRename, setFolderPendingRename] = useState<ProjectFolder | null>(null);
   const [renameFolderName, setRenameFolderName] = useState('');
   const [isRenamingFolder, setIsRenamingFolder] = useState(false);
-  const [roughCutTarget, setRoughCutTarget] = useState<{
-    folderId: string | null;
-    folderLabel: string;
-    videoCount: number;
-    videos: SerializedVideo[];
-  } | null>(null);
 
   const canSelectVideos = canDownloadProject || canEdit;
 
@@ -210,8 +203,10 @@ export function ProjectContentClient({
     () => (currentFolderId ? folderPath(currentFolderId, folders) : []),
     [currentFolderId, folders]
   );
-  const currentFolderLabel = crumbs[crumbs.length - 1]?.name ?? project.name;
-  const canGenerateCurrentFolderRoughCut = roughCutEnabled && canEdit && allVideoIds.length >= 1;
+  const canOpenEditWorkspace = roughCutEnabled && canEdit;
+  const editHref = currentFolderId
+    ? `/projects/${projectId}/edit?folder=${currentFolderId}`
+    : `/projects/${projectId}/edit`;
   const addVideoHref = currentFolderId
     ? `/projects/${projectId}/videos/new?folder=${currentFolderId}`
     : `/projects/${projectId}/videos/new`;
@@ -600,21 +595,12 @@ export function ProjectContentClient({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {canGenerateCurrentFolderRoughCut && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                setRoughCutTarget({
-                  folderId: currentFolderId,
-                  folderLabel: currentFolderLabel,
-                  videoCount: allVideoIds.length,
-                  videos: localVideos,
-                })
-              }
-            >
-              <Clapperboard className="h-4 w-4 mr-2" />
-              Generate rough cut
+          {canOpenEditWorkspace && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href={editHref}>
+                <Clapperboard className="h-4 w-4 mr-2" />
+                Edit
+              </Link>
             </Button>
           )}
           {canEdit && (
@@ -796,19 +782,12 @@ export function ProjectContentClient({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      {roughCutEnabled && folder.videoCount >= 1 && (
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            setRoughCutTarget({
-                              folderId: folder.id,
-                              folderLabel: folder.name,
-                              videoCount: folder.videoCount,
-                              videos: [],
-                            })
-                          }
-                        >
-                          <Clapperboard className="mr-2 h-4 w-4" />
-                          Generate rough cut
+                      {roughCutEnabled && (
+                        <DropdownMenuItem asChild>
+                          <Link href={`/projects/${projectId}/edit?folder=${folder.id}`}>
+                            <Clapperboard className="mr-2 h-4 w-4" />
+                            Open in Edit
+                          </Link>
                         </DropdownMenuItem>
                       )}
                       <DropdownMenuItem
@@ -954,21 +933,6 @@ export function ProjectContentClient({
         currentFolderId={currentFolderId}
         onMoved={handleVideosMovedToFolder}
       />
-
-      {roughCutEnabled ? (
-        <RoughCutDialog
-          open={roughCutTarget !== null}
-          onOpenChange={(open) => {
-            if (!open) setRoughCutTarget(null);
-          }}
-          projectId={projectId}
-          workspaceId={project.workspace?.id ?? null}
-          folderId={roughCutTarget?.folderId ?? currentFolderId}
-          folderLabel={roughCutTarget?.folderLabel ?? currentFolderLabel}
-          videoCount={roughCutTarget?.videoCount ?? allVideoIds.length}
-          videos={roughCutTarget?.videos ?? localVideos}
-        />
-      ) : null}
 
       <Dialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
         <DialogContent>

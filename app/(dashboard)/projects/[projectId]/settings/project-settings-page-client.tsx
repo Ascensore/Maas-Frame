@@ -23,6 +23,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -33,6 +40,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { folderPath } from '@/lib/folders';
 
 type Visibility = 'PRIVATE' | 'INVITE' | 'PUBLIC';
 
@@ -98,9 +106,13 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
   const [editTagName, setEditTagName] = useState('');
   const [editTagColor, setEditTagColor] = useState('');
   const [c2cConnections, setC2cConnections] = useState<
-    Array<{ id: string; name: string; tokenPrefix: string }>
+    Array<{ id: string; name: string; tokenPrefix: string; folderId: string | null }>
+  >([]);
+  const [c2cFolders, setC2cFolders] = useState<
+    Array<{ id: string; name: string; parentId: string | null }>
   >([]);
   const [newConnectionName, setNewConnectionName] = useState('');
+  const [newConnectionFolderId, setNewConnectionFolderId] = useState('root');
   const [createdConnectionSecret, setCreatedConnectionSecret] = useState('');
   const [connectionBusy, setConnectionBusy] = useState(false);
 
@@ -147,6 +159,17 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
       .catch(() => {
         /* Silent fail - ingest connections are optional */
       });
+
+    fetch(`/api/projects/${projectId}/folders`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.data?.folders)) {
+          setC2cFolders(data.data.folders);
+        }
+      })
+      .catch(() => {
+        /* Silent fail - folders are optional for ingest tokens */
+      });
   }, [projectId]);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -186,7 +209,10 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
       const res = await fetch(`/api/projects/${projectId}/c2c-connections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newConnectionName.trim() }),
+        body: JSON.stringify({
+          name: newConnectionName.trim(),
+          ...(newConnectionFolderId !== 'root' ? { folderId: newConnectionFolderId } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -199,6 +225,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
           id: data.data.connection.id,
           name: data.data.connection.name,
           tokenPrefix: data.data.connection.tokenPrefix,
+          folderId: data.data.connection.folderId ?? null,
         },
         ...current,
       ]);
@@ -510,17 +537,43 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                     <Label className="text-sm font-medium">Camera ingest</Label>
                     <p className="text-sm text-muted-foreground mt-1">
                       Project-scoped tokens for field uploaders and watch-folder scripts. This is
-                      not a vendor Camera-to-Cloud protocol. Files land at the project root unless
-                      the connection was created with a folder id.
+                      not a vendor Camera-to-Cloud protocol. Pick the Edit bin folder so CLI watch
+                      lands with the rest of the session.
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    <Input
-                      value={newConnectionName}
-                      onChange={(event) => setNewConnectionName(event.target.value)}
-                      placeholder="Connection name"
-                      disabled={isSaving || connectionBusy}
-                    />
+                  <div className="grid gap-2 sm:grid-cols-[1fr_minmax(12rem,16rem)_auto] sm:items-end">
+                    <div className="grid gap-2">
+                      <Label htmlFor="c2c-name">Connection name</Label>
+                      <Input
+                        id="c2c-name"
+                        value={newConnectionName}
+                        onChange={(event) => setNewConnectionName(event.target.value)}
+                        placeholder="Connection name"
+                        disabled={isSaving || connectionBusy}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="c2c-folder">Destination folder</Label>
+                      <Select
+                        value={newConnectionFolderId}
+                        onValueChange={setNewConnectionFolderId}
+                        disabled={isSaving || connectionBusy}
+                      >
+                        <SelectTrigger id="c2c-folder" className="w-full">
+                          <SelectValue placeholder="Project root" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="root">Project root</SelectItem>
+                          {c2cFolders.map((folder) => (
+                            <SelectItem key={folder.id} value={folder.id}>
+                              {folderPath(folder.id, c2cFolders)
+                                .map((entry) => entry.name)
+                                .join(' / ')}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <Button
                       type="button"
                       disabled={isSaving || connectionBusy || !newConnectionName.trim()}
@@ -549,6 +602,14 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                         <span>
                           {connection.name}{' '}
                           <span className="text-muted-foreground">{connection.tokenPrefix}…</span>
+                          <span className="text-muted-foreground">
+                            {' '}
+                            ·{' '}
+                            {connection.folderId
+                              ? (c2cFolders.find((folder) => folder.id === connection.folderId)
+                                  ?.name ?? 'Folder')
+                              : 'Project root'}
+                          </span>
                         </span>
                         <Button
                           type="button"

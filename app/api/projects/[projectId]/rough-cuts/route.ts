@@ -12,7 +12,7 @@ import {
   parseRoughCutLayout,
 } from '@/lib/rough-cut/layout';
 import {
-  isFileBackedProvider,
+  isReadyFileBackedVideo,
   loadFolderVideos,
   loadResolvedProfile,
   previewCameraRoles,
@@ -114,10 +114,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const videos = await loadFolderVideos(projectId, folderId);
-    const fileBacked = videos.filter((video) => {
-      const version = video.versions[0];
-      return version && isFileBackedProvider(version.providerId);
-    });
+    const fileBacked = videos.filter((video) => isReadyFileBackedVideo(video));
 
     const requestedLayout = parseRoughCutLayout(body?.layout);
     if (body && Object.prototype.hasOwnProperty.call(body, 'layout') && requestedLayout === null) {
