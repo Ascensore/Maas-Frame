@@ -37,14 +37,14 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
 
   const projectRow = await db.project.findUnique({
     where: { id: project.id },
-    select: { name: true },
+    select: { name: true, workspaceId: true, editorialBriefId: true },
   });
   if (!projectRow) notFound();
 
   const folders = await db.folder.findMany({
     where: { projectId: project.id },
     orderBy: [{ position: 'asc' }, { name: 'asc' }],
-    select: { id: true, name: true, parentId: true },
+    select: { id: true, name: true, parentId: true, editorialBriefId: true },
   });
 
   const currentFolder = requestedFolderId
@@ -83,6 +83,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
     id: folder.id,
     name: folder.name,
     parentId: folder.parentId,
+    editorialBriefId: folder.editorialBriefId,
   }));
 
   return (
@@ -90,6 +91,8 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
       key={currentFolderId ?? 'root'}
       projectId={project.id}
       projectName={projectRow.name}
+      workspaceId={projectRow.workspaceId}
+      projectBriefId={projectRow.editorialBriefId}
       folders={serializedFolders}
       currentFolderId={currentFolderId}
       clips={clips}

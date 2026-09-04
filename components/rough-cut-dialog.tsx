@@ -27,6 +27,8 @@ import {
   type LayoutGuessReason,
 } from '@/lib/rough-cut/layout';
 import type { RoughCutLayout } from '@/lib/rough-cut/types';
+import type { EditorialProjectType } from '@/lib/rough-cut/brief';
+import { PROJECT_TYPE_LABELS } from '@/components/editorial-briefs-card';
 import { isWaitingForTranscript } from '@/lib/rough-cut/workspace';
 
 export type RoughCutDialogVideo = {
@@ -38,6 +40,13 @@ export type RoughCutDialogVideo = {
   startTimecode?: string | null;
   recordedAt?: string | null;
   createdAt?: string | null;
+};
+
+export type RoughCutDialogBrief = {
+  id: string;
+  name: string;
+  projectType: EditorialProjectType;
+  isDefault: boolean;
 };
 
 export type RoughCutDialogProfile = {
@@ -123,6 +132,8 @@ export function RoughCutDialog({
   const [profiles, setProfiles] = useState<RoughCutDialogProfile[]>([]);
   const [profileId, setProfileId] = useState<string>('default');
   const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [briefs, setBriefs] = useState<RoughCutDialogBrief[]>([]);
+  const [briefId, setBriefId] = useState<string>('inherit');
   const [layout, setLayout] = useState<RoughCutLayout | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
   const [cameraOverride, setCameraOverride] = useState<Record<string, string>>({});
@@ -217,6 +228,29 @@ export function RoughCutDialog({
     };
   }, [open, reset, workspaceId]);
 
+  // The brief is optional: when the list cannot be loaded the run simply
+  // inherits one from the folder, the project or the workspace default.
+  useEffect(() => {
+    if (!open || !workspaceId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/workspaces/${workspaceId}/editorial-briefs`, {
+          cache: 'no-store',
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) return;
+        const list = (payload as { data?: { briefs?: RoughCutDialogBrief[] } }).data?.briefs;
+        if (!cancelled && Array.isArray(list)) setBriefs(list);
+      } catch {
+        // see above
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, workspaceId]);
+
   const previewCameras = useMemo(() => {
     if (cameras.length > 0) {
       return cameras.map((camera) => ({
@@ -258,6 +292,7 @@ export function RoughCutDialog({
       projectId,
       folderId,
       profileId: profileId === 'default' ? null : profileId,
+      briefId: briefId === 'inherit' ? null : briefId,
       layout: effectiveLayout,
       clipOrder: effectiveLayout === 'SEQUENTIAL' ? clipOrder : undefined,
       cameraRoles: effectiveLayout === 'MULTICAM' ? roles : undefined,
@@ -271,6 +306,7 @@ export function RoughCutDialog({
       onOpenChange={(next) => {
         if (!next) {
           setLayout(null);
+          setBriefId('inherit');
           setOrderOverride(null);
           setCameraOverride({});
           setFocusOverride(null);
@@ -451,6 +487,28 @@ export function RoughCutDialog({
           ) : null}
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {briefs.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Editorial brief</p>
+              <Select value={briefId} onValueChange={setBriefId} disabled={busy || !!status}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="inherit">
+                    Inherited from the folder, project or workspace default
+                  </SelectItem>
+                  {briefs.map((brief) => (
+                    <SelectItem key={brief.id} value={brief.id}>
+                      {brief.name} · {PROJECT_TYPE_LABELS[brief.projectType]}
+                      {brief.isDefault ? ' (default)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
           {profilesError ? <p className="text-sm text-muted-foreground">{profilesError}</p> : null}
         </div>
 

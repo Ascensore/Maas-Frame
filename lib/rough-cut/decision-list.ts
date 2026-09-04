@@ -2,7 +2,14 @@ import { z } from 'zod';
 import type { FrameRate } from '../timecode';
 import { assignStackedTracks } from './camera-roles';
 import { buildRoughCutTargetUrl } from './media-paths';
-import type { CameraClip, EditDecision, RoughCutDecisionList } from './types';
+import {
+  CUT_REASON_CODES,
+  EDIT_REASON_CODES,
+  type CameraClip,
+  type CutIsland,
+  type EditDecision,
+  type RoughCutDecisionList,
+} from './types';
 
 const editSchema = z.object({
   timelineStartSeconds: z.number().finite().nonnegative(),
@@ -12,6 +19,16 @@ const editSchema = z.object({
   sourceVersionId: z.string().min(1),
   cameraRole: z.string().min(1),
   targetTrack: z.number().int().positive(),
+  reason: z.object({ code: z.enum(EDIT_REASON_CODES), summary: z.string() }).optional(),
+});
+
+const cutSchema = z.object({
+  key: z.string().min(1),
+  sourceVersionId: z.string().min(1),
+  inSeconds: z.number().finite().nonnegative(),
+  outSeconds: z.number().finite().nonnegative(),
+  reason: z.object({ code: z.enum(CUT_REASON_CODES), summary: z.string() }),
+  transcriptText: z.string().nullable(),
 });
 
 const clipSchema = z.object({
@@ -34,6 +51,7 @@ export const roughCutDecisionListSchema = z.object({
     den: z.number().int().positive(),
     dropFrame: z.boolean(),
   }),
+  cuts: z.array(cutSchema).optional(),
 });
 
 export function parseRoughCutDecisionList(value: unknown): RoughCutDecisionList | null {
@@ -48,11 +66,13 @@ export function assembleDecisionList(options: {
   fileNames: Map<string, string>;
   mediaPathPrefix: string;
   rate: FrameRate;
+  cuts?: CutIsland[];
 }): RoughCutDecisionList {
   const tracks = assignStackedTracks(options.clips);
   return {
     version: 1,
     edits: options.edits,
+    ...(options.cuts && options.cuts.length > 0 ? { cuts: options.cuts } : {}),
     clips: options.clips.map((clip) => {
       const fileName = options.fileNames.get(clip.versionId) ?? `${clip.role}.mp4`;
       return {

@@ -41,6 +41,8 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { folderPath } from '@/lib/folders';
+import type { EditorialProjectType } from '@/lib/rough-cut/brief';
+import { PROJECT_TYPE_LABELS } from '@/components/editorial-briefs-card';
 
 type Visibility = 'PRIVATE' | 'INVITE' | 'PUBLIC';
 
@@ -81,6 +83,13 @@ interface CommentTag {
   position: number;
 }
 
+interface WorkspaceBrief {
+  id: string;
+  name: string;
+  projectType: EditorialProjectType;
+  isDefault: boolean;
+}
+
 export default function ProjectSettingsPageClient({ projectId }: ProjectSettingsPageProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
@@ -95,7 +104,9 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
     visibility: 'PRIVATE' as Visibility,
     allowDownloads: false,
     watermarkReviews: false,
+    editorialBriefId: null as string | null,
   });
+  const [workspaceBriefs, setWorkspaceBriefs] = useState<WorkspaceBrief[]>([]);
 
   // Tag management state
   const [tags, setTags] = useState<CommentTag[]>([]);
@@ -131,7 +142,18 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
             visibility: project.visibility || 'PRIVATE',
             allowDownloads: project.allowDownloads ?? false,
             watermarkReviews: project.watermarkReviews ?? false,
+            editorialBriefId: project.editorialBriefId ?? null,
           });
+          // The brief list is optional: without it the section simply stays hidden.
+          if (typeof project.workspaceId === 'string') {
+            fetch(`/api/workspaces/${project.workspaceId}/editorial-briefs`)
+              .then((res) => res.json())
+              .then((payload) => {
+                const list = payload?.data?.briefs;
+                if (Array.isArray(list)) setWorkspaceBriefs(list);
+              })
+              .catch(() => undefined);
+          }
         }
       })
       .catch(() => setError('Failed to load project'))
@@ -444,6 +466,46 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                     ))}
                   </div>
                 </div>
+
+                {workspaceBriefs.length > 0 || formData.editorialBriefId ? (
+                  <div className="space-y-3 rounded-xl border p-4">
+                    <div>
+                      <Label htmlFor="project-brief" className="text-sm font-medium">
+                        Editorial brief
+                      </Label>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        The brief rough cuts follow for this project. A folder can bind its own
+                        brief, which wins over this one; without either, the workspace default for
+                        the project type applies.
+                      </p>
+                    </div>
+                    <Select
+                      value={formData.editorialBriefId ?? 'inherit'}
+                      onValueChange={(value) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          editorialBriefId: value === 'inherit' ? null : value,
+                        }))
+                      }
+                      disabled={isSaving}
+                    >
+                      <SelectTrigger id="project-brief" className="w-full max-w-md">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="inherit">
+                          Workspace default for the project type
+                        </SelectItem>
+                        {workspaceBriefs.map((brief) => (
+                          <SelectItem key={brief.id} value={brief.id}>
+                            {brief.name} · {PROJECT_TYPE_LABELS[brief.projectType]}
+                            {brief.isDefault ? ' (default)' : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
 
                 <div className="space-y-3 rounded-xl border p-4">
                   <div>
