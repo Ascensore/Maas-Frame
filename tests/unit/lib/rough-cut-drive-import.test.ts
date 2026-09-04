@@ -94,6 +94,7 @@ describe('downloadPublicDriveFile', () => {
     const result = await downloadPublicDriveFile(FILE_ID, fetchImpl);
     expect(result.fileName).toBe('clip.mp4');
     expect(result.contentType).toBe('video/mp4');
+    expect(result.bytes).toEqual(bytes);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(String(fetchImpl.mock.calls[1]?.[0])).toContain('confirm=AbC9');
   });

@@ -11,13 +11,20 @@ describe('materializeFfmpegArgs', () => {
       '/tmp/out.mp4'
     );
 
-    const firstInput = args.indexOf('/tmp/a.mp4');
     const firstSs = args.indexOf('-ss');
+    const secondSs = args.indexOf('-ss', firstSs + 1);
     const firstDashI = args.indexOf('-i');
+    const secondDashI = args.indexOf('-i', firstDashI + 1);
     expect(firstSs).toBeGreaterThan(-1);
+    expect(secondSs).toBeGreaterThan(firstSs);
     expect(firstDashI).toBeGreaterThan(firstSs);
-    expect(firstInput).toBe(firstDashI + 1);
+    expect(secondDashI).toBeGreaterThan(secondSs);
+    expect(args[firstDashI + 1]).toBe('/tmp/a.mp4');
+    expect(args[secondDashI + 1]).toBe('/tmp/b.mp4');
     expect(args[firstSs + 1]).toBe('1.500');
+    expect(args[args.indexOf('-t') + 1]).toBe('2.500');
+    expect(args[secondSs + 1]).toBe('0.000');
+    expect(args[args.indexOf('-t', firstDashI) + 1]).toBe('2.250');
 
     expect(args).toContain('-filter_complex');
     expect(args).toContain('[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[vout][aout]');

@@ -208,6 +208,52 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(0);
   });
 
+  it('assembles ready file-backed clips and skips a pending Drive import in the same folder', async () => {
+    const scenario = await seedProject();
+    const ready = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Interview',
+    });
+    await createVersion({
+      videoParentId: ready.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    const pending = await createVideo({
+      projectId: scenario.project.id,
+      title: 'Still importing',
+      position: 1,
+      metadata: {
+        import_source: 'gdrive',
+        import_file_id: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms',
+        import_status: 'pending',
+      },
+    });
+    await createVersion({
+      videoParentId: pending.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const mixed = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(mixed.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string };
+      cameras: Array<{ videoId: string; title: string }>;
+      layout: string;
+    }>(mixed);
+    expect(payload.layout).toBe('LINEAR');
+    expect(payload.cameras.map((camera) => camera.videoId)).toEqual([ready.id]);
+    expect(await db.roughCut.count()).toBe(1);
+    expect(await db.mediaJob.count({ where: { kind: 'ASSEMBLE_ROUGH_CUT' } })).toBe(1);
+  });
+
   it('returns 400 when MULTICAM is requested with a single video and writes no row', async () => {
     const scenario = await seedProject();
     const only = await createVideo({

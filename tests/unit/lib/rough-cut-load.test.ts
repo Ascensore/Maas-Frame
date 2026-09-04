@@ -13,6 +13,9 @@ describe('isFileBackedProvider', () => {
 describe('isReadyFileBackedVideo', () => {
   it('requires a storage backend that has finished importing', () => {
     expect(isReadyFileBackedVideo({ metadata: {}, versions: [{ providerId: 'r2' }] })).toBe(true);
+    expect(isReadyFileBackedVideo({ metadata: {}, versions: [{ providerId: 'bunny' }] })).toBe(
+      true
+    );
     expect(
       isReadyFileBackedVideo({
         metadata: { import_status: 'ready' },

@@ -298,8 +298,26 @@ describe('useRoughCut', () => {
     );
   });
 
+  it('does not flag a PENDING cut as waiting before 30s', async () => {
+    vi.setSystemTime(new Date('2026-09-03T00:00:29.000Z'));
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('PENDING'), 201);
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+
+    const { result } = renderHook(() => useRoughCut());
+    await act(async () => {
+      await result.current.start({ projectId: 'proj-1', folderId: null });
+    });
+    expect(result.current.roughCut?.status).toBe('PENDING');
+    expect(result.current.waitingForWorker).toBe(false);
+  });
+
   it('flags a PENDING cut as waiting for the worker after 30s', async () => {
-    vi.setSystemTime(new Date('2026-09-03T00:00:31.000Z'));
+    vi.setSystemTime(new Date('2026-09-03T00:00:30.000Z'));
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {

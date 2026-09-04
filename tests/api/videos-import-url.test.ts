@@ -62,6 +62,7 @@ describe('POST /api/projects/[projectId]/videos/import-url', () => {
 
     expect(response.status).toBe(403);
     expect(await db.video.count()).toBe(0);
+    expect(await db.mediaJob.count()).toBe(0);
   });
 
   it('returns 400 for a Drive folder URL and creates no video', async () => {
