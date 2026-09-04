@@ -53,13 +53,31 @@ export function isS3VideoUploadsFeatureEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_S3_VIDEO_UPLOADS', false);
 }
 
-export function hasR2Config() {
+export function hasCloudflareR2Config() {
   return Boolean(
     process.env.R2_ACCESS_KEY_ID &&
     process.env.R2_SECRET_ACCESS_KEY &&
     process.env.R2_BUCKET_NAME &&
     (process.env.R2_ENDPOINT || process.env.R2_ACCOUNT_ID)
   );
+}
+
+export function hasSupabaseStorageConfig() {
+  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)?.trim();
+  const key = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY)?.trim();
+  return Boolean(url && key);
+}
+
+export function hasR2Config() {
+  return hasCloudflareR2Config() || hasSupabaseStorageConfig();
+}
+
+/**
+ * Hosted Vercel deploys often have a Supabase project and no Cloudflare R2
+ * keys. Object storage then goes through Supabase Storage instead of S3.
+ */
+export function isUsingSupabaseObjectStorage() {
+  return hasSupabaseStorageConfig() && !hasCloudflareR2Config();
 }
 
 export function isS3VideoUploadsEnabled() {

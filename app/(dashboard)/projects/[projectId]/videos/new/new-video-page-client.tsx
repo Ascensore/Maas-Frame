@@ -194,7 +194,9 @@ export default function NewVideoPageClient({
     } else {
       setVideoSource(null);
       if (url.length > 10) {
-        setUrlError('Could not recognize this video URL. Currently supported: YouTube, Vimeo');
+        setUrlError(
+          'Could not recognize this video URL. Currently supported: YouTube and Google Drive share links'
+        );
       }
     }
   };
@@ -544,7 +546,7 @@ export default function NewVideoPageClient({
                   <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     id="url"
-                    placeholder="https://youtube.com/watch?v=..."
+                    placeholder="https://youtube.com/watch?v=... or a Google Drive share link"
                     value={videoUrl}
                     onChange={(e) => handleUrlChange(e.target.value)}
                     className="pl-10"

@@ -1,3 +1,5 @@
+import { supabaseStorageConnectOrigins } from '@/lib/supabase-object-storage';
+
 function resolveBunnyCdnHostname(): string | null {
   const raw = process.env.BUNNY_CDN_URL || process.env.NEXT_PUBLIC_BUNNY_CDN_URL;
   if (!raw) return null;
@@ -64,6 +66,7 @@ export function buildContentSecurityPolicy(): string {
     'https://www.youtube.com',
     cdnOrigin,
     ...resolveR2ConnectOrigins(),
+    ...supabaseStorageConnectOrigins(),
     // Allow Next.js HMR websocket in development
     ...(isDev ? ['ws://localhost:* wss://localhost:*'] : []),
   ].filter(Boolean);
@@ -76,6 +79,7 @@ export function buildContentSecurityPolicy(): string {
     'https://i.ytimg.com',
     'https://images.unsplash.com',
     'https://vz-thumbnail.b-cdn.net',
+    'https://drive.google.com',
     cdnOrigin,
   ].filter(Boolean);
 
@@ -89,7 +93,7 @@ export function buildContentSecurityPolicy(): string {
     "style-src 'self' 'unsafe-inline'",
     `img-src ${imgSrcParts.join(' ')}`,
     `media-src ${mediaSrcParts.join(' ')}`,
-    "frame-src 'self' https://www.youtube.com https://iframe.mediadelivery.net",
+    "frame-src 'self' https://www.youtube.com https://iframe.mediadelivery.net https://drive.google.com",
     `connect-src ${connectSrcParts.join(' ')}`,
     // next/font self-hosts Google Fonts at build time — no external font origin needed
     "font-src 'self'",

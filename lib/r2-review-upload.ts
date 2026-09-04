@@ -7,7 +7,11 @@ import {
   createPresignedUploadPartUrl,
   createPresignedVideoPutUrl,
 } from '@/lib/r2';
-import { getR2MultipartPartSizeBytes, getR2MultipartThresholdBytes } from '@/lib/feature-flags';
+import {
+  getR2MultipartPartSizeBytes,
+  getR2MultipartThresholdBytes,
+  isUsingSupabaseObjectStorage,
+} from '@/lib/feature-flags';
 import { buildVideoObjectKey, videoProxyPathFromFilename } from '@/lib/video-upload-validation';
 import { resolveReviewUpload } from '@/lib/review-kind';
 import { logError } from '@/lib/logger';
@@ -68,7 +72,8 @@ export async function startR2ReviewUpload(input: {
   const thumbnailObjectKey = `images/${thumbnailFilename}`;
   const thumbnailProxyUrl = `/api/upload/image/${thumbnailFilename}`;
 
-  const useMultipart = input.sizeBytes > getR2MultipartThresholdBytes();
+  const useMultipart =
+    !isUsingSupabaseObjectStorage() && input.sizeBytes > getR2MultipartThresholdBytes();
 
   let presignedPutUrl = '';
   let thumbnailPresignedPutUrl: string;

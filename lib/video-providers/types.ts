@@ -38,7 +38,7 @@ export interface EmbedOptions {
 export type ThumbnailSize = 'small' | 'medium' | 'large' | 'maxres';
 
 // Supported provider types - extend as we add more
-export type VideoProviderType = 'youtube' | 'direct' | 'bunny' | 'r2';
+export type VideoProviderType = 'youtube' | 'gdrive' | 'direct' | 'bunny' | 'r2';
 
 // Video source stored in database
 export interface VideoSource {

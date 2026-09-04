@@ -9,7 +9,7 @@ import { reviewKindFromFileName } from '@/lib/review-kind';
 export const VIDEO_FILE_EXTENSIONS = ['mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv'];
 
 export const REVIEW_FILE_ACCEPT =
-  'video/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,audio/*';
+  'video/*,image/jpeg,image/png,image/webp,image/gif,application/pdf,audio/*,.mp4,.webm,.ogg,.mov,.m4v,.mkv,.avi,.jpg,.jpeg,.png,.webp,.gif,.pdf,.mp3,.wav,.m4a,.aac,.flac';
 
 export type ActiveTusUpload = { abort: (shouldTerminate?: boolean) => Promise<unknown> | void };
 

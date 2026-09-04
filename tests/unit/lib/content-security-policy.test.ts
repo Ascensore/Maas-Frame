@@ -9,6 +9,10 @@ const MANAGED_ENV = [
   'R2_PUBLIC_BASE_URL',
   'R2_ACCOUNT_ID',
   'R2_BUCKET_NAME',
+  'SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'SUPABASE_SECRET_KEY',
 ];
 
 function directives(): Record<string, string[]> {
@@ -71,11 +75,12 @@ describe('buildContentSecurityPolicy', () => {
     ]);
   });
 
-  it('allows the YouTube and Bunny iframe hosts in frame-src', () => {
+  it('allows the YouTube, Bunny and Google Drive iframe hosts in frame-src', () => {
     expect(directives()['frame-src']).toEqual([
       "'self'",
       'https://www.youtube.com',
       'https://iframe.mediadelivery.net',
+      'https://drive.google.com',
     ]);
   });
 
@@ -91,6 +96,7 @@ describe('buildContentSecurityPolicy', () => {
       'https://i.ytimg.com',
       'https://images.unsplash.com',
       'https://vz-thumbnail.b-cdn.net',
+      'https://drive.google.com',
     ]);
     expect(csp['connect-src'].filter((src) => src.includes('b-cdn.net'))).toEqual([]);
     // An empty cdnOrigin must be filtered out rather than left as a bare token.
@@ -230,5 +236,19 @@ describe('buildContentSecurityPolicy', () => {
     expect(imgSrc).toContain('https://i.ytimg.com');
     expect(imgSrc).toContain('data:');
     expect(imgSrc).toContain('blob:');
+  });
+
+  it('does not allow Supabase storage origins until they are configured', () => {
+    const connectSrc = directives()['connect-src'];
+    expect(connectSrc.some((src) => src.includes('supabase.co'))).toBe(false);
+  });
+
+  it('allows browser PUTs to the Supabase storage origin', () => {
+    vi.stubEnv('SUPABASE_URL', 'https://abc.supabase.co');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+    const connectSrc = directives()['connect-src'];
+
+    expect(connectSrc).toContain('https://abc.supabase.co');
+    expect(connectSrc).toContain('https://abc.storage.supabase.co');
   });
 });

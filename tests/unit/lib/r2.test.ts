@@ -31,6 +31,10 @@ vi.hoisted(() => {
   delete process.env.R2_ACCOUNT_ID;
   delete process.env.R2_PRESIGN_ENDPOINT;
   delete process.env.R2_PUBLIC_BASE_URL;
+  delete process.env.SUPABASE_URL;
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.SUPABASE_SECRET_KEY;
 });
 
 import {
@@ -76,6 +80,10 @@ function s3Error(httpStatusCode: number | undefined): Error {
 }
 
 beforeEach(() => {
+  vi.stubEnv('SUPABASE_URL', '');
+  vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
+  vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', '');
+  vi.stubEnv('SUPABASE_SECRET_KEY', '');
   send = vi.spyOn(S3Client.prototype, 'send').mockResolvedValue({} as never);
 });
 

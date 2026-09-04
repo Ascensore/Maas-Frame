@@ -22,6 +22,11 @@ const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn() }));
 vi.mock('@/lib/r2', () => ({
   r2Client: { send: sendMock },
   R2_BUCKET_NAME: 'test-bucket',
+  getObjectStorageBucketName: () => 'test-bucket',
+}));
+
+vi.mock('@/lib/feature-flags', () => ({
+  isUsingSupabaseObjectStorage: () => false,
 }));
 
 import { proxyR2MediaObject } from '@/lib/r2-media-proxy';
