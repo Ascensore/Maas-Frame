@@ -190,6 +190,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 3,
@@ -199,6 +200,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });
@@ -218,6 +220,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });
@@ -240,6 +243,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 10,
@@ -249,6 +253,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_B,
         cameraRole: 'B',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });

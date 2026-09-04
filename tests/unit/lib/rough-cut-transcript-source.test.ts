@@ -4,7 +4,6 @@ import {
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
-  turnsFromTranscriptSegments,
   WAITING_FOR_TRANSCRIPT_WARNING,
   waitingForTranscriptWarning,
   WEAK_TRANSCRIPT_WARNING,
@@ -186,87 +185,6 @@ describe('decideTranscriptSource', () => {
         now: NOW,
       })
     ).toEqual({ kind: 'fallback', reason: 'missing' });
-  });
-});
-
-describe('turnsFromTranscriptSegments', () => {
-  const options = { versionId: CAM_A, offsetSeconds: 0, durationSeconds: 60, maxGapSeconds: 0.8 };
-
-  it('absorbs pauses up to the gap and cuts at longer ones', () => {
-    const turns = turnsFromTranscriptSegments(
-      [segment(1, 4, 'first'), segment(4.8, 8, 'second'), segment(8.81, 12, 'third')],
-      options
-    );
-
-    expect(turns).toEqual([
-      { start: 1, end: 8, versionId: CAM_A, speaker: null, confidence: 1 },
-      { start: 8.81, end: 12, versionId: CAM_A, speaker: null, confidence: 1 },
-    ]);
-  });
-
-  it('never absorbs a speaker change, but lets unlabelled segments join', () => {
-    const turns = turnsFromTranscriptSegments(
-      [
-        segment(1, 4, 'host', { speaker: 'SPEAKER_00' }),
-        segment(4.2, 7, 'guest', { speaker: 'SPEAKER_01' }),
-        segment(7.1, 9, 'unlabelled'),
-      ],
-      options
-    );
-
-    expect(turns).toEqual([
-      { start: 1, end: 4, versionId: CAM_A, speaker: 'SPEAKER_00', confidence: 1 },
-      { start: 4.2, end: 9, versionId: CAM_A, speaker: 'SPEAKER_01', confidence: 1 },
-    ]);
-
-    // An unlabelled opening takes the label of the segment that joins it, so
-    // the speaker change after it still splits.
-    expect(
-      turnsFromTranscriptSegments(
-        [
-          segment(0, 2, 'unlabelled first'),
-          segment(2.3, 5, 'host', { speaker: 'SPEAKER_00' }),
-          segment(5.2, 7, 'guest', { speaker: 'SPEAKER_01' }),
-        ],
-        options
-      )
-    ).toEqual([
-      { start: 0, end: 5, versionId: CAM_A, speaker: 'SPEAKER_00', confidence: 1 },
-      { start: 5.2, end: 7, versionId: CAM_A, speaker: 'SPEAKER_01', confidence: 1 },
-    ]);
-  });
-
-  it('shifts onto the timeline and clamps to the clip', () => {
-    const turns = turnsFromTranscriptSegments(
-      [segment(-1, 2, 'early'), segment(8, 12, 'late'), segment(20, 25, 'beyond')],
-      { ...options, offsetSeconds: 3, durationSeconds: 10 }
-    );
-
-    expect(turns).toEqual([
-      { start: 3, end: 5, versionId: CAM_A, speaker: null, confidence: 1 },
-      { start: 11, end: 13, versionId: CAM_A, speaker: null, confidence: 1 },
-    ]);
-  });
-
-  it('drops empty segments before merging and sorts unsorted input', () => {
-    const turns = turnsFromTranscriptSegments(
-      [segment(5, 6, 'later'), segment(0, 2, 'first'), segment(2.5, 3, '   ')],
-      options
-    );
-
-    expect(turns).toEqual([
-      { start: 0, end: 2, versionId: CAM_A, speaker: null, confidence: 1 },
-      { start: 5, end: 6, versionId: CAM_A, speaker: null, confidence: 1 },
-    ]);
-  });
-
-  it('leaves the end unclamped when the clip length is unknown', () => {
-    const turns = turnsFromTranscriptSegments([segment(0, 50, 'long')], {
-      ...options,
-      durationSeconds: 0,
-    });
-
-    expect(turns).toEqual([{ start: 0, end: 50, versionId: CAM_A, speaker: null, confidence: 1 }]);
   });
 });
 

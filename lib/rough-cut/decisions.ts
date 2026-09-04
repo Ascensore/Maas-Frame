@@ -1,4 +1,10 @@
-import type { AttributedTurn, CameraClip, EditDecision, RoughCutOverlapBehaviour } from './types';
+import type {
+  AttributedTurn,
+  CameraClip,
+  EditDecision,
+  EditReason,
+  RoughCutOverlapBehaviour,
+} from './types';
 
 export type DecisionProfile = {
   minShotSeconds: number;
@@ -12,9 +18,20 @@ type Segment = {
   start: number;
   end: number;
   versionId: string;
+  reason: EditReason;
+  /** How much the reason says: a speaker or a deliberate hold beats a pause filler when segments merge. */
+  rank: number;
 };
 
+const RANK_FILLER = 0;
+const RANK_SAFETY = 1;
+const RANK_DELIBERATE = 2;
+const RANK_SPEAKER = 3;
+
 const EPSILON = 1e-6;
+
+/** Placeholder the edit step fills with the camera role. */
+const SPEAKER_SUMMARY = '';
 
 function clipById(clips: CameraClip[], versionId: string): CameraClip | undefined {
   return clips.find((clip) => clip.versionId === versionId);
@@ -28,6 +45,10 @@ function mergeAdjacent(segments: Segment[]): Segment[] {
     const last = merged[merged.length - 1]!;
     if (last.versionId === next.versionId && Math.abs(last.end - next.start) < EPSILON) {
       last.end = next.end;
+      if (next.rank > last.rank) {
+        last.reason = next.reason;
+        last.rank = next.rank;
+      }
     } else {
       merged.push({ ...next });
     }
@@ -72,36 +93,85 @@ function enforceMaxShot(
     let start = segment.start;
     while (segment.end - start > maxShot + EPSILON) {
       const cut = start + maxShot;
-      out.push({ start, end: cut, versionId: segment.versionId });
+      out.push({ ...segment, start, end: cut });
       start = cut;
       if (segment.versionId !== wideVersionId && minShot > 0 && start + minShot < segment.end) {
-        out.push({ start, end: start + minShot, versionId: wideVersionId });
+        out.push({
+          start,
+          end: start + minShot,
+          versionId: wideVersionId,
+          reason: { code: 'MAX_SHOT', summary: 'Cutaway after the maximum shot length' },
+          rank: RANK_DELIBERATE,
+        });
         start += minShot;
       }
     }
     if (segment.end > start + EPSILON) {
-      out.push({ start, end: segment.end, versionId: segment.versionId });
+      out.push({ ...segment, start, end: segment.end });
     }
   }
   return mergeAdjacent(out);
 }
 
+type Choice = { versionId: string; reason: EditReason; rank: number };
+
+function holdWide(summary: string, wideVersionId: string, rank: number): Choice {
+  return { versionId: wideVersionId, reason: { code: 'HOLD_WIDE', summary }, rank };
+}
+
+function holdPrevious(summary: string, previous: Choice | null, wideVersionId: string): Choice {
+  if (!previous) return holdWide('Program start; wide', wideVersionId, RANK_SAFETY);
+  return {
+    versionId: previous.versionId,
+    reason: { code: 'HOLD', summary },
+    rank: RANK_FILLER,
+  };
+}
+
 function chooseCamera(
-  activeIds: string[],
-  previous: string,
+  active: AttributedTurn[],
+  previous: Choice | null,
   wideVersionId: string,
   overlap: RoughCutOverlapBehaviour,
   gapDuration: number,
   safetyPauseSeconds: number
-): string {
-  if (activeIds.length === 0) {
-    if (gapDuration + EPSILON >= safetyPauseSeconds) return wideVersionId;
-    return previous || wideVersionId;
+): Choice {
+  if (active.length === 0) {
+    if (gapDuration + EPSILON >= safetyPauseSeconds) {
+      return holdWide(
+        `No one is speaking for ${gapDuration.toFixed(1)}s; safety shot`,
+        wideVersionId,
+        RANK_SAFETY
+      );
+    }
+    return holdPrevious('Short pause; holding the last camera', previous, wideVersionId);
   }
-  if (activeIds.length === 1) return activeIds[0]!;
-  if (overlap === 'WIDE') return wideVersionId;
-  if (overlap === 'HOLD') return previous || wideVersionId;
-  return [...activeIds].sort()[0]!;
+  if (active.length === 1) {
+    const turn = active[0]!;
+    if (turn.hold === 'chaos') {
+      return holdWide('Several people at once; holding wide', turn.versionId, RANK_DELIBERATE);
+    }
+    if (turn.hold === 'primary') {
+      return holdWide('The brief holds the primary camera', turn.versionId, RANK_DELIBERATE);
+    }
+    return {
+      versionId: turn.versionId,
+      reason: { code: 'SPEAKER_SWITCH', summary: SPEAKER_SUMMARY },
+      rank: RANK_SPEAKER,
+    };
+  }
+  if (overlap === 'WIDE') {
+    return holdWide('Overlapping speech; wide', wideVersionId, RANK_DELIBERATE);
+  }
+  if (overlap === 'HOLD') {
+    return holdPrevious('Overlapping speech; holding the last camera', previous, wideVersionId);
+  }
+  const first = [...active].sort((a, b) => a.versionId.localeCompare(b.versionId))[0]!;
+  return {
+    versionId: first.versionId,
+    reason: { code: 'SPEAKER_SWITCH', summary: SPEAKER_SUMMARY },
+    rank: RANK_SPEAKER,
+  };
 }
 
 function timelineDurationOf(clips: CameraClip[]): number {
@@ -121,14 +191,14 @@ function buildSegments(
   const duration = timelineDurationOf(clips);
   if (duration <= 0) return [];
 
-  const events: Array<{ time: number; versionId: string; delta: 1 | -1 }> = [];
+  const events: Array<{ time: number; turn: AttributedTurn; delta: 1 | -1 }> = [];
   for (const turn of turns) {
     const start = Math.max(0, Math.min(duration, turn.start));
     const end = Math.max(0, Math.min(duration, turn.end));
     if (end - start < EPSILON) continue;
     if (!clipById(clips, turn.versionId)) continue;
-    events.push({ time: start, versionId: turn.versionId, delta: 1 });
-    events.push({ time: end, versionId: turn.versionId, delta: -1 });
+    events.push({ time: start, turn, delta: 1 });
+    events.push({ time: end, turn, delta: -1 });
   }
   events.sort((a, b) => a.time - b.time || a.delta - b.delta);
 
@@ -139,9 +209,9 @@ function buildSegments(
     if (last === undefined || Math.abs(last - time) > EPSILON) uniqueTimes.push(time);
   }
 
-  const active = new Map<string, number>();
+  const active = new Map<AttributedTurn, number>();
   let eventIndex = 0;
-  let previous = profile.wideVersionId;
+  let previous: Choice | null = null;
   const segments: Segment[] = [];
 
   for (let index = 0; index < uniqueTimes.length - 1; index += 1) {
@@ -149,23 +219,29 @@ function buildSegments(
     const end = uniqueTimes[index + 1]!;
     while (eventIndex < events.length && events[eventIndex]!.time <= start + EPSILON) {
       const event = events[eventIndex]!;
-      active.set(event.versionId, (active.get(event.versionId) ?? 0) + event.delta);
+      active.set(event.turn, (active.get(event.turn) ?? 0) + event.delta);
       eventIndex += 1;
     }
-    const activeIds = [...active.entries()]
+    const activeTurns = [...active.entries()]
       .filter(([, count]) => count > 0)
-      .map(([versionId]) => versionId)
-      .sort();
-    const versionId = chooseCamera(
-      activeIds,
+      .map(([turn]) => turn)
+      .sort((a, b) => a.versionId.localeCompare(b.versionId));
+    const choice = chooseCamera(
+      activeTurns,
       previous,
       profile.wideVersionId,
       profile.overlapBehaviour,
       end - start,
       profile.safetyPauseSeconds
     );
-    segments.push({ start, end, versionId });
-    previous = versionId;
+    segments.push({
+      start,
+      end,
+      versionId: choice.versionId,
+      reason: choice.reason,
+      rank: choice.rank,
+    });
+    previous = choice;
   }
 
   return mergeAdjacent(segments.filter((segment) => segment.end - segment.start > EPSILON));
@@ -184,14 +260,20 @@ function toEditDecisions(segments: Segment[], clips: CameraClip[]): EditDecision
     if (clampedOut - clampedIn < EPSILON) continue;
     const timelineStart = clampedIn + clip.offsetSeconds;
     const timelineEnd = clampedOut + clip.offsetSeconds;
+    const role = roleByVersion.get(clip.versionId) ?? clip.role;
+    const reason: EditReason =
+      segment.reason.code === 'SPEAKER_SWITCH'
+        ? { code: 'SPEAKER_SWITCH', summary: `Speaker on ${role}` }
+        : segment.reason;
     edits.push({
       timelineStartSeconds: timelineStart,
       timelineEndSeconds: timelineEnd,
       inSeconds: clampedIn,
       outSeconds: clampedOut,
       sourceVersionId: clip.versionId,
-      cameraRole: roleByVersion.get(clip.versionId) ?? clip.role,
+      cameraRole: role,
       targetTrack: 1,
+      reason,
     });
   }
   return edits;
@@ -215,6 +297,8 @@ export function computeRoughCutDecisions(
   );
   return toEditDecisions(maxApplied, clips);
 }
+
+export const KEPT_SPEECH: EditReason = { code: 'KEPT', summary: 'Speech' };
 
 /**
  * Single-track / sequential edit: keep speech, drop silence and takes shorter
@@ -287,6 +371,7 @@ export function computeLinearDecisions(
       sourceVersionId: island.versionId,
       cameraRole: island.role,
       targetTrack: 1,
+      reason: KEPT_SPEECH,
     });
     cursor += duration;
   }

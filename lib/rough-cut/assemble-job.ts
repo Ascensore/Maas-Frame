@@ -2,12 +2,27 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
-import { LOW_ATTRIBUTION_CONFIDENCE, pickHighestRmsCamera, type RmsSample } from './attribute';
-import { briefFromSnapshot, SILENCE_AGGRESSIVENESS } from './brief';
 import { applyCameraRole, assemblyFromSnapshot, orderClipsForLinearLayout } from './assembly';
+import { LOW_ATTRIBUTION_CONFIDENCE, pickHighestRmsCamera, type RmsSample } from './attribute';
+import {
+  analyseSpeech,
+  detectFalseStarts,
+  type Beat,
+  type SourceCut,
+  type SpeechAnalysis,
+} from './beats';
+import {
+  briefFromSnapshot,
+  DEFAULT_BRIEF_RANKING,
+  SILENCE_AGGRESSIVENESS,
+  type BriefRankingCriterion,
+  type BriefSnapshot,
+  type SilencePolicy,
+} from './brief';
+import { applyCameraGrammar } from './camera-grammar';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from './camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from './decision-list';
-import { computeRoughCutDecisions, computeLinearDecisions } from './decisions';
+import { computeLinearDecisions, computeRoughCutDecisions } from './decisions';
 import { isDiarizationEnvEnabled } from './env';
 import {
   applySequentialOffsets,
@@ -16,15 +31,16 @@ import {
 } from './layout';
 import { assignClipExportFileNames } from './media-paths';
 import { profileFromSnapshot } from './profile';
+import { mergeContiguous, packTimeline, subtractTimelineRanges, toCutIsland } from './program';
 import { computeTimecodeOffsets } from './sync';
+import { rejectedTakeCuts, selectTakes, type TakeCandidate } from './takes';
+import { fillerWordsFor } from './text';
 import {
   assessTranscriptQuality,
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
-  TRANSCRIPT_MAX_KEPT_GAP_SECONDS,
   TRANSCRIPT_RETRY_DELAY_SECONDS,
-  turnsFromTranscriptSegments,
   waitingForTranscriptWarning,
   weakTranscriptWarning,
   type TranscriptFallbackReason,
@@ -35,21 +51,23 @@ import {
 import type {
   AttributedTurn,
   CameraClip,
+  CutIsland,
+  EditDecision,
   RoughCutLayout,
   RoughCutWarning,
   SyncReport,
 } from './types';
+
+export type RunFn = (
+  command: string,
+  args: string[]
+) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 /**
  * The ASSEMBLE_ROUGH_CUT job. It lives here rather than in worker/src so it
  * is type-checked, linted and unit tested with the app; the worker image
  * copies lib/rough-cut next to its own sources and re-exports it.
  */
-export type RunFn = (
-  command: string,
-  args: string[]
-) => Promise<{ stdout: string; stderr: string; code: number }>;
-
 export type AssembleDeps = {
   pool: Pool;
   run: RunFn;
@@ -65,8 +83,41 @@ export type AssembleDeps = {
 
 /** What a run knows about one transcript slot once the decision has been resolved against rows. */
 type TranscriptSlot =
-  | { kind: 'use'; transcriptId: string; versionId: string; segments: TranscriptSegmentRow[] }
+  | {
+      kind: 'use';
+      transcriptId: string;
+      versionId: string;
+      language: string | null;
+      segments: TranscriptSegmentRow[];
+    }
   | { kind: 'fallback'; reason: TranscriptFallbackReason };
+
+/** The brief's editorial policy, with the pre-brief defaults for runs that have none. */
+type Editorial = {
+  policy: SilencePolicy;
+  takeSelection: boolean;
+  ranking: BriefRankingCriterion[];
+  followSpeaker: boolean;
+  holdWideOnChaos: boolean;
+};
+
+function editorialFromSnapshot(snapshot: BriefSnapshot | null): Editorial {
+  const brief = snapshot?.brief;
+  return {
+    policy: brief
+      ? SILENCE_AGGRESSIVENESS[brief.pacing.silenceAggressiveness]
+      : SILENCE_AGGRESSIVENESS.medium,
+    takeSelection: brief?.takeSelection.enabled ?? false,
+    ranking: brief?.ranking ?? DEFAULT_BRIEF_RANKING,
+    followSpeaker: brief?.cameraGrammar.followSpeaker ?? true,
+    holdWideOnChaos: brief?.cameraGrammar.holdWideOnChaos ?? false,
+  };
+}
+
+/** One clip's speech, from its transcript or from voice activity. */
+type ClipMaterial =
+  | { kind: 'transcript'; clip: CameraClip; analysis: SpeechAnalysis; language: string | null }
+  | { kind: 'vad'; clip: CameraClip; turns: AttributedTurn[] };
 
 function parseJson(stdout: string): unknown {
   const start = stdout.indexOf('{');
@@ -90,7 +141,8 @@ async function ensureWav(deps: AssembleDeps, versionId: string, dest: string): P
 
 /**
  * Download each wav at most once, and only when something asks for it. A
- * linear run whose transcripts are all ready never touches the audio.
+ * linear run whose transcripts are all ready never touches the audio unless
+ * take selection needs loudness.
  */
 function createWavCache(deps: AssembleDeps, dir: string): (versionId: string) => Promise<string> {
   const paths = new Map<string, string>();
@@ -196,7 +248,7 @@ async function loadTranscriptRows(
 ): Promise<TranscriptRow[]> {
   if (versionIds.length === 0) return [];
   const res = await deps.pool.query(
-    `SELECT id, version_id, status, created_at
+    `SELECT id, version_id, status, language, created_at
      FROM transcripts
      WHERE version_id = ANY($1::text[])`,
     [versionIds]
@@ -205,7 +257,13 @@ async function loadTranscriptRows(
   for (const row of res.rows) {
     const status = parseTranscriptRowStatus(row.status);
     if (!status || typeof row.id !== 'string' || typeof row.version_id !== 'string') continue;
-    rows.push({ id: row.id, versionId: row.version_id, status, createdAt: row.created_at });
+    rows.push({
+      id: row.id,
+      versionId: row.version_id,
+      status,
+      createdAt: row.created_at,
+      language: typeof row.language === 'string' ? row.language : null,
+    });
   }
   return rows;
 }
@@ -232,15 +290,18 @@ async function loadTranscriptSegments(
 
 async function resolveTranscriptSlot(
   deps: AssembleDeps,
-  decision: Exclude<TranscriptSourceDecision, { kind: 'wait' }>
+  decision: Exclude<TranscriptSourceDecision, { kind: 'wait' }>,
+  rows: TranscriptRow[]
 ): Promise<TranscriptSlot> {
   if (decision.kind === 'fallback') return decision;
   const segments = await loadTranscriptSegments(deps, decision.transcriptId);
   if (segments.length === 0) return { kind: 'fallback', reason: 'empty' };
+  const row = rows.find((entry) => entry.id === decision.transcriptId);
   return {
     kind: 'use',
     transcriptId: decision.transcriptId,
     versionId: decision.versionId,
+    language: row?.language ?? null,
     segments,
   };
 }
@@ -256,6 +317,155 @@ async function vadTurnsForClip(
   return parsed.turns ?? [];
 }
 
+/**
+ * Speech for one clip: the transcript analysed under the brief's silence
+ * policy when it has one, voice activity otherwise. A transcript whose
+ * words produce no speech at all counts as empty and falls back too.
+ */
+async function materialFor(
+  deps: AssembleDeps,
+  options: {
+    clip: CameraClip;
+    slot: TranscriptSlot;
+    editorial: Editorial;
+    warnings: RoughCutWarning[];
+    wavFor: (versionId: string) => Promise<string>;
+    /** Multicam names the clip on the fallback warning as well; linear names it always. */
+    label: string | null;
+  }
+): Promise<ClipMaterial> {
+  const { clip, slot, editorial, warnings } = options;
+  let fallbackReason: TranscriptFallbackReason = 'missing';
+  if (slot.kind === 'use') {
+    const analysis = analyseSpeech(slot.segments, {
+      versionId: clip.versionId,
+      durationSeconds: clip.durationSeconds,
+      policy: editorial.policy,
+    });
+    if (analysis.runs.length > 0) {
+      const quality = assessTranscriptQuality(slot.segments);
+      if (quality.weak) warnings.push(weakTranscriptWarning(quality, options.label));
+      return { kind: 'transcript', clip, analysis, language: slot.language };
+    }
+    fallbackReason = 'empty';
+  } else {
+    fallbackReason = slot.reason;
+  }
+  warnings.push(transcriptFallbackWarning(fallbackReason, options.label));
+  const wav = await options.wavFor(clip.versionId);
+  const islands = await vadTurnsForClip(deps, wav);
+  return {
+    kind: 'vad',
+    clip,
+    turns: islands.map((island) => ({
+      start: island.start,
+      end: island.end,
+      versionId: clip.versionId,
+      speaker: null,
+      confidence: 1,
+    })),
+  };
+}
+
+type EditorialResult = {
+  /** Surviving beats per version, in source order. */
+  beatsByVersion: Map<string, Beat[]>;
+  cuts: SourceCut[];
+};
+
+/**
+ * The editorial pass the brief drives: dead air is already in the analyses;
+ * this adds false starts and take selection across every transcript clip,
+ * and returns the beats that survive.
+ */
+async function editorialPass(
+  deps: AssembleDeps,
+  options: {
+    materials: ClipMaterial[];
+    timelineOffsetOf: (clip: CameraClip) => number;
+    editorial: Editorial;
+    warnings: RoughCutWarning[];
+    wavFor: (versionId: string) => Promise<string>;
+  }
+): Promise<EditorialResult> {
+  const { editorial, warnings } = options;
+  const transcripts = options.materials.filter(
+    (material): material is Extract<ClipMaterial, { kind: 'transcript' }> =>
+      material.kind === 'transcript'
+  );
+  const language = transcripts.find((material) => material.language)?.language ?? null;
+  const fillers = fillerWordsFor(language);
+  const cuts: SourceCut[] = [];
+  const beatsByVersion = new Map<string, Beat[]>();
+
+  for (const material of transcripts) {
+    cuts.push(...material.analysis.cuts);
+    let beats = material.analysis.beats;
+    if (editorial.policy.detectFalseStarts) {
+      const result = detectFalseStarts(beats, fillers);
+      beats = result.beats;
+      cuts.push(...result.cuts);
+    }
+    beatsByVersion.set(material.clip.versionId, beats);
+  }
+
+  if (editorial.takeSelection && transcripts.length > 0) {
+    if (editorial.ranking.includes('script_match')) {
+      warnings.push({
+        code: 'script-match-unavailable',
+        message:
+          'The brief ranks takes by script match, which is not available yet; it was ignored',
+      });
+    }
+    const candidates: TakeCandidate[] = [];
+    for (const material of transcripts) {
+      const offset = options.timelineOffsetOf(material.clip);
+      for (const beat of beatsByVersion.get(material.clip.versionId) ?? []) {
+        candidates.push({ beat, timelineStart: offset + beat.start, energy: null });
+      }
+    }
+    const longPauseSeconds = editorial.policy.maxKeptGapInsideBeatSeconds;
+    const options_ = { fillers, ranking: editorial.ranking, longPauseSeconds };
+    // Loudness costs a wav download and a python call per beat, so it is
+    // measured only for beats that are actually in a group.
+    if (editorial.ranking.includes('energy')) {
+      const grouped = new Set(selectTakes(candidates, options_).flatMap((entry) => entry.group));
+      for (const index of grouped) {
+        const candidate = candidates[index]!;
+        const wav = await options.wavFor(candidate.beat.versionId);
+        candidate.energy = await rmsAt(deps, wav, candidate.beat.start, candidate.beat.end);
+      }
+    }
+    const rejected = new Set<Beat>();
+    for (const decision of selectTakes(candidates, options_)) {
+      cuts.push(...rejectedTakeCuts(candidates, decision));
+      for (const index of decision.group) {
+        if (index !== decision.keptIndex) rejected.add(candidates[index]!.beat);
+      }
+    }
+    for (const [versionId, beats] of beatsByVersion) {
+      beatsByVersion.set(
+        versionId,
+        beats.filter((beat) => !rejected.has(beat))
+      );
+    }
+  }
+
+  return { beatsByVersion, cuts };
+}
+
+function turnsFromBeats(beats: Beat[], versionId: string, offsetSeconds: number): AttributedTurn[] {
+  return beats.flatMap((beat) =>
+    beat.runs.map((run) => ({
+      start: run.start + offsetSeconds,
+      end: run.end + offsetSeconds,
+      versionId,
+      speaker: beat.speaker,
+      confidence: 1,
+    }))
+  );
+}
+
 async function assembleLinearLayout(
   deps: AssembleDeps,
   options: {
@@ -265,11 +475,12 @@ async function assembleLinearLayout(
     warnings: RoughCutWarning[];
     metadataByVideoId: Map<string, Record<string, unknown>>;
     clipOrder: string[] | null;
-    /** Source-local speech for one clip: transcript when it has one, VAD otherwise. */
-    turnsFor: (clip: CameraClip) => Promise<AttributedTurn[]>;
+    slotByVersion: Map<string, TranscriptSlot>;
+    editorial: Editorial;
+    wavFor: (versionId: string) => Promise<string>;
   }
 ): Promise<void> {
-  const { profile, clips, warnings } = options;
+  const { profile, clips, warnings, editorial } = options;
   const guessClips = clips.map((clip) =>
     cameraClipToLayoutGuess(
       clip,
@@ -290,9 +501,46 @@ async function assembleLinearLayout(
       .filter((clip): clip is CameraClip => Boolean(clip))
   );
 
-  const turns: AttributedTurn[] = [];
+  const materials: ClipMaterial[] = [];
   for (const clip of orderedClips) {
-    turns.push(...(await options.turnsFor(clip)));
+    const slot = options.slotByVersion.get(clip.versionId) ?? {
+      kind: 'fallback' as const,
+      reason: 'missing' as const,
+    };
+    materials.push(
+      await materialFor(deps, {
+        clip,
+        slot,
+        editorial,
+        warnings,
+        wavFor: options.wavFor,
+        label: clip.title,
+      })
+    );
+  }
+
+  const result = await editorialPass(deps, {
+    materials,
+    timelineOffsetOf: (clip) => clip.offsetSeconds,
+    editorial,
+    warnings,
+    wavFor: options.wavFor,
+  });
+
+  const turns: AttributedTurn[] = [];
+  for (const material of materials) {
+    if (material.kind === 'vad') {
+      turns.push(...material.turns);
+      continue;
+    }
+    // Linear turns are source-local; the offsets only place clips on the program.
+    turns.push(
+      ...turnsFromBeats(
+        result.beatsByVersion.get(material.clip.versionId) ?? [],
+        material.clip.versionId,
+        0
+      )
+    );
   }
 
   const edits = computeLinearDecisions(orderedClips, turns, {
@@ -317,6 +565,7 @@ async function assembleLinearLayout(
     fileNames,
     mediaPathPrefix: profile.mediaPathPrefix,
     rate,
+    cuts: result.cuts.map((cut) => toCutIsland(cut, rate)),
   });
   const syncReport: SyncReport = {
     strategy: 'AUTO',
@@ -387,13 +636,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
   let tmp: string | null = null;
   try {
     const { cut, profile, assembly, layout, videosRes } = await loadRun(deps, roughCutId);
-    // The brief's silence policy decides how long a pause survives inside a
-    // turn. Runs made before briefs existed keep the medium default.
-    const briefSnapshot = briefFromSnapshot(cut.brief_snapshot);
-    const maxGapSeconds = briefSnapshot
-      ? SILENCE_AGGRESSIVENESS[briefSnapshot.brief.pacing.silenceAggressiveness]
-          .maxKeptGapInsideBeatSeconds
-      : TRANSCRIPT_MAX_KEPT_GAP_SECONDS;
+    const editorial = editorialFromSnapshot(briefFromSnapshot(cut.brief_snapshot));
+
     const clips: CameraClip[] = [];
     const metadataByVideoId = new Map<string, Record<string, unknown>>();
     for (const row of videosRes.rows) {
@@ -480,7 +724,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     const slots: TranscriptSlot[] = [];
     for (const decision of transcriptDecisions) {
       if (decision.kind === 'wait') continue;
-      slots.push(await resolveTranscriptSlot(deps, decision));
+      slots.push(await resolveTranscriptSlot(deps, decision, transcriptRows));
     }
 
     tmp = await mkdtemp(join(tmpdir(), 'of-rough-'));
@@ -492,7 +736,6 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         const slot = slots[index];
         if (slot) slotByVersion.set(clip.versionId, slot);
       });
-
       await assembleLinearLayout(deps, {
         roughCutId,
         profile,
@@ -500,39 +743,9 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         warnings,
         metadataByVideoId,
         clipOrder: assembly.clipOrder,
-        turnsFor: async (clip) => {
-          const slot = slotByVersion.get(clip.versionId) ?? {
-            kind: 'fallback' as const,
-            reason: 'missing' as const,
-          };
-          let fallbackReason: TranscriptFallbackReason = 'missing';
-          if (slot.kind === 'use') {
-            const turns = turnsFromTranscriptSegments(slot.segments, {
-              versionId: clip.versionId,
-              offsetSeconds: 0,
-              durationSeconds: clip.durationSeconds,
-              maxGapSeconds,
-            });
-            if (turns.length > 0) {
-              const quality = assessTranscriptQuality(slot.segments);
-              if (quality.weak) warnings.push(weakTranscriptWarning(quality, clip.title));
-              return turns;
-            }
-            fallbackReason = 'empty';
-          } else {
-            fallbackReason = slot.reason;
-          }
-          warnings.push(transcriptFallbackWarning(fallbackReason, clip.title));
-          const wav = await wavFor(clip.versionId);
-          const islands = await vadTurnsForClip(deps, wav);
-          return islands.map((island) => ({
-            start: island.start,
-            end: island.end,
-            versionId: clip.versionId,
-            speaker: null,
-            confidence: 1,
-          }));
-        },
+        slotByVersion,
+        editorial,
+        wavFor,
       });
       return;
     }
@@ -615,33 +828,55 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     const refIndex = clips.findIndex((clip) => clip.versionId === wide.clip.versionId);
     const refWav = wavs[refIndex] ?? wavs[0]!;
     let rawTurns: Array<{ start: number; end: number; speaker: string | null }> = [];
+    let sourceCuts: SourceCut[] = [];
+    let cutOffset = 0;
 
     // Timeline-time speech from the session transcript. Its times are local
     // to the clip it was made from, so shift by that clip's sync offset.
     const slot = slots[0] ?? { kind: 'fallback' as const, reason: 'missing' as const };
-    let transcriptUsed = false;
-    if (slot.kind === 'use') {
-      const source = clips.find((clip) => clip.versionId === slot.versionId) ?? wide.clip;
-      const turns = turnsFromTranscriptSegments(slot.segments, {
-        versionId: source.versionId,
-        offsetSeconds: source.offsetSeconds,
-        durationSeconds: source.durationSeconds,
-        maxGapSeconds,
+    const source =
+      slot.kind === 'use'
+        ? (clips.find((clip) => clip.versionId === slot.versionId) ?? wide.clip)
+        : wide.clip;
+    // A transcript that reads as empty falls back to voice activity on its own
+    // clip inside materialFor; a missing or failed one goes to diarization
+    // below, which can do better than plain voice activity when enabled.
+    const material: ClipMaterial | null =
+      slot.kind === 'use'
+        ? await materialFor(deps, {
+            clip: source,
+            slot,
+            editorial,
+            warnings,
+            wavFor,
+            label: source.title,
+          })
+        : null;
+    if (material && material.kind === 'vad') {
+      rawTurns = material.turns.map((turn) => ({
+        start: turn.start + source.offsetSeconds,
+        end: turn.end + source.offsetSeconds,
+        speaker: null,
+      }));
+    } else if (material && material.kind === 'transcript') {
+      const result = await editorialPass(deps, {
+        materials: [material],
+        timelineOffsetOf: (clip) => clip.offsetSeconds,
+        editorial,
+        warnings,
+        wavFor,
       });
-      if (turns.length > 0) {
-        transcriptUsed = true;
-        const quality = assessTranscriptQuality(slot.segments);
-        if (quality.weak) warnings.push(weakTranscriptWarning(quality, source.title));
-        rawTurns = turns.map((turn) => ({
-          start: turn.start,
-          end: turn.end,
-          speaker: turn.speaker,
-        }));
-      }
-    }
-
-    if (!transcriptUsed) {
-      warnings.push(transcriptFallbackWarning(slot.kind === 'use' ? 'empty' : slot.reason));
+      sourceCuts = result.cuts;
+      cutOffset = source.offsetSeconds;
+      rawTurns = turnsFromBeats(
+        result.beatsByVersion.get(source.versionId) ?? [],
+        source.versionId,
+        source.offsetSeconds
+      ).map((turn) => ({ start: turn.start, end: turn.end, speaker: turn.speaker }));
+    } else {
+      if (slot.kind === 'fallback') warnings.push(transcriptFallbackWarning(slot.reason));
+      // No usable transcript: diarize the reference audio as before. These
+      // turns are local to the wide camera's file.
       const diarizeArgs = isDiarizationEnabled()
         ? [diarizeScript, refWav]
         : [diarizeScript, '--vad-only', refWav];
@@ -651,7 +886,11 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
           turns?: Array<{ start: number; end: number; speaker: string }>;
           warning?: string | null;
         };
-        rawTurns = parsed.turns ?? [];
+        rawTurns = (parsed.turns ?? []).map((turn) => ({
+          start: turn.start + wide.clip.offsetSeconds,
+          end: turn.end + wide.clip.offsetSeconds,
+          speaker: turn.speaker,
+        }));
         if (parsed.warning) {
           warnings.push({ code: 'diarization-fallback', message: parsed.warning });
         }
@@ -680,7 +919,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       }
     }
 
-    const turns: AttributedTurn[] = [];
+    const attributed: AttributedTurn[] = [];
     for (const turn of rawTurns) {
       const samples: RmsSample[] = [];
       for (let index = 0; index < clips.length; index += 1) {
@@ -702,7 +941,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
           message: `Could not confidently pick a camera for ${turn.start.toFixed(1)}s–${turn.end.toFixed(1)}s`,
         });
       }
-      turns.push({
+      attributed.push({
         start: turn.start,
         end: turn.end,
         versionId: picked?.versionId ?? clips[0]!.versionId,
@@ -711,13 +950,30 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       });
     }
 
-    const edits = computeRoughCutDecisions(clips, turns, {
+    const turns = applyCameraGrammar(attributed, {
+      wideVersionId: wide.clip.versionId,
+      followSpeaker: editorial.followSpeaker,
+      holdWideOnChaos: editorial.holdWideOnChaos,
+    });
+
+    const continuous = computeRoughCutDecisions(clips, turns, {
       minShotSeconds: profile.minShotSeconds,
       safetyPauseSeconds: profile.safetyPauseSeconds,
       maxShotSeconds: profile.maxShotSeconds,
       overlapBehaviour: profile.overlapBehaviour,
       wideVersionId: wide.clip.versionId,
     });
+    // Removed source ranges come out of the continuous program, which is then
+    // packed tight: the show does not keep its dead air either.
+    const edits: EditDecision[] = packTimeline(
+      mergeContiguous(
+        subtractTimelineRanges(
+          continuous,
+          sourceCuts.map((cut) => ({ start: cut.start + cutOffset, end: cut.end + cutOffset }))
+        )
+      )
+    );
+    const cuts: CutIsland[] = sourceCuts.map((cut) => toCutIsland(cut, rate));
     const fileNames = assignClipExportFileNames(clips);
     const decisions = assembleDecisionList({
       edits,
@@ -725,6 +981,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       fileNames,
       mediaPathPrefix: profile.mediaPathPrefix,
       rate,
+      cuts,
     });
 
     const syncReport: SyncReport = { strategy, clips: syncClips };

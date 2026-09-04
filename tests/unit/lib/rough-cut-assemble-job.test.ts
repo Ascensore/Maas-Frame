@@ -225,6 +225,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 7,
@@ -234,6 +235,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
     expect(result?.warnings).toEqual([]);
@@ -300,6 +302,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
     expect(result?.warnings).toEqual([
@@ -389,6 +392,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-a',
         cameraRole: 'CAM',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 5,
@@ -398,6 +402,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-b',
         cameraRole: 'CAM',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
     expect(result?.warnings).toEqual([
@@ -428,18 +433,33 @@ describe('assembleRoughCut with a transcript', () => {
 
     const result = h.persisted();
     const edits = result?.decisions?.edits ?? [];
-    expect(edits).toHaveLength(3);
+    // Cam A's transcript covers source 2–8 (timeline 5–11). The 2 s before its
+    // first word and everything after its last are dead air on that clip, so
+    // timeline 3–5 and 11–33 are removed and the rest packs tight: the wide
+    // camera's uncovered opening 0–3 stays, then the line.
+    expect(edits).toHaveLength(2);
+    expect(edits[0]).toMatchObject({
+      sourceVersionId: 'ver-wide',
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 3,
+      inSeconds: 0,
+      outSeconds: 3,
+      reason: { code: 'HOLD_WIDE' },
+    });
     expect(edits[1]).toEqual({
-      timelineStartSeconds: 5,
-      timelineEndSeconds: 11,
+      timelineStartSeconds: 3,
+      timelineEndSeconds: 9,
       inSeconds: 2,
       outSeconds: 8,
       sourceVersionId: 'ver-a',
       cameraRole: 'A',
       targetTrack: 1,
+      reason: { code: 'SPEAKER_SWITCH', summary: 'Speaker on A' },
     });
-    expect(edits[0]?.sourceVersionId).toBe('ver-wide');
-    expect(edits[2]?.sourceVersionId).toBe('ver-wide');
+    expect(result?.decisions?.cuts?.map((cut) => [cut.key, cut.reason.code])).toEqual([
+      ['ver-a:0-48', 'DEAD_AIR'],
+      ['ver-a:192-720', 'DEAD_AIR'],
+    ]);
 
     const rmsWindows = h.runs
       .filter((args) => args[1] === '--rms')
@@ -478,9 +498,15 @@ describe('assembleRoughCut with a transcript', () => {
       .filter((entry) => entry.sql.includes('FROM transcript_segments'))
       .map((entry) => entry.params[0]);
     expect(segmentReads).toEqual(['t-wide']);
+    // Only the wide transcript's line survives its own dead air, packed from zero.
     expect(
       h.persisted()?.decisions?.edits.find((edit) => edit.sourceVersionId === 'ver-a')
-    ).toMatchObject({ timelineStartSeconds: 2, timelineEndSeconds: 8 });
+    ).toMatchObject({
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 6,
+      inSeconds: 2,
+      outSeconds: 8,
+    });
   });
 
   it('keeps the diarization path for multicam when no transcript exists', async () => {
@@ -578,6 +604,7 @@ describe('assembleRoughCut with a transcript', () => {
         sourceVersionId: 'ver-a',
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
     expect(result?.warnings.map((warning) => warning.code)).toEqual([
@@ -682,6 +709,223 @@ describe('assembleRoughCut with a transcript', () => {
       'cut-1',
       'A rough cut needs at least one file-backed video in this folder',
     ]);
+  });
+});
+
+/** A segment with word timings: 0.3 s words at a 0.4 s pitch, so `n` words end at n×0.4−0.1. */
+function spokenSegment(at: number, text: string, speaker: string | null = null): SegmentRow {
+  const words = text.split(' ').map((word, index) => ({
+    start: at + index * 0.4,
+    end: at + index * 0.4 + 0.3,
+    text: word,
+  }));
+  return {
+    start_sec: words[0]!.start,
+    end_sec: words[words.length - 1]!.end,
+    speaker,
+    text,
+    words,
+  };
+}
+
+function briefSnapshotFor(
+  projectType: 'ASCENSORE' | 'TALKING_HEAD' | 'INTERVIEW',
+  config: Record<string, unknown> = {}
+) {
+  return {
+    version: 1,
+    briefId: 'brief-1',
+    source: 'folder',
+    layoutSource: 'guess',
+    brief: { projectType, ...config },
+  };
+}
+
+function timing(
+  edits: Array<{
+    timelineStartSeconds: number;
+    timelineEndSeconds: number;
+    inSeconds: number;
+    outSeconds: number;
+    sourceVersionId: string;
+  }>
+) {
+  return edits.map((edit) => [
+    edit.sourceVersionId,
+    Number(edit.timelineStartSeconds.toFixed(3)),
+    Number(edit.timelineEndSeconds.toFixed(3)),
+    Number(edit.inSeconds.toFixed(3)),
+    Number(edit.outSeconds.toFixed(3)),
+  ]);
+}
+
+describe('assembleRoughCut editorial pass', () => {
+  beforeEach(() => {
+    vi.stubEnv('OPENFRAME_ENABLE_DIARIZATION', 'false');
+  });
+
+  it('records dead air and a false start as cut islands and keeps the rest', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 20 })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
+      segments: {
+        't-a': [
+          spokenSegment(0, 'so the market'),
+          spokenSegment(3, 'so the market for this is enormous.'),
+          spokenSegment(9, 'and that is why we are here.'),
+        ],
+      },
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-a', 0, 2.7, 3, 5.7],
+      ['ver-a', 2.7, 5.4, 9, 11.7],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.reason)).toEqual([
+      { code: 'KEPT', summary: 'Speech' },
+      { code: 'KEPT', summary: 'Speech' },
+    ]);
+    expect(
+      result?.decisions?.cuts?.map((cut) => [cut.key, cut.reason.code, cut.transcriptText])
+    ).toEqual([
+      ['ver-a:26-72', 'DEAD_AIR', null],
+      ['ver-a:136-216', 'DEAD_AIR', null],
+      ['ver-a:280-480', 'DEAD_AIR', null],
+      ['ver-a:0-26', 'FALSE_START', 'so the market'],
+    ]);
+    expect(result?.decisions?.cuts?.[3]?.reason.summary).toBe(
+      'False start of “so the market for this is enormous.”'
+    );
+    // Nothing needed the audio: no take group asked for loudness.
+    expect(h.downloads).toEqual([]);
+    expect(h.runs).toEqual([]);
+  });
+
+  it('keeps the cleaner of two takes across a sequential cut and measures loudness only for the group', async () => {
+    const line = 'our revenue this year doubled to four million dollars';
+    const h = harness({
+      layout: 'SEQUENTIAL',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-a', title: 'Clip 1', position: 0, duration: 20 }),
+        video({ version_id: 'ver-b', title: 'Clip 2', position: 1, duration: 20 }),
+      ],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() },
+        { id: 't-b', version_id: 'ver-b', status: 'READY', created_at: NOW_DATE() },
+      ],
+      segments: {
+        't-a': [spokenSegment(1, `um ${line}`), spokenSegment(8, 'and thanks for coming tonight.')],
+        't-b': [spokenSegment(1, line)],
+      },
+      rms: () => 0.5,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD', {
+        ranking: ['cleanliness', 'energy', 'script_match'],
+      }),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // Clip 1's take has a filler, so clip 2's wins; clip 1 keeps its other beat.
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-a', 0, 1.9, 8, 9.9],
+      ['ver-b', 1.9, 5.4, 1, 4.5],
+    ]);
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected?.map((cut) => [cut.sourceVersionId, cut.transcriptText])).toEqual([
+      ['ver-a', `um ${line}`],
+    ]);
+    expect(rejected?.[0]?.reason.summary).toBe(`Take 1 of 2; kept take 2 (“${line}”)`);
+    // Loudness was measured for the two grouped beats and nothing else.
+    const rms = h.runs
+      .filter((args) => args[1] === '--rms')
+      .map((args) => [
+        versionIdFromWav(args[2]),
+        Number(args[3]),
+        Number(Number(args[4]).toFixed(3)),
+      ]);
+    expect(rms).toEqual([
+      ['ver-a', 1, 4.9],
+      ['ver-b', 1, 4.5],
+    ]);
+    expect(h.downloads).toEqual(['audio/ver-a.wav', 'audio/ver-b.wav']);
+    expect(result?.warnings).toEqual([
+      { code: 'script-match-unavailable', message: expect.stringContaining('script match') },
+    ]);
+  });
+
+  it('holds the wide camera while three people talk at once and cuts the dead air after', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+        video({ version_id: 'ver-b', title: 'Cam B', position: 2 }),
+      ],
+      transcripts: [
+        { id: 't-wide', version_id: 'ver-wide', status: 'READY', created_at: NOW_DATE() },
+      ],
+      segments: {
+        't-wide': [
+          spokenSegment(0, 'we should talk about pricing now', 'S0'),
+          spokenSegment(2.6, 'no wait', 'S1'),
+          spokenSegment(3.6, 'hold on', 'S2'),
+          spokenSegment(20, 'okay so pricing is simple.', 'S0'),
+        ],
+      },
+      rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+      briefSnapshot: briefSnapshotFor('ASCENSORE'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-wide', 0, 4.3, 0, 4.3],
+      ['ver-a', 4.3, 6.2, 20, 21.9],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.reason)).toEqual([
+      { code: 'HOLD_WIDE', summary: 'Several people at once; holding wide' },
+      { code: 'SPEAKER_SWITCH', summary: 'Speaker on A' },
+    ]);
+    expect(result?.decisions?.cuts?.map((cut) => [cut.key, cut.reason.summary])).toEqual([
+      ['ver-wide:103-480', '15.7s of dead air between thoughts'],
+      ['ver-wide:525-720', '8.1s of dead air after the last word'],
+    ]);
+  });
+
+  it('holds the primary camera for a brief that does not follow the speaker', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      transcripts: [
+        { id: 't-wide', version_id: 'ver-wide', status: 'READY', created_at: NOW_DATE() },
+      ],
+      segments: { 't-wide': [spokenSegment(2, 'hello there everyone and welcome')] },
+      rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([['ver-wide', 0, 1.9, 2, 3.9]]);
+    expect(result?.decisions?.edits[0]?.reason).toEqual({
+      code: 'HOLD_WIDE',
+      summary: 'The brief holds the primary camera',
+    });
   });
 });
 

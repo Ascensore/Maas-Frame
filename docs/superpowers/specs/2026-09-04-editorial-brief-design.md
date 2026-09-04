@@ -387,7 +387,15 @@ format because it has no stable keys.
    binding on the project settings page, and a folder-or-project binding in the edit
    workspace's destination card.
 3. Assembly: dead air, false starts, take selection (talking head / interview), multicam
-   grammar with `holdWideOnChaos`.
+   grammar with `holdWideOnChaos`. **Done.** `lib/rough-cut/beats.ts` turns transcript words
+   into kept runs, dead-air cuts and beats; a pause after terminal punctuation may run to the
+   between-beats limit, anywhere else it is a stall under the inside limit, and only a pause
+   over the between limit or a speaker change ends a beat. `takes.ts` groups and scores takes,
+   `camera-grammar.ts` holds wide on chaos or on the primary camera, and `program.ts` removes
+   cut ranges from the multicam program and packs it tight, so the show drops its dead air like
+   a linear cut does. Every edit carries a `reason`; every removal is a keyed cut island on the
+   decision list (item 4's additive fields, minus markers). Runs made before briefs existed
+   keep the medium policy with no take selection.
 4. Additive decision-list fields with reasons; placeholder markers.
 5. Overrides route, `applyOverrides`, re-materialize, regenerate with pins.
 6. Cut-review UI on the output video page with source-proxy preview.
