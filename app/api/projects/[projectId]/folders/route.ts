@@ -14,6 +14,7 @@ function shape(folder: {
   position: number;
   parentId: string | null;
   roughCutProfileId: string | null;
+  editorialBriefId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -23,6 +24,7 @@ function shape(folder: {
     position: folder.position,
     parentId: folder.parentId,
     roughCutProfileId: folder.roughCutProfileId,
+    editorialBriefId: folder.editorialBriefId,
     createdAt: folder.createdAt,
     updatedAt: folder.updatedAt,
   };

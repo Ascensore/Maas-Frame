@@ -1,4 +1,5 @@
 import { framesToSeconds, secondsToFrames, type FrameRate } from '../timecode';
+import { exportMarkers, type ExportMarker } from './export-markers';
 import type { CameraClip, EditDecision, RoughCutDecisionList } from './types';
 
 export type OtioRationalTime = {
@@ -32,11 +33,24 @@ export type OtioGap = {
   source_range: OtioTimeRange;
 };
 
+export type OtioMarker = {
+  OTIO_SCHEMA: 'Marker.2';
+  name: string;
+  color: string;
+  marked_range: OtioTimeRange;
+  comment: string;
+  metadata: {
+    openframe: { key: string; kind: string; reason: { code: string; summary: string } };
+  };
+};
+
 export type OtioTrack = {
   OTIO_SCHEMA: 'Track.1';
   name: string;
   kind: 'Video' | 'Audio';
   children: Array<OtioClip | OtioGap>;
+  /** Only present when the program carries markers, so older exports are unchanged. */
+  markers?: OtioMarker[];
 };
 
 export type OtioTimeline = {
@@ -109,11 +123,34 @@ function gapChild(durationSeconds: number, rate: FrameRate): OtioGap {
   };
 }
 
+const MARKER_COLORS: Record<ExportMarker['kind'], string> = {
+  INFOGRAPHIC: 'BLUE',
+  BROLL: 'GREEN',
+  CUT: 'RED',
+};
+
+function markerChild(marker: ExportMarker, rate: FrameRate): OtioMarker {
+  const startFrames = secondsToFrames(marker.timelineSeconds, rate);
+  const durationFrames =
+    marker.durationSeconds === null ? 0 : secondsToFrames(marker.durationSeconds, rate);
+  return {
+    OTIO_SCHEMA: 'Marker.2',
+    name: marker.title,
+    color: MARKER_COLORS[marker.kind],
+    marked_range: timeRange(startFrames, durationFrames, rate),
+    comment: marker.comment,
+    metadata: {
+      openframe: { key: marker.key, kind: marker.kind, reason: marker.reason },
+    },
+  };
+}
+
 function programTrack(
   decisions: RoughCutDecisionList,
   clipsByVersion: Map<string, CameraClip>,
   rate: FrameRate,
-  handleFrames: number
+  handleFrames: number,
+  includeCuts: boolean
 ): OtioTrack {
   const children: Array<OtioClip | OtioGap> = [];
   let cursor = 0;
@@ -142,11 +179,15 @@ function programTrack(
     cursor = edit.timelineEndSeconds;
     void fileName;
   }
+  const markers = exportMarkers(decisions, { includeCuts }).map((marker) =>
+    markerChild(marker, rate)
+  );
   return {
     OTIO_SCHEMA: 'Track.1',
     name: 'Program',
     kind: 'Video',
     children,
+    ...(markers.length > 0 ? { markers } : {}),
   };
 }
 
@@ -179,12 +220,16 @@ function stackedTrack(
   };
 }
 
-export function buildOtioTimeline(options: {
+export type OtioBuildOptions = {
   name: string;
   decisions: RoughCutDecisionList;
   clips: CameraClip[];
   handleFrames: number;
-}): OtioTimeline {
+  /** Also export the cut islands as a second marker set. Off by default. */
+  includeCuts?: boolean;
+};
+
+export function buildOtioTimeline(options: OtioBuildOptions): OtioTimeline {
   const rate: FrameRate = {
     num: options.decisions.rate.num,
     den: options.decisions.rate.den,
@@ -193,7 +238,13 @@ export function buildOtioTimeline(options: {
   const clipsByVersion = new Map(options.clips.map((clip) => [clip.versionId, clip]));
   const stacked = [...options.decisions.clips].sort((a, b) => a.track - b.track);
   const tracks: OtioTrack[] = [
-    programTrack(options.decisions, clipsByVersion, rate, options.handleFrames),
+    programTrack(
+      options.decisions,
+      clipsByVersion,
+      rate,
+      options.handleFrames,
+      options.includeCuts ?? false
+    ),
     ...stacked.map((clip) =>
       stackedTrack(clip, clipsByVersion.get(clip.versionId), rate, options.handleFrames)
     ),
@@ -214,12 +265,7 @@ export function serializeOtioTimeline(timeline: OtioTimeline): string {
   return `${JSON.stringify(timeline, null, 2)}\n`;
 }
 
-export function buildOtioFile(options: {
-  name: string;
-  decisions: RoughCutDecisionList;
-  clips: CameraClip[];
-  handleFrames: number;
-}): string {
+export function buildOtioFile(options: OtioBuildOptions): string {
   return serializeOtioTimeline(buildOtioTimeline(options));
 }
 

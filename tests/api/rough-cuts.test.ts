@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
+import { BUILTIN_BRIEF_TEMPLATES } from '@/lib/rough-cut/brief';
 import {
   GET as listRoughCuts,
   POST as createRoughCutRoute,
@@ -11,7 +12,16 @@ import {
 import { GET as downloadRoughCutRoute } from '@/app/api/rough-cuts/[roughCutId]/download/route';
 import { apiRequest, callRoute, readData } from '../helpers/request';
 import { signedInAs, signedOut } from '../helpers/session';
-import { createRoughCut, createUser, createVideo, createVersion, seedProject } from '../factories';
+import {
+  createEditorialBrief,
+  createFolder,
+  createRoughCut,
+  createRoughCutProfile,
+  createUser,
+  createVersion,
+  createVideo,
+  seedProject,
+} from '../factories';
 import { assembleDecisionList } from '@/lib/rough-cut/decision-list';
 
 function cutsUrl(projectId: string) {
@@ -540,6 +550,302 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
   });
 });
 
+/** Two clips that look like nothing in particular: no timecode, no dates, same inferred role. */
+async function seedWeakGuess(folderId: string | null = null) {
+  const scenario = await seedProject();
+  const first = await createVideo({ projectId: scenario.project.id, title: 'Take one', folderId });
+  const second = await createVideo({ projectId: scenario.project.id, title: 'Take two', folderId });
+  await createVersion({
+    videoParentId: first.id,
+    providerId: 'r2',
+    originalUrl: '/api/upload/video/cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+  });
+  await createVersion({
+    videoParentId: second.id,
+    providerId: 'r2',
+    originalUrl: '/api/upload/video/dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+  });
+  return scenario;
+}
+
+describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('snapshots the folder’s brief, its source, and the technical override on the profile', async () => {
+    const scenario = await seedMulticam();
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'ASCENSORE',
+      config: { technical: { minShotSeconds: 3 } },
+    });
+    const folder = await createFolder({
+      projectId: scenario.project.id,
+      editorialBriefId: brief.id,
+    });
+    await db.video.updateMany({
+      where: { projectId: scenario.project.id },
+      data: { folderId: folder.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, wideCameraRole: 'B' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string; briefId: string | null } }>(response);
+    expect(payload.roughCut.briefId).toBe(brief.id);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefId).toBe(brief.id);
+    expect(stored.briefSnapshot).toEqual({
+      version: 1,
+      briefId: brief.id,
+      source: 'folder',
+      layoutSource: 'guess',
+      brief: {
+        ...BUILTIN_BRIEF_TEMPLATES.ASCENSORE,
+        technical: { roughCutProfileId: null, minShotSeconds: 3 },
+      },
+    });
+    // The brief's technical block beats the profile; dialog values still land on the snapshot.
+    expect(stored.profileSnapshot).toMatchObject({ minShotSeconds: 3, wideCameraRole: 'B' });
+
+    const fetched = await readData<{
+      roughCut: { briefId: string | null; briefSnapshot: { source: string } | null };
+    }>(
+      await callRoute(getRoughCutRoute, apiRequest(`/api/rough-cuts/${stored.id}`), {
+        roughCutId: stored.id,
+      })
+    );
+    expect(fetched.roughCut.briefId).toBe(brief.id);
+    expect(fetched.roughCut.briefSnapshot).toMatchObject({ source: 'folder' });
+  });
+
+  it('a brief’s profile pointer picks the profile, and an explicit profileId still wins', async () => {
+    const scenario = await seedMulticam();
+    const pointed = await createRoughCutProfile({
+      workspaceId: scenario.workspace.id,
+      name: 'Pointed',
+      minShotSeconds: 4,
+    });
+    const explicit = await createRoughCutProfile({
+      workspaceId: scenario.workspace.id,
+      name: 'Explicit',
+      minShotSeconds: 5,
+    });
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      config: { technical: { roughCutProfileId: pointed.id } },
+    });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: brief.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const viaBrief = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(viaBrief.status).toBe(201);
+    const first = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(viaBrief)).roughCut.id },
+    });
+    expect(first.profileId).toBe(pointed.id);
+    expect(first.profileSnapshot).toMatchObject({ minShotSeconds: 4 });
+    await db.roughCut.delete({ where: { id: first.id } });
+
+    const viaDialog = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, profileId: explicit.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(viaDialog.status).toBe(201);
+    const second = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(viaDialog)).roughCut.id },
+    });
+    expect(second.profileId).toBe(explicit.id);
+    expect(second.profileSnapshot).toMatchObject({ minShotSeconds: 5 });
+  });
+
+  it('an explicit briefId wins over the folder binding; an unknown one is refused', async () => {
+    const scenario = await seedMulticam();
+    const bound = await createEditorialBrief({ workspaceId: scenario.workspace.id });
+    const chosen = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'INTERVIEW',
+    });
+    const foreign = await createEditorialBrief({ workspaceId: (await seedProject()).workspace.id });
+    const folder = await createFolder({
+      projectId: scenario.project.id,
+      editorialBriefId: bound.id,
+    });
+    await db.video.updateMany({
+      where: { projectId: scenario.project.id },
+      data: { folderId: folder.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, briefId: foreign.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: folder.id, briefId: chosen.id },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string } }>(response);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefId).toBe(chosen.id);
+    expect(stored.briefSnapshot).toMatchObject({ source: 'requested', briefId: chosen.id });
+  });
+
+  it('a root cut falls back to the project’s brief, then the workspace default, then the template', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    const create = async () => {
+      const response = await callRoute(
+        createRoughCutRoute,
+        apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+        { projectId: scenario.project.id }
+      );
+      expect(response.status).toBe(201);
+      const payload = await readData<{ roughCut: { id: string } }>(response);
+      const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+      await db.roughCut.delete({ where: { id: stored.id } });
+      return stored;
+    };
+
+    // Nothing bound: two synced cameras read as an interview, from the template.
+    expect(await create()).toMatchObject({
+      briefId: null,
+      briefSnapshot: expect.objectContaining({
+        source: 'builtin',
+        brief: expect.objectContaining({ projectType: 'INTERVIEW' }),
+      }),
+    });
+
+    // The other type's default is stored first, so keying defaults by the
+    // first isDefault row rather than by type would pick the wrong brief.
+    await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'ASCENSORE',
+      isDefault: true,
+    });
+    const workspaceDefault = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'INTERVIEW',
+      isDefault: true,
+    });
+    expect(await create()).toMatchObject({
+      briefId: workspaceDefault.id,
+      briefSnapshot: expect.objectContaining({ source: 'workspace-default' }),
+    });
+
+    const projectBrief = await createEditorialBrief({ workspaceId: scenario.workspace.id });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: projectBrief.id },
+    });
+    expect(await create()).toMatchObject({
+      briefId: projectBrief.id,
+      briefSnapshot: expect.objectContaining({ source: 'project' }),
+    });
+  });
+
+  it('a requested projectType picks the template when nothing is bound, and an unknown one is refused', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, projectType: 'VLOG' } }),
+      { projectId: scenario.project.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, projectType: 'ascensore' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string } }>(response);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefSnapshot).toMatchObject({
+      source: 'builtin',
+      brief: expect.objectContaining({ projectType: 'ASCENSORE' }),
+    });
+  });
+
+  it('a weak layout guess follows the brief’s bias, and an explicit layout still wins', async () => {
+    const scenario = await seedWeakGuess();
+    const brief = await createEditorialBrief({
+      workspaceId: scenario.workspace.id,
+      projectType: 'TALKING_HEAD',
+      config: { layoutBias: 'SEQUENTIAL' },
+    });
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialBriefId: brief.id },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const biased = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(biased.status).toBe(201);
+    const first = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(biased)).roughCut.id },
+    });
+    expect(first.layout).toBe('SEQUENTIAL');
+    expect(first.briefSnapshot).toMatchObject({ layoutSource: 'brief' });
+    await db.roughCut.delete({ where: { id: first.id } });
+
+    const explicit = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, layout: 'MULTICAM' } }),
+      { projectId: scenario.project.id }
+    );
+    expect(explicit.status).toBe(201);
+    const second = await db.roughCut.findUniqueOrThrow({
+      where: { id: (await readData<{ roughCut: { id: string } }>(explicit)).roughCut.id },
+    });
+    expect(second.layout).toBe('MULTICAM');
+    expect(second.briefSnapshot).toMatchObject({ layoutSource: 'dialog' });
+  });
+});
+
 describe('GET /api/projects/[projectId]/rough-cuts', () => {
   it('returns 401 to an anonymous caller', async () => {
     const scenario = await seedProject();
@@ -818,6 +1124,80 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     const body = await response.text();
     expect(body).toContain('<xmeml version="5">');
     expect(body).toContain('file://localhost/./media/01-Cam%20A-v1.mp4');
+  });
+
+  it('exports placeholder markers always and cut islands only with ?cuts=1', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id, title: 'Cam A' });
+    const version = await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    const decisions = sampleDecisions(video.id, version.id);
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions: {
+        ...decisions,
+        cuts: [
+          {
+            key: `${version.id}:48-72`,
+            sourceVersionId: version.id,
+            inSeconds: 2,
+            outSeconds: 3,
+            reason: { code: 'DEAD_AIR', summary: '1.0s of dead air after the last word' },
+            transcriptText: null,
+          },
+        ],
+        markers: [
+          {
+            key: `${version.id}:INFOGRAPHIC:24`,
+            kind: 'INFOGRAPHIC',
+            timelineSeconds: 1,
+            durationSeconds: 1,
+            title: 'Infographic: KPI',
+            reason: { code: 'MARKER_JARGON', summary: '“KPI” in “our KPI”' },
+          },
+        ],
+      },
+    });
+    signedInAs(scenario.owner);
+
+    const plain = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=xml`),
+      { roughCutId: cut.id }
+    );
+    expect(plain.status).toBe(200);
+    const plainBody = await plain.text();
+    expect(plainBody).toContain('<name>Infographic: KPI</name>');
+    expect(plainBody).not.toContain('Cut: 1.0s of dead air');
+
+    const xmlWithCuts = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=xml&cuts=1`),
+      { roughCutId: cut.id }
+    );
+    expect(xmlWithCuts.status).toBe(200);
+    expect(await xmlWithCuts.text()).toContain(
+      '<name>Cut: 1.0s of dead air after the last word</name>'
+    );
+
+    const withCuts = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=otio&cuts=1`),
+      { roughCutId: cut.id }
+    );
+    expect(withCuts.status).toBe(200);
+    const otio = JSON.parse(await withCuts.text()) as {
+      tracks: { children: Array<{ markers?: Array<{ name: string; color: string }> }> };
+    };
+    expect(otio.tracks.children[0]?.markers?.map((marker) => [marker.name, marker.color])).toEqual([
+      ['Infographic: KPI', 'BLUE'],
+      ['Cut: 1.0s of dead air after the last word', 'RED'],
+    ]);
   });
 
   it('returns 500 when READY decisions cannot be parsed and leaves the row', async () => {

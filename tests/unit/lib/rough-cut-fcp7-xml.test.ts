@@ -41,6 +41,126 @@ describe('fcp7Rate', () => {
 });
 
 describe('buildFcp7Xml', () => {
+  it('produces the same XML whether or not edits carry reasons and the list carries cuts', () => {
+    const clips = [clip('A', 'ver-a')];
+    const edit: EditDecision = {
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 2,
+      inSeconds: 1,
+      outSeconds: 3,
+      sourceVersionId: 'ver-a',
+      cameraRole: 'A',
+      targetTrack: 1,
+    };
+    const build = (
+      edits: EditDecision[],
+      cuts?: Parameters<typeof assembleDecisionList>[0]['cuts']
+    ) =>
+      buildFcp7Xml({
+        name: 'Rough Cut',
+        decisions: assembleDecisionList({
+          edits,
+          clips,
+          fileNames: new Map([['ver-a', '01-Cam A-v1.mp4']]),
+          mediaPathPrefix: './media/',
+          rate: { num: 24, den: 1, dropFrame: false },
+          cuts,
+        }),
+        clips,
+        handleFrames: 0,
+      });
+
+    const plain = build([edit]);
+    const annotated = build(
+      [{ ...edit, reason: { code: 'KEPT', summary: 'Speech' } }],
+      [
+        {
+          key: 'ver-a:72-96',
+          sourceVersionId: 'ver-a',
+          inSeconds: 3,
+          outSeconds: 4,
+          reason: { code: 'DEAD_AIR', summary: '1.0s of dead air' },
+          transcriptText: null,
+        },
+      ]
+    );
+
+    expect(annotated).toBe(plain);
+    expect(plain).not.toContain('<marker>');
+  });
+
+  it('writes sequence markers for placeholders and, only on request, for cuts', () => {
+    const clips = [clip('A', 'ver-a')];
+    const decisions = assembleDecisionList({
+      edits: [
+        {
+          timelineStartSeconds: 0,
+          timelineEndSeconds: 4,
+          inSeconds: 2,
+          outSeconds: 6,
+          sourceVersionId: 'ver-a',
+          cameraRole: 'A',
+          targetTrack: 1,
+        },
+        {
+          timelineStartSeconds: 4,
+          timelineEndSeconds: 6,
+          inSeconds: 8,
+          outSeconds: 10,
+          sourceVersionId: 'ver-a',
+          cameraRole: 'A',
+          targetTrack: 1,
+        },
+      ],
+      clips,
+      fileNames: new Map([['ver-a', '01-Cam A-v1.mp4']]),
+      mediaPathPrefix: './media/',
+      rate: { num: 24, den: 1, dropFrame: false },
+      cuts: [
+        {
+          key: 'ver-a:144-192',
+          sourceVersionId: 'ver-a',
+          inSeconds: 6,
+          outSeconds: 8,
+          reason: { code: 'DEAD_AIR', summary: '2.0s of dead air between thoughts' },
+          transcriptText: null,
+        },
+      ],
+      markers: [
+        {
+          key: 'ver-a:BROLL:72',
+          kind: 'BROLL',
+          timelineSeconds: 1,
+          durationSeconds: null,
+          title: 'B-roll: as you can see',
+          reason: { code: 'MARKER_ILLUSTRATION', summary: '“as you can see” in “<demo> & more”' },
+        },
+      ],
+    });
+    const build = (includeCuts?: boolean) =>
+      buildFcp7Xml({ name: 'Rough Cut', decisions, clips, handleFrames: 0, includeCuts });
+
+    const plain = build();
+    expect(plain).toContain(`<marker>
+      <comment>“as you can see” in “&lt;demo&gt; &amp; more”</comment>
+      <name>B-roll: as you can see</name>
+      <in>24</in>
+      <out>-1</out>
+    </marker>`);
+    expect(plain).not.toContain('Cut:');
+    expect(plain.indexOf('</media>')).toBeLessThan(plain.indexOf('<marker>'));
+    expect(plain.indexOf('<marker>')).toBeLessThan(plain.indexOf('</sequence>'));
+
+    const withCuts = build(true);
+    expect(withCuts).toContain(`<marker>
+      <comment>2.0s of dead air between thoughts</comment>
+      <name>Cut: 2.0s of dead air between thoughts</name>
+      <in>96</in>
+      <out>-1</out>
+    </marker>`);
+    expect(withCuts.match(/<marker>/g)).toHaveLength(2);
+  });
+
   it('writes xmeml with frame-denominated in/out and a shared file id', () => {
     const clips = [clip('A', 'ver-a')];
     const edits: EditDecision[] = [

@@ -148,6 +148,40 @@ describe('computeRoughCutDecisions', () => {
     expect(edits[0]!.timelineEndSeconds).toBe(8);
     expect(edits[1]?.sourceVersionId).toBe(WIDE);
     expect(edits[1]!.timelineEndSeconds - edits[1]!.timelineStartSeconds).toBe(1.5);
+    expect(edits[1]?.reason).toEqual({
+      code: 'MAX_SHOT',
+      summary: 'Cutaway after the maximum shot length',
+    });
+    expect(edits[0]?.reason).toEqual({ code: 'SPEAKER_SWITCH', summary: 'Speaker on A' });
+  });
+
+  it('keeps a held turn on the wide camera even when another speaker overlaps it', () => {
+    const held: AttributedTurn = { ...turn(2, 8, WIDE), hold: 'chaos' };
+    const edits = computeRoughCutDecisions(CLIPS, [held, turn(4, 6, CAM_A)], {
+      ...PROFILE,
+      overlapBehaviour: 'SPEAKER',
+    });
+
+    // Every segment lands on the wide camera, so the program is one shot whose
+    // reason is the deliberate hold rather than the safety pauses around it.
+    expect(edits).toHaveLength(1);
+    expect(edits[0]).toMatchObject({
+      sourceVersionId: WIDE,
+      timelineStartSeconds: 0,
+      timelineEndSeconds: 30,
+      reason: { code: 'HOLD_WIDE', summary: 'Several people at once; holding wide' },
+    });
+  });
+
+  it('absorbs a short pause into the speaker’s shot and explains the safety shot', () => {
+    const edits = computeRoughCutDecisions(CLIPS, [turn(2, 8, CAM_A), turn(9, 14, CAM_A)], PROFILE);
+
+    expect(edits.map((edit) => [edit.sourceVersionId, edit.reason])).toEqual([
+      [WIDE, { code: 'HOLD_WIDE', summary: 'No one is speaking for 2.0s; safety shot' }],
+      [CAM_A, { code: 'SPEAKER_SWITCH', summary: 'Speaker on A' }],
+      [WIDE, { code: 'HOLD_WIDE', summary: 'No one is speaking for 16.0s; safety shot' }],
+    ]);
+    expect(edits[1]).toMatchObject({ timelineStartSeconds: 2, timelineEndSeconds: 14 });
   });
 
   it('maps source in/out relative to a clip offset', () => {
@@ -190,6 +224,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 3,
@@ -199,6 +234,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });
@@ -218,6 +254,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });
@@ -240,6 +277,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_A,
         cameraRole: 'A',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
       {
         timelineStartSeconds: 10,
@@ -249,6 +287,7 @@ describe('computeLinearDecisions', () => {
         sourceVersionId: CAM_B,
         cameraRole: 'B',
         targetTrack: 1,
+        reason: { code: 'KEPT', summary: 'Speech' },
       },
     ]);
   });

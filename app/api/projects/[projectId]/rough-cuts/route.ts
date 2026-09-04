@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auth, checkProjectAccess } from '@/lib/auth';
 import { apiErrors, HttpStatus, successResponse, withCacheControl } from '@/lib/api-response';
@@ -12,6 +13,14 @@ import {
   snapshotWithAssembly,
 } from '@/lib/rough-cut/assembly';
 import {
+  applyBriefTechnical,
+  applyLayoutBias,
+  buildBriefSnapshot,
+  defaultProjectTypeForLayout,
+  parseEditorialProjectType,
+  type LayoutSource,
+} from '@/lib/rough-cut/brief';
+import {
   guessRoughCutLayout,
   minimumClipsForLayout,
   parseRoughCutLayout,
@@ -19,6 +28,7 @@ import {
 import {
   isReadyFileBackedVideo,
   loadFolderVideos,
+  loadResolvedBrief,
   loadResolvedProfile,
   previewCameraRoles,
   toLayoutGuessClips,
@@ -126,16 +136,66 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('layout must be MULTICAM, SEQUENTIAL, or LINEAR');
     }
 
-    const profile = await loadResolvedProfile({
+    let requestedBriefId: string | null = null;
+    if (body && Object.prototype.hasOwnProperty.call(body, 'briefId')) {
+      if (body.briefId !== null && typeof body.briefId !== 'string') {
+        return apiErrors.badRequest('briefId must be a brief id or null');
+      }
+      if (typeof body.briefId === 'string' && body.briefId.trim()) {
+        const brief = await db.editorialBrief.findFirst({
+          where: { id: body.briefId.trim(), workspaceId: project.workspaceId },
+          select: { id: true },
+        });
+        if (!brief) return apiErrors.badRequest('brief was not found in this workspace');
+        requestedBriefId = brief.id;
+      }
+    }
+    const requestedProjectType =
+      body?.projectType === undefined ? null : parseEditorialProjectType(body.projectType);
+    if (body?.projectType !== undefined && !requestedProjectType) {
+      return apiErrors.badRequest('projectType must be ASCENSORE, TALKING_HEAD, or INTERVIEW');
+    }
+
+    // Merge order: profile (built-in → workspace default → folder → the
+    // brief's own profile pointer → an explicit choice), then the brief's
+    // technical overrides, then the dialog values. The project type only
+    // matters when no brief is bound: it picks the template.
+    const baseProfile = await loadResolvedProfile({
       workspaceId: project.workspaceId,
       projectId,
       folderId,
       profileId: requestedProfileId,
     });
+    const preliminaryGuess = guessRoughCutLayout(toLayoutGuessClips(fileBacked), {
+      cameraRoleMetadataKey: baseProfile.cameraRoleMetadataKey,
+    });
+    const resolvedBrief = await loadResolvedBrief({
+      workspaceId: project.workspaceId,
+      projectId,
+      folderId,
+      briefId: requestedBriefId,
+      projectType:
+        requestedProjectType ??
+        defaultProjectTypeForLayout(requestedLayout ?? preliminaryGuess.layout),
+    });
+    const briefProfileId = resolvedBrief.brief.technical.roughCutProfileId;
+    const profileBase =
+      !requestedProfileId && briefProfileId
+        ? await loadResolvedProfile({
+            workspaceId: project.workspaceId,
+            projectId,
+            folderId,
+            profileId: briefProfileId,
+          })
+        : baseProfile;
+    const profile = applyBriefTechnical(profileBase, resolvedBrief.brief);
     const guess = guessRoughCutLayout(toLayoutGuessClips(fileBacked), {
       cameraRoleMetadataKey: profile.cameraRoleMetadataKey,
     });
-    const layout = requestedLayout ?? guess.layout;
+    const chosen: { layout: typeof guess.layout; source: LayoutSource } = requestedLayout
+      ? { layout: requestedLayout, source: 'dialog' }
+      : applyLayoutBias(guess, resolvedBrief.brief.layoutBias, fileBacked.length);
+    const layout = chosen.layout;
     if (fileBacked.length < minimumClipsForLayout(layout)) {
       return apiErrors.badRequest(
         layout === 'MULTICAM'
@@ -190,6 +250,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         projectId,
         folderId,
         profileId: profile.id,
+        briefId: resolvedBrief.briefId,
+        briefSnapshot: buildBriefSnapshot({
+          resolved: resolvedBrief,
+          layoutSource: chosen.source,
+        }) as Prisma.InputJsonValue,
         requestedById: session.user.id,
         layout,
         profileSnapshot: snapshotWithAssembly(profile, {

@@ -46,7 +46,20 @@ export type AttributedTurn = {
   versionId: string;
   speaker: string | null;
   confidence: number;
+  /** Set by the camera grammar when the turn was moved to the wide camera on purpose. */
+  hold?: 'chaos' | 'primary';
 };
+
+export const EDIT_REASON_CODES = [
+  'SPEAKER_SWITCH',
+  'HOLD_WIDE',
+  'HOLD',
+  'MAX_SHOT',
+  'KEPT',
+] as const;
+export type EditReasonCode = (typeof EDIT_REASON_CODES)[number];
+
+export type EditReason = { code: EditReasonCode; summary: string };
 
 export type EditDecision = {
   timelineStartSeconds: number;
@@ -56,6 +69,37 @@ export type EditDecision = {
   sourceVersionId: string;
   cameraRole: string;
   targetTrack: number;
+  /** Why this range is in the program. Absent on runs made before reasons existed. */
+  reason?: EditReason;
+};
+
+export const CUT_REASON_CODES = ['DEAD_AIR', 'FALSE_START', 'REJECTED_TAKE'] as const;
+export type CutReasonCode = (typeof CUT_REASON_CODES)[number];
+
+/** A removed source range and why, keyed so overrides survive a regenerate. */
+export type CutIsland = {
+  key: string;
+  sourceVersionId: string;
+  inSeconds: number;
+  outSeconds: number;
+  reason: { code: CutReasonCode; summary: string };
+  transcriptText: string | null;
+};
+
+export const MARKER_KINDS = ['INFOGRAPHIC', 'BROLL'] as const;
+export type MarkerKind = (typeof MARKER_KINDS)[number];
+
+export const MARKER_REASON_CODES = ['MARKER_JARGON', 'MARKER_ILLUSTRATION'] as const;
+export type MarkerReasonCode = (typeof MARKER_REASON_CODES)[number];
+
+/** A placeholder for material to layer on later, placed on the program timeline. */
+export type Marker = {
+  key: string;
+  kind: MarkerKind;
+  timelineSeconds: number;
+  durationSeconds: number | null;
+  title: string;
+  reason: { code: MarkerReasonCode; summary: string };
 };
 
 export type RoughCutDecisionList = {
@@ -76,6 +120,10 @@ export type RoughCutDecisionList = {
     den: number;
     dropFrame: boolean;
   };
+  /** Only actual removals. Absent on runs made before the editorial pass existed. */
+  cuts?: CutIsland[];
+  /** Placeholder markers on kept material. Absent on runs made before the editorial pass existed. */
+  markers?: Marker[];
 };
 
 export type RoughCutWarning = {

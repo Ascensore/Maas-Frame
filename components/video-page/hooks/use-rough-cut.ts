@@ -177,6 +177,7 @@ export function useRoughCut() {
       projectId: string;
       folderId: string | null;
       profileId?: string | null;
+      briefId?: string | null;
       layout?: 'MULTICAM' | 'SEQUENTIAL' | 'LINEAR' | null;
       clipOrder?: string[];
       cameraRoles?: Record<string, string>;
@@ -192,6 +193,7 @@ export function useRoughCut() {
           body: JSON.stringify({
             folderId: options.folderId,
             ...(options.profileId ? { profileId: options.profileId } : {}),
+            ...(options.briefId ? { briefId: options.briefId } : {}),
             ...(options.layout ? { layout: options.layout } : {}),
             ...(options.clipOrder && options.clipOrder.length > 0
               ? { clipOrder: options.clipOrder }
