@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeRoughCutDecisions } from '@/lib/rough-cut/decisions';
+import { computeLinearDecisions, computeRoughCutDecisions } from '@/lib/rough-cut/decisions';
 import type { AttributedTurn, CameraClip } from '@/lib/rough-cut/types';
 
 function clip(overrides: Partial<CameraClip> & Pick<CameraClip, 'versionId' | 'role'>): CameraClip {
@@ -171,5 +171,85 @@ describe('computeRoughCutDecisions', () => {
 
   it('returns no edits when there are no clips', () => {
     expect(computeRoughCutDecisions([], [turn(0, 2, CAM_A)], PROFILE)).toEqual([]);
+  });
+});
+
+describe('computeLinearDecisions', () => {
+  it('drops silence and concatenates remaining speech', () => {
+    const edits = computeLinearDecisions(
+      [clip({ versionId: CAM_A, role: 'A', durationSeconds: 20 })],
+      [turn(1, 4, CAM_A), turn(10, 14, CAM_A)],
+      { minShotSeconds: 1.5 }
+    );
+    expect(edits).toEqual([
+      {
+        timelineStartSeconds: 0,
+        timelineEndSeconds: 3,
+        inSeconds: 1,
+        outSeconds: 4,
+        sourceVersionId: CAM_A,
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+      {
+        timelineStartSeconds: 3,
+        timelineEndSeconds: 7,
+        inSeconds: 10,
+        outSeconds: 14,
+        sourceVersionId: CAM_A,
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+    ]);
+  });
+
+  it('drops takes shorter than minShotSeconds', () => {
+    const edits = computeLinearDecisions(
+      [clip({ versionId: CAM_A, role: 'A', durationSeconds: 20 })],
+      [turn(0, 0.4, CAM_A), turn(5, 9, CAM_A)],
+      { minShotSeconds: 1.5 }
+    );
+    expect(edits).toEqual([
+      {
+        timelineStartSeconds: 0,
+        timelineEndSeconds: 4,
+        inSeconds: 5,
+        outSeconds: 9,
+        sourceVersionId: CAM_A,
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+    ]);
+  });
+
+  it('keeps each clip in full when no speech is detected', () => {
+    const edits = computeLinearDecisions(
+      [
+        clip({ versionId: CAM_A, role: 'A', durationSeconds: 10 }),
+        clip({ versionId: CAM_B, role: 'B', durationSeconds: 5 }),
+      ],
+      [],
+      { minShotSeconds: 1.5 }
+    );
+    expect(edits).toEqual([
+      {
+        timelineStartSeconds: 0,
+        timelineEndSeconds: 10,
+        inSeconds: 0,
+        outSeconds: 10,
+        sourceVersionId: CAM_A,
+        cameraRole: 'A',
+        targetTrack: 1,
+      },
+      {
+        timelineStartSeconds: 10,
+        timelineEndSeconds: 15,
+        inSeconds: 0,
+        outSeconds: 5,
+        sourceVersionId: CAM_B,
+        cameraRole: 'B',
+        targetTrack: 1,
+      },
+    ]);
   });
 });

@@ -43,6 +43,7 @@ export function shapeRoughCut(row: {
   folderId: string | null;
   profileId: string | null;
   requestedById: string;
+  layout: string;
   frameRateNum: number | null;
   frameRateDen: number | null;
   dropFrame: boolean;
@@ -61,6 +62,7 @@ export function shapeRoughCut(row: {
     folderId: row.folderId,
     profileId: row.profileId,
     requestedById: row.requestedById,
+    layout: row.layout,
     frameRateNum: row.frameRateNum,
     frameRateDen: row.frameRateDen,
     dropFrame: row.dropFrame,

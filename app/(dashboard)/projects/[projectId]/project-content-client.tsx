@@ -84,6 +84,11 @@ interface SerializedVideo {
   currentVersion: number;
   commentCount: number;
   duration: string;
+  durationSeconds?: number | null;
+  startTimecode?: string | null;
+  recordedAt?: string | null;
+  createdAt?: string | null;
+  position?: number;
   lastUpdated: string;
   updatedAt: string;
 }
@@ -206,7 +211,7 @@ export function ProjectContentClient({
     [currentFolderId, folders]
   );
   const currentFolderLabel = crumbs[crumbs.length - 1]?.name ?? project.name;
-  const canGenerateCurrentFolderRoughCut = roughCutEnabled && canEdit && allVideoIds.length >= 2;
+  const canGenerateCurrentFolderRoughCut = roughCutEnabled && canEdit && allVideoIds.length >= 1;
   const addVideoHref = currentFolderId
     ? `/projects/${projectId}/videos/new?folder=${currentFolderId}`
     : `/projects/${projectId}/videos/new`;
@@ -791,7 +796,7 @@ export function ProjectContentClient({
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      {roughCutEnabled && folder.videoCount >= 2 && (
+                      {roughCutEnabled && folder.videoCount >= 1 && (
                         <DropdownMenuItem
                           onSelect={() =>
                             setRoughCutTarget({

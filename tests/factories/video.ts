@@ -50,6 +50,8 @@ export interface CreateVersionInput {
   title?: string | null;
   thumbnailUrl?: string | null;
   duration?: number | null;
+  startTimecode?: string | null;
+  recordedAt?: Date | null;
   sizeBytes?: bigint;
   proxyUrl?: string | null;
   proxyStatus?: VideoProxyStatus;
@@ -70,6 +72,8 @@ export async function createVersion(input: CreateVersionInput): Promise<VideoVer
       title: input.title ?? `Version ${seq}`,
       thumbnailUrl: input.thumbnailUrl ?? null,
       duration: input.duration ?? 120,
+      startTimecode: input.startTimecode ?? undefined,
+      recordedAt: input.recordedAt ?? undefined,
       sizeBytes: input.sizeBytes ?? BigInt(0),
       isActive: input.isActive ?? true,
       proxyUrl: input.proxyUrl ?? null,

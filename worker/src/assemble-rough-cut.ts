@@ -7,14 +7,20 @@ import {
 } from '../lib/rough-cut/attribute';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from '../lib/rough-cut/camera-roles';
 import { assembleDecisionList } from '../lib/rough-cut/decision-list';
-import { computeRoughCutDecisions } from '../lib/rough-cut/decisions';
+import { computeRoughCutDecisions, computeLinearDecisions } from '../lib/rough-cut/decisions';
 import { isDiarizationEnvEnabled } from '../lib/rough-cut/env';
+import {
+  applySequentialOffsets,
+  cameraClipToLayoutGuess,
+  sortClipsChronologically,
+} from '../lib/rough-cut/layout';
 import { assignClipExportFileNames } from '../lib/rough-cut/media-paths';
 import { profileFromSnapshot } from '../lib/rough-cut/profile';
 import { computeTimecodeOffsets } from '../lib/rough-cut/sync';
 import type {
   AttributedTurn,
   CameraClip,
+  RoughCutLayout,
   RoughCutWarning,
   SyncReport,
 } from '../lib/rough-cut/types';
@@ -74,6 +80,140 @@ async function rmsAt(
   return typeof parsed.rms === 'number' && Number.isFinite(parsed.rms) ? parsed.rms : 0;
 }
 
+function isoTimestamp(value: unknown): string | null {
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  return null;
+}
+
+function readLayout(value: unknown): RoughCutLayout {
+  if (value === 'LINEAR' || value === 'SEQUENTIAL' || value === 'MULTICAM') return value;
+  return 'MULTICAM';
+}
+
+async function persistReady(
+  deps: AssembleDeps,
+  roughCutId: string,
+  decisions: unknown,
+  syncReport: SyncReport,
+  warnings: RoughCutWarning[],
+  rate: { num: number; den: number; dropFrame: boolean }
+): Promise<void> {
+  await deps.pool.query(
+    `UPDATE rough_cuts
+     SET status = 'READY',
+         decisions = $2::jsonb,
+         sync_report = $3::jsonb,
+         warnings = $4::jsonb,
+         frame_rate_num = $5,
+         frame_rate_den = $6,
+         drop_frame = $7,
+         error = NULL,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [
+      roughCutId,
+      JSON.stringify(decisions),
+      JSON.stringify(syncReport),
+      JSON.stringify(warnings.slice(0, 50)),
+      rate.num,
+      rate.den,
+      rate.dropFrame,
+    ]
+  );
+}
+
+async function vadTurnsForClip(
+  deps: AssembleDeps,
+  wav: string
+): Promise<Array<{ start: number; end: number }>> {
+  const script = join(deps.scriptDir, 'diarize.py');
+  const ran = await deps.run('python3', [script, '--vad-only', wav]);
+  if (ran.code !== 0) return [];
+  const parsed = parseJson(ran.stdout) as { turns?: Array<{ start: number; end: number }> };
+  return parsed.turns ?? [];
+}
+
+async function assembleLinearLayout(
+  deps: AssembleDeps,
+  options: {
+    roughCutId: string;
+    profile: ReturnType<typeof profileFromSnapshot>;
+    clips: CameraClip[];
+    wavs: string[];
+    warnings: RoughCutWarning[];
+    metadataByVideoId: Map<string, Record<string, unknown>>;
+  }
+): Promise<void> {
+  const { profile, clips, wavs, warnings } = options;
+  const guessClips = clips.map((clip) =>
+    cameraClipToLayoutGuess(
+      clip,
+      metadataStringRecord(options.metadataByVideoId.get(clip.videoId) ?? {})
+    )
+  );
+  const orderedGuess = sortClipsChronologically(guessClips, {
+    num: clips[0]!.frameRateNum,
+    den: clips[0]!.frameRateDen,
+    dropFrame: clips[0]!.dropFrame,
+  });
+  const byVideoId = new Map(clips.map((clip) => [clip.videoId, clip]));
+  const orderedClips = applySequentialOffsets(
+    orderedGuess.map((guess) => byVideoId.get(guess.id)).filter((clip): clip is CameraClip => Boolean(clip))
+  );
+  const wavByVersion = new Map(clips.map((clip, index) => [clip.versionId, wavs[index]!]));
+
+  const turns: AttributedTurn[] = [];
+  for (const clip of orderedClips) {
+    const wav = wavByVersion.get(clip.versionId);
+    if (!wav) continue;
+    const islands = await vadTurnsForClip(deps, wav);
+    for (const island of islands) {
+      turns.push({
+        start: island.start,
+        end: island.end,
+        versionId: clip.versionId,
+        speaker: null,
+        confidence: 1,
+      });
+    }
+  }
+
+  const edits = computeLinearDecisions(orderedClips, turns, {
+    minShotSeconds: profile.minShotSeconds,
+  });
+  if (turns.length === 0) {
+    warnings.push({
+      code: 'no-speech-detected',
+      message: 'No speech was detected; the timeline keeps each clip in full',
+    });
+  }
+
+  const rate = {
+    num: orderedClips[0]!.frameRateNum,
+    den: orderedClips[0]!.frameRateDen,
+    dropFrame: orderedClips[0]!.dropFrame,
+  };
+  const fileNames = assignClipExportFileNames(orderedClips);
+  const decisions = assembleDecisionList({
+    edits,
+    clips: orderedClips,
+    fileNames,
+    mediaPathPrefix: profile.mediaPathPrefix,
+    rate,
+  });
+  const syncReport: SyncReport = {
+    strategy: 'AUTO',
+    clips: orderedClips.map((clip) => ({
+      versionId: clip.versionId,
+      offsetSeconds: clip.offsetSeconds,
+      method: 'sequence',
+      confidence: 1,
+    })),
+  };
+  await persistReady(deps, options.roughCutId, decisions, syncReport, warnings, rate);
+}
+
 export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): Promise<void> {
   const warnings: RoughCutWarning[] = [];
   await deps.pool.query(`UPDATE rough_cuts SET status = 'RUNNING', updated_at = NOW() WHERE id = $1`, [
@@ -81,18 +221,20 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
   ]);
 
   const cutRes = await deps.pool.query(
-    `SELECT id, project_id, folder_id, profile_snapshot FROM rough_cuts WHERE id = $1`,
+    `SELECT id, project_id, folder_id, profile_snapshot, layout FROM rough_cuts WHERE id = $1`,
     [roughCutId]
   );
   const cut = cutRes.rows[0];
   if (!cut) throw new Error('Rough cut not found');
   const profile = profileFromSnapshot(cut.profile_snapshot);
+  const layout = readLayout(cut.layout);
 
   const videosRes = await deps.pool.query(
-    `SELECT v.id, v.title, v.position, v.metadata,
+    `SELECT v.id, v.title, v.position, v.metadata, v."createdAt" AS video_created_at,
             vv.id AS version_id, vv."versionNumber" AS version_number, vv."versionLabel" AS version_label,
             vv."providerId" AS provider_id, vv."originalUrl" AS original_url,
-            vv.duration, vv.frame_rate_num, vv.frame_rate_den, vv.drop_frame, vv.start_timecode
+            vv.duration, vv.frame_rate_num, vv.frame_rate_den, vv.drop_frame, vv.start_timecode,
+            vv.recorded_at
      FROM videos v
      JOIN LATERAL (
        SELECT * FROM video_versions
@@ -107,8 +249,11 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     [cut.project_id, cut.folder_id]
   );
 
-  if (videosRes.rows.length < 2) {
-    throw new Error('A rough cut needs at least two file-backed videos in this folder');
+  if (videosRes.rows.length === 0) {
+    throw new Error('A rough cut needs at least one file-backed video in this folder');
+  }
+  if (layout === 'MULTICAM' && videosRes.rows.length < 2) {
+    throw new Error('A multicam rough cut needs at least two file-backed videos in this folder');
   }
 
   const tmp = await import('node:fs/promises').then(async (fs) => {
@@ -139,6 +284,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         frameRateDen: row.frame_rate_den ?? 1,
         dropFrame: Boolean(row.drop_frame),
         startTimecode: row.start_timecode,
+        recordedAt: isoTimestamp(row.recorded_at),
+        createdAt: isoTimestamp(row.video_created_at),
         originalUrl: row.original_url,
         versionNumber: row.version_number,
         versionLabel: row.version_label,
@@ -150,6 +297,26 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       den: clips[0]!.frameRateDen,
       dropFrame: clips[0]!.dropFrame,
     };
+
+    if (layout !== 'MULTICAM') {
+      const metadataByVideoId = new Map<string, Record<string, unknown>>();
+      for (const row of videosRes.rows) {
+        const metadata =
+          typeof row.metadata === 'object' && row.metadata
+            ? (row.metadata as Record<string, unknown>)
+            : {};
+        metadataByVideoId.set(row.id, metadata);
+      }
+      await assembleLinearLayout(deps, {
+        roughCutId,
+        profile,
+        clips,
+        wavs,
+        warnings,
+        metadataByVideoId,
+      });
+      return;
+    }
 
     let strategy: SyncReport['strategy'] = profile.syncStrategy;
     const syncClips: SyncReport['clips'] = [];
@@ -304,28 +471,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
     });
 
     const syncReport: SyncReport = { strategy, clips: syncClips };
-    await deps.pool.query(
-      `UPDATE rough_cuts
-       SET status = 'READY',
-           decisions = $2::jsonb,
-           sync_report = $3::jsonb,
-           warnings = $4::jsonb,
-           frame_rate_num = $5,
-           frame_rate_den = $6,
-           drop_frame = $7,
-           error = NULL,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [
-        roughCutId,
-        JSON.stringify(decisions),
-        JSON.stringify(syncReport),
-        JSON.stringify(warnings.slice(0, 50)),
-        rate.num,
-        rate.den,
-        rate.dropFrame,
-      ]
-    );
+    await persistReady(deps, roughCutId, decisions, syncReport, warnings, rate);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await deps.pool.query(
