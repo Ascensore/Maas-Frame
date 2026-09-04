@@ -17,6 +17,11 @@ import {
   TRANSCRIPT_UPLOAD_PROVIDER,
 } from '@/lib/transcript-import';
 import { normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
+import {
+  isAutoDetectLanguage,
+  parseRequestedTranscriptLanguage,
+} from '@/lib/transcription/language';
+import { shapeTranscriptTranslation } from '@/lib/transcript-translation';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
@@ -57,23 +62,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     return withCacheControl(
       successResponse({
-        transcript: {
-          id: transcript.id,
-          versionId: transcript.versionId,
-          language: transcript.language,
-          provider: transcript.provider,
-          status: transcript.status,
-          error: transcript.error,
-          segments: segments.map((segment) => ({
-            id: segment.id,
-            startSec: segment.startSec,
-            endSec: segment.endSec,
-            speaker: segment.speaker,
-            text: segment.text,
-            words: segment.words,
-            position: segment.position,
-          })),
-        },
+        transcript: shapeTranscript({ ...transcript, segments }),
       }),
       'private, no-store'
     );
@@ -101,10 +90,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json().catch(() => null);
-    const language = typeof body?.language === 'string' ? body.language.trim().toLowerCase() : 'en';
+    const requestedLanguage = parseRequestedTranscriptLanguage(body?.language);
+    const existing = isAutoDetectLanguage(requestedLanguage)
+      ? await db.transcript.findFirst({
+          where: { versionId },
+          orderBy: { createdAt: 'asc' },
+        })
+      : null;
+    const language = existing?.language ?? requestedLanguage;
 
     if (loaded.version.providerId === 'youtube') {
-      const imported = await fetchYoutubeTranscript(loaded.version.videoId, language);
+      const imported = await fetchYoutubeTranscript(
+        loaded.version.videoId,
+        isAutoDetectLanguage(requestedLanguage) ? '' : requestedLanguage
+      );
       if (!imported.ok) {
         await saveFailedTranscript({
           versionId,
@@ -117,7 +116,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
       const transcript = await saveReadyTranscript({
         versionId,
-        language,
+        language: imported.language,
         provider: YOUTUBE_TRANSCRIPT_PROVIDER,
         segments: imported.segments,
       });
@@ -133,27 +132,38 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    const transcript = await db.transcript.upsert({
-      where: { versionId_language: { versionId, language } },
-      create: {
-        versionId,
-        language,
-        provider: getTranscriptionProviderName(),
-        status: TranscriptStatus.PENDING,
-      },
-      update: {
-        status: TranscriptStatus.PENDING,
-        error: null,
-        provider: getTranscriptionProviderName(),
-      },
-    });
+    const pendingData = {
+      status: TranscriptStatus.PENDING,
+      error: null,
+      provider: getTranscriptionProviderName(),
+      translationLanguage: null,
+      translationStatus: null,
+      translationError: null,
+      translatedTexts: Prisma.DbNull,
+    };
+
+    const transcript = existing
+      ? await db.transcript.update({
+          where: { id: existing.id },
+          data: pendingData,
+        })
+      : await db.transcript.upsert({
+          where: { versionId_language: { versionId, language } },
+          create: {
+            versionId,
+            language,
+            provider: getTranscriptionProviderName(),
+            status: TranscriptStatus.PENDING,
+          },
+          update: pendingData,
+        });
 
     await enqueueMediaJob(versionId, MediaJobKind.EXTRACT_AUDIO);
     await enqueueMediaJob(versionId, MediaJobKind.TRANSCRIBE, {
-      language,
+      language: requestedLanguage,
       transcriptId: transcript.id,
     });
-    scheduleVersionTranscription(versionId, language);
+    scheduleVersionTranscription(versionId, requestedLanguage, transcript.id);
 
     return withCacheControl(successResponse({ transcript }, 202), 'private, no-store');
   } catch (error) {
@@ -169,6 +179,10 @@ function shapeTranscript(transcript: {
   provider: string;
   status: TranscriptStatus;
   error: string | null;
+  translationLanguage?: string | null;
+  translationStatus?: TranscriptStatus | null;
+  translationError?: string | null;
+  translatedTexts?: unknown;
   segments: Array<{
     id: string;
     startSec: number;
@@ -186,6 +200,12 @@ function shapeTranscript(transcript: {
     provider: transcript.provider,
     status: transcript.status,
     error: transcript.error,
+    translation: shapeTranscriptTranslation({
+      translationLanguage: transcript.translationLanguage ?? null,
+      translationStatus: transcript.translationStatus ?? null,
+      translationError: transcript.translationError ?? null,
+      translatedTexts: transcript.translatedTexts,
+    }),
     segments: transcript.segments.map((segment) => ({
       id: segment.id,
       startSec: segment.startSec,
@@ -248,6 +268,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
           status: TranscriptStatus.READY,
           searchText,
           error: null,
+          translationLanguage: null,
+          translationStatus: null,
+          translationError: null,
+          translatedTexts: Prisma.DbNull,
         },
       });
 

@@ -413,14 +413,14 @@ describe('POST /api/projects/[projectId]/videos', () => {
       'TRANSCRIBE',
     ]);
     const transcript = await db.transcript.findFirstOrThrow({
-      where: { versionId: version.id, language: 'en' },
+      where: { versionId: version.id, language: 'und' },
     });
     expect(transcript.status).toBe(TranscriptStatus.PENDING);
     expect(transcript.provider).toBe('whisper-local');
     const transcribeJob = jobs.find((job) => job.kind === 'TRANSCRIBE');
-    expect(transcribeJob?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(transcribeJob?.payload).toEqual({ language: 'und', transcriptId: transcript.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(version.id, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(version.id, 'und', transcript.id);
   });
 
   it('creates a PDF review from an r2 upload', async () => {
@@ -545,14 +545,18 @@ describe('POST /api/projects/[projectId]/videos', () => {
       'TRANSCRIBE',
     ]);
     const transcript = await db.transcript.findFirstOrThrow({
-      where: { versionId: created.versions[0].id, language: 'en' },
+      where: { versionId: created.versions[0].id, language: 'und' },
     });
     expect(transcript.status).toBe(TranscriptStatus.PENDING);
     expect(transcript.provider).toBe('whisper-local');
     const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
-    expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(transcribe?.payload).toEqual({ language: 'und', transcriptId: transcript.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(created.versions[0].id, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(
+      created.versions[0].id,
+      'und',
+      transcript.id
+    );
   });
 
   it('creates a VIDEO review from an mp4 r2 upload and enqueues transcription', async () => {
@@ -603,14 +607,18 @@ describe('POST /api/projects/[projectId]/videos', () => {
       'TRANSCRIBE',
     ]);
     const transcript = await db.transcript.findFirstOrThrow({
-      where: { versionId: created.versions[0].id, language: 'en' },
+      where: { versionId: created.versions[0].id, language: 'und' },
     });
     expect(transcript.status).toBe(TranscriptStatus.PENDING);
     expect(transcript.provider).toBe('whisper-local');
     const transcribeJob = jobs.find((job) => job.kind === 'TRANSCRIBE');
-    expect(transcribeJob?.payload).toEqual({ language: 'en', transcriptId: transcript.id });
+    expect(transcribeJob?.payload).toEqual({ language: 'und', transcriptId: transcript.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(created.versions[0].id, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(
+      created.versions[0].id,
+      'und',
+      transcript.id
+    );
   });
 
   it('refuses a still whose r2 session never existed and inserts nothing', async () => {

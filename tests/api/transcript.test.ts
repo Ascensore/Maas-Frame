@@ -152,9 +152,14 @@ describe('GET /api/versions/[versionId]/transcript', () => {
 
     expect(response.status).toBe(200);
     const body = await readData<{
-      transcript: { provider: string; segments: Array<{ text: string; startSec: number }> };
+      transcript: {
+        provider: string;
+        translation: null;
+        segments: Array<{ text: string; startSec: number }>;
+      };
     }>(response);
     expect(body.transcript.provider).toBe('whisper-local');
+    expect(body.transcript.translation).toBeNull();
     expect(body.transcript.segments).toEqual([
       expect.objectContaining({ text: 'Hello', startSec: 1 }),
     ]);
@@ -393,7 +398,7 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
     expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: row.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'en', row.id);
   });
 
   it('re-enqueues an existing READY transcript as PENDING', async () => {
@@ -425,7 +430,34 @@ describe('POST /api/versions/[versionId]/transcript', () => {
     const transcribe = jobs.find((job) => job.kind === 'TRANSCRIBE');
     expect(transcribe?.payload).toEqual({ language: 'en', transcriptId: existing.id });
     expect(scheduleVersionTranscription).toHaveBeenCalledTimes(1);
-    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'en');
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(
+      scenario.version.id,
+      'en',
+      existing.id
+    );
+  });
+
+  it('detects language instead of forcing English when the body omits language', async () => {
+    const scenario = await seedVersion({ providerId: 'r2' });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      enqueueTranscript,
+      apiRequest(transcriptUrl(scenario.version.id), { body: {} }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(202);
+    const row = await db.transcript.findFirstOrThrow({
+      where: { versionId: scenario.version.id },
+    });
+    expect(row.language).toBe('und');
+    const transcribe = await db.mediaJob.findFirstOrThrow({
+      where: { versionId: scenario.version.id, kind: 'TRANSCRIBE' },
+      select: { payload: true },
+    });
+    expect(transcribe.payload).toEqual({ language: 'und', transcriptId: row.id });
+    expect(scheduleVersionTranscription).toHaveBeenCalledWith(scenario.version.id, 'und', row.id);
   });
 
   it('imports YouTube captions immediately and does not enqueue a worker job', async () => {

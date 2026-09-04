@@ -481,7 +481,10 @@ async function transcribeLocalWhisper(audioPath: string, language: string): Prom
 
 async function transcribe(versionId: string, payload: { language?: string; transcriptId?: string } | null): Promise<void> {
   const providerName = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local').trim().toLowerCase();
-  const language = payload?.language || 'en';
+  const requested = payload?.language?.trim() || '';
+  const autoDetect = !requested || requested === 'und' || requested === 'auto';
+  const languageHint = autoDetect ? undefined : requested.split('-')[0];
+  const language = requested || 'und';
   const provider = getWorkerTranscriptionProvider(
     providerName,
     createWhisperLocalProvider(transcribeLocalWhisper)
@@ -505,18 +508,42 @@ async function transcribe(versionId: string, payload: { language?: string; trans
       await downloadObject(audioKey, wav);
     }
 
-    const result = await provider.transcribe({ audioPath: wav, language });
+    const result = await provider.transcribe({
+      audioPath: wav,
+      ...(languageHint ? { language: languageHint } : {}),
+    });
 
     const searchText = result.segments.map((segment) => segment.text).join(' ');
-    const upsert = await pool.query(
-      `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, 'READY', $4, NULL, NOW(), NOW())
-       ON CONFLICT (version_id, language)
-       DO UPDATE SET provider = EXCLUDED.provider, status = 'READY', search_text = EXCLUDED.search_text, error = NULL, updated_at = NOW()
-       RETURNING id`,
-      [versionId, result.language || language, provider.name, searchText]
-    );
-    const transcriptId = upsert.rows[0].id as string;
+    const detected = result.language || (autoDetect ? 'und' : language);
+    let transcriptId = payload?.transcriptId;
+    if (transcriptId) {
+      await pool.query(
+        `UPDATE transcripts
+         SET language = $2,
+             provider = $3,
+             status = 'READY',
+             search_text = $4,
+             error = NULL,
+             translation_language = NULL,
+             translation_status = NULL,
+             translation_error = NULL,
+             translated_texts = NULL,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [transcriptId, detected, provider.name, searchText]
+      );
+    } else {
+      const upsert = await pool.query(
+        `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, $1, $2, $3, 'READY', $4, NULL, NOW(), NOW())
+         ON CONFLICT (version_id, language)
+         DO UPDATE SET provider = EXCLUDED.provider, status = 'READY', search_text = EXCLUDED.search_text, error = NULL,
+           translation_language = NULL, translation_status = NULL, translation_error = NULL, translated_texts = NULL, updated_at = NOW()
+         RETURNING id`,
+        [versionId, detected, provider.name, searchText]
+      );
+      transcriptId = upsert.rows[0].id as string;
+    }
     await pool.query(`DELETE FROM transcript_segments WHERE transcript_id = $1`, [transcriptId]);
     for (let index = 0; index < result.segments.length; index += 1) {
       const segment = result.segments[index];
@@ -528,7 +555,7 @@ async function transcribe(versionId: string, payload: { language?: string; trans
     }
 
     try {
-      await upsertCaptionTrack(versionId, result.language || language, serializeWebVtt(result.segments));
+      await upsertCaptionTrack(versionId, detected, serializeWebVtt(result.segments));
     } catch (error) {
       console.error('caption upsert failed', error);
     }

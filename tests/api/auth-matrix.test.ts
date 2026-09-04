@@ -105,6 +105,7 @@ import * as commentsLiveRoute from '@/app/api/versions/[versionId]/comments/live
 import * as versionCommentsRoute from '@/app/api/versions/[versionId]/comments/route';
 import * as versionDownloadRoute from '@/app/api/versions/[versionId]/download/route';
 import * as versionTranscriptRoute from '@/app/api/versions/[versionId]/transcript/route';
+import * as versionTranscriptTranslateRoute from '@/app/api/versions/[versionId]/transcript/translate/route';
 import * as versionTranscriptUploadRoute from '@/app/api/versions/[versionId]/transcript/upload/route';
 import * as v1ProjectsRoute from '@/app/api/v1/projects/route';
 import * as v1ProjectVideosRoute from '@/app/api/v1/projects/[projectId]/videos/route';
@@ -178,7 +179,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 94;
+const EXPECTED_ROUTE_MODULE_COUNT = 95;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -794,6 +795,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     file: 'versions/[versionId]/transcript/route.ts',
     module: versionTranscriptRoute,
     url: (f) => `/api/versions/${f.versionId}/transcript`,
+    params: (f) => ({ versionId: f.versionId }),
+    body: { language: 'en' },
+  },
+  {
+    file: 'versions/[versionId]/transcript/translate/route.ts',
+    module: versionTranscriptTranslateRoute,
+    url: (f) => `/api/versions/${f.versionId}/transcript/translate`,
     params: (f) => ({ versionId: f.versionId }),
     body: { language: 'en' },
   },

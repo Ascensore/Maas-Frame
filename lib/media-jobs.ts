@@ -1,7 +1,8 @@
-import { MediaJobKind, TranscriptStatus, type Prisma } from '@prisma/client';
+import { MediaJobKind, Prisma, TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
 import { shouldEnqueueProbe, shouldEnqueueTranscribe, type ReviewKind } from '@/lib/review-kind';
+import { AUTO_DETECT_TRANSCRIPT_LANGUAGE } from '@/lib/transcription/language';
 import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 
 export async function enqueueMediaJob(
@@ -38,7 +39,7 @@ export async function enqueueJobsForNewVersion(options: {
   }
 
   if (shouldEnqueueTranscribe(kind, providerId, isTranscriptionFeatureEnabled())) {
-    const language = 'en';
+    const language = AUTO_DETECT_TRANSCRIPT_LANGUAGE;
     const transcript = await db.transcript.upsert({
       where: { versionId_language: { versionId, language } },
       create: {
@@ -51,6 +52,10 @@ export async function enqueueJobsForNewVersion(options: {
         status: TranscriptStatus.PENDING,
         error: null,
         provider: getTranscriptionProviderName(),
+        translationLanguage: null,
+        translationStatus: null,
+        translationError: null,
+        translatedTexts: Prisma.DbNull,
       },
     });
     await enqueueMediaJob(versionId, MediaJobKind.EXTRACT_AUDIO);
@@ -58,6 +63,6 @@ export async function enqueueJobsForNewVersion(options: {
       language,
       transcriptId: transcript.id,
     });
-    scheduleVersionTranscription(versionId, language);
+    scheduleVersionTranscription(versionId, language, transcript.id);
   }
 }

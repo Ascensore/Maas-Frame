@@ -27,6 +27,14 @@ export interface TranscriptionProvider {
   transcribe(input: { audioPath: string; language?: string }): Promise<TranscriptionResult>;
 }
 
+function providerLanguage(language?: string): string | undefined {
+  const normalized = language?.trim().toLowerCase();
+  if (!normalized || normalized === 'und' || normalized === 'auto') return undefined;
+  const primary = normalized.split('-')[0] ?? '';
+  if (primary.length < 2 || primary.length > 3) return undefined;
+  return primary;
+}
+
 function groupWordsIntoCues(words: TranscriptWord[]): TranscriptCue[] {
   if (words.length === 0) return [];
 
@@ -71,7 +79,12 @@ const deepgramProvider: TranscriptionProvider = {
       utterances: 'true',
       punctuate: 'true',
     });
-    if (input.language) params.set('language', input.language);
+    const language = providerLanguage(input.language);
+    if (language) {
+      params.set('language', language);
+    } else {
+      params.set('detect_language', 'true');
+    }
 
     const response = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
       method: 'POST',
@@ -87,8 +100,10 @@ const deepgramProvider: TranscriptionProvider = {
     }
 
     const body = (await response.json()) as {
+      metadata?: { detected_language?: string };
       results?: {
         channels?: Array<{
+          detected_language?: string;
           alternatives?: Array<{
             transcript?: string;
             words?: Array<{ word?: string; start?: number; end?: number }>;
@@ -106,8 +121,11 @@ const deepgramProvider: TranscriptionProvider = {
         text: word.word as string,
       }));
 
+    const detected =
+      body.results?.channels?.[0]?.detected_language ?? body.metadata?.detected_language;
+
     return {
-      language: input.language ?? 'en',
+      language: detected ?? language ?? 'und',
       segments: groupWordsIntoCues(mapped),
     };
   },
@@ -130,7 +148,9 @@ const openaiProvider: TranscriptionProvider = {
     form.set('model', 'whisper-1');
     form.set('response_format', 'verbose_json');
     form.set('timestamp_granularities[]', 'word');
-    if (input.language) form.set('language', input.language);
+    form.set('temperature', '0');
+    const language = providerLanguage(input.language);
+    if (language) form.set('language', language);
     form.set('file', new Blob([audio], { type: 'audio/wav' }), fileName);
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -159,13 +179,13 @@ const openaiProvider: TranscriptionProvider = {
 
     if (words.length > 0) {
       return {
-        language: body.language ?? input.language ?? 'en',
+        language: body.language ?? language ?? 'und',
         segments: groupWordsIntoCues(words),
       };
     }
 
     return {
-      language: body.language ?? input.language ?? 'en',
+      language: body.language ?? language ?? 'und',
       segments: (body.segments ?? [])
         .filter((segment) => typeof segment.text === 'string' && segment.text.trim())
         .map((segment) => ({
@@ -184,7 +204,7 @@ export function createWhisperLocalProvider(
   return {
     name: 'whisper-local',
     transcribe(input) {
-      return runLocal(input.audioPath, input.language ?? 'en');
+      return runLocal(input.audioPath, input.language ?? '');
     },
   };
 }

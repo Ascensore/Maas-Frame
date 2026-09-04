@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auth, computeProjectAccess, projectAccessInclude } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
@@ -6,6 +7,7 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { getShareSessionFromRequest } from '@/lib/share-session';
 import { validateShareLinkAccess } from '@/lib/share-links';
 import { logError } from '@/lib/logger';
+import { shapeTranscriptTranslation } from '@/lib/transcript-translation';
 
 export { POST } from '@/app/api/v1/versions/[versionId]/transcript/route';
 
@@ -20,6 +22,10 @@ function shapeTranscript(transcript: {
   provider: string;
   status: string;
   error: string | null;
+  translationLanguage?: string | null;
+  translationStatus?: TranscriptStatus | null;
+  translationError?: string | null;
+  translatedTexts?: unknown;
   segments: Array<{
     id: string;
     startSec: number;
@@ -37,6 +43,12 @@ function shapeTranscript(transcript: {
     provider: transcript.provider,
     status: transcript.status,
     error: transcript.error,
+    translation: shapeTranscriptTranslation({
+      translationLanguage: transcript.translationLanguage ?? null,
+      translationStatus: transcript.translationStatus ?? null,
+      translationError: transcript.translationError ?? null,
+      translatedTexts: transcript.translatedTexts,
+    }),
     segments: transcript.segments.map((segment) => ({
       id: segment.id,
       startSec: segment.startSec,

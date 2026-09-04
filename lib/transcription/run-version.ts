@@ -6,6 +6,12 @@ import { db } from '@/lib/db';
 import { logError } from '@/lib/logger';
 import { canAutoTranscribe } from '@/lib/review-kind';
 import { transcribeWithCloudFallback } from '@/lib/transcription/fallback';
+import {
+  AUTO_DETECT_TRANSCRIPT_LANGUAGE,
+  isAutoDetectLanguage,
+  languageForProvider,
+  normalizeDetectedLanguage,
+} from '@/lib/transcription/language';
 import { downloadVersionMedia, sourceFileExtension } from '@/lib/transcription/source';
 
 const TERMINAL_JOB_KINDS: MediaJobKind[] = [MediaJobKind.EXTRACT_AUDIO, MediaJobKind.TRANSCRIBE];
@@ -36,6 +42,32 @@ async function markJobs(
   });
 }
 
+async function findTranscript(options: {
+  versionId: string;
+  language?: string;
+  transcriptId?: string;
+}) {
+  if (options.transcriptId) {
+    return db.transcript.findUnique({
+      where: { id: options.transcriptId },
+      select: { id: true, status: true, language: true },
+    });
+  }
+
+  if (options.language && !isAutoDetectLanguage(options.language)) {
+    return db.transcript.findUnique({
+      where: { versionId_language: { versionId: options.versionId, language: options.language } },
+      select: { id: true, status: true, language: true },
+    });
+  }
+
+  return db.transcript.findFirst({
+    where: { versionId: options.versionId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, status: true, language: true },
+  });
+}
+
 /**
  * Transcribe a file-backed version inside the Next.js process. The media worker
  * is the long-term home for whisper-local; until one is attached to this
@@ -45,8 +77,10 @@ async function markJobs(
 export async function runTranscriptionForVersion(options: {
   versionId: string;
   language?: string;
+  transcriptId?: string;
 }): Promise<void> {
-  const language = options.language?.trim().toLowerCase() || 'en';
+  const requestedLanguage =
+    options.language?.trim().toLowerCase() || AUTO_DETECT_TRANSCRIPT_LANGUAGE;
   const version = await db.videoVersion.findUnique({
     where: { id: options.versionId },
     select: {
@@ -59,9 +93,10 @@ export async function runTranscriptionForVersion(options: {
   });
   if (!version) return;
 
-  const transcript = await db.transcript.findUnique({
-    where: { versionId_language: { versionId: version.id, language } },
-    select: { id: true, status: true },
+  const transcript = await findTranscript({
+    versionId: version.id,
+    language: requestedLanguage,
+    transcriptId: options.transcriptId,
   });
   if (!transcript) return;
 
@@ -97,11 +132,16 @@ export async function runTranscriptionForVersion(options: {
     const audioPath = join(dir, `source${sourceFileExtension(media.fileName)}`);
     await writeFile(audioPath, media.bytes);
 
+    const providerLanguage = languageForProvider(requestedLanguage);
     const { provider, result } = await transcribeWithCloudFallback({
       audioPath,
-      language,
+      ...(providerLanguage ? { language: providerLanguage } : {}),
     });
 
+    const detectedLanguage = normalizeDetectedLanguage(
+      result.language,
+      providerLanguage ?? AUTO_DETECT_TRANSCRIPT_LANGUAGE
+    );
     const searchText = result.segments.map((segment) => segment.text).join(' ');
     await db.$transaction(async (tx) => {
       await tx.transcript.update({
@@ -109,8 +149,13 @@ export async function runTranscriptionForVersion(options: {
         data: {
           status: TranscriptStatus.READY,
           provider,
+          language: detectedLanguage,
           searchText,
           error: null,
+          translationLanguage: null,
+          translationStatus: null,
+          translationError: null,
+          translatedTexts: Prisma.DbNull,
         },
       });
       await tx.transcriptSegment.deleteMany({ where: { transcriptId: transcript.id } });
@@ -134,7 +179,10 @@ export async function runTranscriptionForVersion(options: {
     logError('Inline transcription failed:', error);
     await db.transcript.update({
       where: { id: transcript.id },
-      data: { status: TranscriptStatus.FAILED, error: message },
+      data: {
+        status: TranscriptStatus.FAILED,
+        error: message,
+      },
     });
     await markJobs(version.id, MediaJobStatus.FAILED, message);
   } finally {

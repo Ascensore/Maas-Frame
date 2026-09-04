@@ -26,6 +26,10 @@ export async function saveReadyTranscript(input: {
         status: TranscriptStatus.READY,
         searchText,
         error: null,
+        translationLanguage: null,
+        translationStatus: null,
+        translationError: null,
+        translatedTexts: Prisma.DbNull,
       },
     });
 

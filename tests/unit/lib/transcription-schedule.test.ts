@@ -29,7 +29,11 @@ describe('scheduleVersionTranscription', () => {
     const work = afterMock.mock.calls[0]?.[0] as () => Promise<unknown>;
     await work();
 
-    expect(runMock).toHaveBeenCalledWith({ versionId: 'ver_inline', language: 'en' });
+    expect(runMock).toHaveBeenCalledWith({
+      versionId: 'ver_inline',
+      language: 'en',
+      transcriptId: undefined,
+    });
     expect(runMock).toHaveBeenCalledTimes(1);
   });
 
@@ -40,7 +44,25 @@ describe('scheduleVersionTranscription', () => {
 
     scheduleVersionTranscription('ver_fallback', 'fr');
 
-    expect(runMock).toHaveBeenCalledWith({ versionId: 'ver_fallback', language: 'fr' });
+    expect(runMock).toHaveBeenCalledWith({
+      versionId: 'ver_fallback',
+      language: 'fr',
+      transcriptId: undefined,
+    });
     expect(runMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults a one-argument call to undetermined, not English', async () => {
+    afterMock.mockImplementation(() => undefined);
+    scheduleVersionTranscription('ver_default');
+
+    const work = afterMock.mock.calls[0]?.[0] as () => Promise<unknown>;
+    await work();
+
+    expect(runMock).toHaveBeenCalledWith({
+      versionId: 'ver_default',
+      language: 'und',
+      transcriptId: undefined,
+    });
   });
 });

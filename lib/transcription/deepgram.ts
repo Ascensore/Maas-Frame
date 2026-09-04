@@ -1,4 +1,5 @@
 import { mediaTypeFromFileName } from '@/lib/transcription/media-type';
+import { AUTO_DETECT_TRANSCRIPT_LANGUAGE, languageForProvider } from '@/lib/transcription/language';
 import type { TranscriptionProvider, TranscriptionResult } from '@/lib/transcription/types';
 
 export const deepgramProvider: TranscriptionProvider = {
@@ -13,13 +14,18 @@ export const deepgramProvider: TranscriptionProvider = {
     const path = await import('node:path');
     const audio = await fs.readFile(input.audioPath);
     const fileName = path.basename(input.audioPath) || 'audio.wav';
+    const language = languageForProvider(input.language);
     const params = new URLSearchParams({
       model: 'nova-2',
       smart_format: 'true',
       utterances: 'true',
       punctuate: 'true',
     });
-    if (input.language) params.set('language', input.language);
+    if (language) {
+      params.set('language', language);
+    } else {
+      params.set('detect_language', 'true');
+    }
 
     const response = await fetch(`https://api.deepgram.com/v1/listen?${params.toString()}`, {
       method: 'POST',
@@ -35,8 +41,10 @@ export const deepgramProvider: TranscriptionProvider = {
     }
 
     const body = (await response.json()) as {
+      metadata?: { detected_language?: string };
       results?: {
         channels?: Array<{
+          detected_language?: string;
           alternatives?: Array<{
             transcript?: string;
             words?: Array<{ word?: string; start?: number; end?: number }>;
@@ -54,8 +62,11 @@ export const deepgramProvider: TranscriptionProvider = {
         text: word.word as string,
       }));
 
+    const detected =
+      body.results?.channels?.[0]?.detected_language ?? body.metadata?.detected_language;
+
     return {
-      language: input.language ?? 'en',
+      language: detected ?? language ?? AUTO_DETECT_TRANSCRIPT_LANGUAGE,
       segments: groupWordsIntoCues(mapped),
     };
   },
