@@ -1345,6 +1345,395 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Task 3b: Overlapping takes are spliced, never dropped wholesale
+
+**Files:**
+
+- Modify: `lib/rough-cut/beats.ts` (`cutWordsFromBeat`)
+- Modify: `lib/rough-cut/takes.ts` (`beatTokens`, `coverageOf`, `resolveTakes`)
+- Modify: `lib/rough-cut/assemble-job.ts` (`editorialPass` uses `resolveTakes`)
+- Test: `tests/unit/lib/rough-cut-beats.test.ts`, `tests/unit/lib/rough-cut-takes.test.ts`, `tests/unit/lib/rough-cut-assemble-job.test.ts`
+
+Context: take groups now form through containment and script lines (Task 3), so a group can hold takes of different extents: a long take covering three script lines and a later retake of one of them; a take whose tail was re-said; two adjacent beats that both contain the same line (a flubbed reading followed by the good one). Keeping exactly one beat per group then either drops content (the long take loses its other lines) or, if the long take wins, keeps the flubbed line. The rule below keeps every line exactly once: the longest take anchors the group, a sub-take replaces the anchor's span only when it is better and the span sits at an edge of the anchor (so the program order stays the source order), an adjacent overlap is trimmed off the lower-ranked beat, and anything else that would duplicate a line is rejected with a reason that says which take covers it.
+
+- [ ] **Step 1: Failing tests**
+
+`tests/unit/lib/rough-cut-beats.test.ts` (create if absent, else append), using the file's timed-segment helper or this one:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { analyseSpeech, cutWordsFromBeat, type Beat } from '@/lib/rough-cut/beats';
+import { SILENCE_AGGRESSIVENESS } from '@/lib/rough-cut/brief';
+
+function beatOf(text: string, at = 0): Beat {
+  const words = text.split(' ').map((word, index) => ({
+    start: at + index,
+    end: at + index + 0.8,
+    text: word,
+  }));
+  return analyseSpeech(
+    [
+      {
+        startSec: words[0]!.start,
+        endSec: words[words.length - 1]!.end,
+        speaker: null,
+        text,
+        words,
+      },
+    ],
+    { versionId: 'v', durationSeconds: 1000, policy: SILENCE_AGGRESSIVENESS.low }
+  ).beats[0]!;
+}
+
+describe('cutWordsFromBeat', () => {
+  it('removes a suffix span, shortens the beat and its run, and reports the removed range', () => {
+    const beat = beatOf('one two three four five six');
+    const result = cutWordsFromBeat(beat, [{ wordStart: 4, wordEnd: 6 }]);
+    expect(result.beat?.words.map((word) => word.text)).toEqual(['one', 'two', 'three', 'four']);
+    expect(result.beat?.end).toBe(3.8);
+    expect(result.beat?.runs).toEqual([{ start: 0, end: 3.8 }]);
+    expect(result.removed).toEqual([{ start: 4, end: 5.8, text: 'five six' }]);
+  });
+
+  it('splits a run around a middle span and returns null when nothing is left', () => {
+    const beat = beatOf('one two three four five six');
+    const middle = cutWordsFromBeat(beat, [{ wordStart: 2, wordEnd: 4 }]);
+    expect(middle.beat?.runs).toEqual([
+      { start: 0, end: 1.8 },
+      { start: 4, end: 5.8 },
+    ]);
+    expect(middle.beat?.words.map((word) => word.text)).toEqual(['one', 'two', 'five', 'six']);
+    expect(cutWordsFromBeat(beat, [{ wordStart: 0, wordEnd: 6 }]).beat).toBeNull();
+  });
+});
+```
+
+`tests/unit/lib/rough-cut-takes.test.ts`, a new describe (reuse `candidate`, `EN`, `MEDIUM`; import `resolveTakes` and `coverageOf` from `@/lib/rough-cut/takes`):
+
+```ts
+describe('resolveTakes', () => {
+  const options = {
+    fillers: EN,
+    ranking: ['cleanliness', 'energy'] as const,
+    longPauseSeconds: MEDIUM.maxKeptGapInsideBeatSeconds,
+  };
+
+  it('measures how much of a beat a reference already says and where', () => {
+    const tokens = ['we', 'help', 'founders', 'raise', 'faster', 'thanks', 'for', 'watching'];
+    const reference = new Set(['thanks for watching']);
+    expect(coverageOf(tokens, reference)).toEqual({ fraction: 3 / 8, first: 5, last: 7 });
+    expect(coverageOf(tokens, new Set())).toEqual({ fraction: 0, first: null, last: null });
+  });
+
+  it('replaces the tail of a long take with a cleaner retake of that tail', () => {
+    const long = candidate(
+      0,
+      'in this video we look at how um founders raise their seed round faster than before'
+    );
+    const retake = candidate(30, 'how founders raise their seed round faster than before');
+    const [resolution] = resolveTakes([long, retake], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.kept.map((entry) => entry.index)).toEqual([0, 1]);
+    const spliced = resolution?.kept.find((entry) => entry.index === 0)?.cuts;
+    expect(spliced).toHaveLength(1);
+    expect(spliced?.[0]).toMatchObject({ coveredBy: 1 });
+    expect(long.beat.words[spliced![0]!.wordStart]?.text).toBe('how');
+    expect(spliced?.[0]?.wordEnd).toBe(long.beat.words.length);
+  });
+
+  it('rejects a retake of a line in the middle of a longer take, keeping the long take intact', () => {
+    const long = candidate(
+      0,
+      'we help founders raise faster our product does the heavy lifting thanks for watching everyone'
+    );
+    const retake = candidate(40, 'our product does the heavy lifting');
+    const [resolution] = resolveTakes([long, retake], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.kept).toEqual([{ index: 0, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 1, coveredBy: 0 }]);
+  });
+
+  it('trims the flubbed line off the lower-ranked of two adjacent beats that share it', () => {
+    const flub = candidate(
+      0,
+      'we help founders raise faster our um product does um the heavy lifting'
+    );
+    const good = candidate(12, 'our product does the heavy lifting thanks for watching everyone');
+    const [resolution] = resolveTakes([flub, good], { ...options, ranking: [...options.ranking] });
+    expect(resolution?.rejected).toEqual([]);
+    const trimmed = resolution?.kept.find((entry) => entry.index === 0)?.cuts;
+    expect(trimmed).toHaveLength(1);
+    expect(flub.beat.words[trimmed![0]!.wordStart]?.text).toBe('our');
+    expect(resolution?.kept.find((entry) => entry.index === 1)?.cuts).toEqual([]);
+  });
+
+  it('still rejects a plain duplicate and keeps the cleaner one', () => {
+    const first = candidate(0, 'we help um founders raise faster today');
+    const second = candidate(10, 'we help founders raise faster today');
+    const [resolution] = resolveTakes([first, second], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+});
+```
+
+`tests/unit/lib/rough-cut-assemble-job.test.ts`, in the editorial-pass describe (use the file's `spokenSegment`/`briefSnapshotFor` helpers and the talking-head brief):
+
+```ts
+it('splices a re-said tail out of the long take and reports it as replaced', async () => {
+  const h = harness({
+    layout: 'LINEAR',
+    createdAt: ONE_MINUTE_AGO,
+    briefSnapshot: TALKING_HEAD,
+    videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 120 })],
+    transcripts: [
+      { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+    ],
+    segments: {
+      't-a': [
+        spokenSegment(
+          1,
+          'in this video we look at how um founders raise their seed round faster than before'
+        ),
+        spokenSegment(30, 'how founders raise their seed round faster than before'),
+      ],
+    },
+  });
+
+  await assembleRoughCut(h.deps, 'cut-1');
+
+  const result = h.persisted();
+  const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+  expect(rejected).toHaveLength(1);
+  expect(rejected?.[0]?.reason.summary).toMatch(/replaced by the take at 30/i);
+  expect(rejected?.[0]?.transcriptText).toBe(
+    'how um founders raise their seed round faster than before'
+  );
+  expect(result?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual([
+    [1, expect.any(Number)],
+    [30, expect.any(Number)],
+  ]);
+  const firstOut = result?.decisions?.edits[0]?.outSeconds ?? 0;
+  expect(firstOut).toBeLessThan(1 + 6 * 0.5);
+});
+
+it('warns about a script it cannot read', async () => {
+  const h = harness({
+    layout: 'LINEAR',
+    createdAt: ONE_MINUTE_AGO,
+    briefSnapshot: TALKING_HEAD,
+    script: 'ok\nno',
+    videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+    transcripts: [
+      { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+    ],
+    segments: { 't-a': [spokenSegment(1, 'we help founders raise faster')] },
+  });
+
+  await assembleRoughCut(h.deps, 'cut-1');
+
+  expect(h.persisted()?.warnings.map((warning) => warning.code)).toContain('script-unreadable');
+});
+```
+
+Work the assemble-job fixture numbers out against `spokenSegment`'s word spacing before trusting the `firstOut` bound: the point of that assertion is that the first edit ends before the word `how` (the sixth content word, index 5 in the spoken text), so compute its start from the helper and assert `firstOut` is less than or equal to it.
+
+Run the three test files → FAIL.
+
+- [ ] **Step 2: `cutWordsFromBeat`**
+
+Append to `lib/rough-cut/beats.ts`:
+
+```ts
+export type WordSpan = { wordStart: number; wordEnd: number };
+
+/**
+ * Remove word spans (index ranges, end exclusive) from a beat: the words go,
+ * the kept runs are cut around the removed time ranges, and the beat's
+ * extent shrinks to the words that remain. Null when nothing remains.
+ */
+export function cutWordsFromBeat(
+  beat: Beat,
+  spans: WordSpan[]
+): { beat: Beat | null; removed: Array<{ start: number; end: number; text: string }> } {
+  const drop = new Set<number>();
+  const removed: Array<{ start: number; end: number; text: string }> = [];
+  for (const span of spans) {
+    const first = Math.max(0, span.wordStart);
+    const last = Math.min(beat.words.length, span.wordEnd);
+    if (last <= first) continue;
+    for (let index = first; index < last; index += 1) drop.add(index);
+    const words = beat.words.slice(first, last);
+    removed.push({
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      text: words.map((word) => word.text.trim()).join(' '),
+    });
+  }
+  const words = beat.words.filter((_, index) => !drop.has(index));
+  if (words.length === 0) return { beat: null, removed };
+  let runs = beat.runs.map((run) => ({ ...run }));
+  for (const range of removed) {
+    const next: SpeechRun[] = [];
+    for (const run of runs) {
+      if (range.end <= run.start + EPSILON || range.start >= run.end - EPSILON) {
+        next.push(run);
+        continue;
+      }
+      if (range.start > run.start + EPSILON) next.push({ start: run.start, end: range.start });
+      if (range.end < run.end - EPSILON) next.push({ start: range.end, end: run.end });
+    }
+    runs = next;
+  }
+  return {
+    beat: {
+      ...beat,
+      words,
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      runs: runs.filter((run) => run.end - run.start > EPSILON),
+    },
+    removed,
+  };
+}
+```
+
+Note in the suffix test the run end becomes 3.8 because the removed range starts at 4 (the fifth word's start) and the run was 0–5.8; cutting at `range.start` leaves 0–4, not 0–3.8. Decide which is right: the kept speech should end where the last kept word ends, so after cutting, clamp each run's end to the last kept word that lies inside it and its start to the first kept word inside it. Implement that clamp (walk kept words per run) and keep the test's 3.8 expectation.
+
+- [ ] **Step 3: `beatTokens`, `coverageOf`, `resolveTakes`**
+
+In `lib/rough-cut/takes.ts`:
+
+```ts
+/** A beat's content tokens with the word each came from (one token per word; fillers and punctuation-only words skipped). */
+export function beatTokens(
+  beat: Beat,
+  fillers: ReadonlySet<string>
+): Array<{ token: string; wordIndex: number }> {
+  const out: Array<{ token: string; wordIndex: number }> = [];
+  beat.words.forEach((word, wordIndex) => {
+    const token = normalizeWord(word.text);
+    if (!token || fillers.has(token)) return;
+    out.push({ token, wordIndex });
+  });
+  return out;
+}
+
+export type Coverage = { fraction: number; first: number | null; last: number | null };
+
+/** Which of a beat's tokens a reference already says: every token inside a trigram the reference contains. */
+export function coverageOf(tokens: string[], reference: ReadonlySet<string>): Coverage {
+  const marked = new Array<boolean>(tokens.length).fill(false);
+  for (let index = 0; index + 2 < tokens.length; index += 1) {
+    if (!reference.has(`${tokens[index]} ${tokens[index + 1]} ${tokens[index + 2]}`)) continue;
+    marked[index] = marked[index + 1] = marked[index + 2] = true;
+  }
+  if (tokens.length < 3 && tokens.length > 0 && reference.has(tokens.join(' '))) marked.fill(true);
+  const count = marked.filter(Boolean).length;
+  return {
+    fraction: tokens.length === 0 ? 0 : count / tokens.length,
+    first: count === 0 ? null : marked.indexOf(true),
+    last: count === 0 ? null : marked.lastIndexOf(true),
+  };
+}
+
+/** Share of a beat the reference must say before the beat counts as already covered. */
+export const TAKE_COVERED_WHOLE = 0.8;
+/** Below this share of a beat, an overlap is noise, not a shared line. */
+export const TAKE_COVERED_NONE = 0.2;
+
+export type SpliceCut = WordSpan & { coveredBy: number };
+export type TakeResolution = {
+  group: number[];
+  kept: Array<{ index: number; cuts: SpliceCut[] }>;
+  rejected: Array<{ index: number; coveredBy: number }>;
+  scores: Map<number, TakeScores>;
+};
+```
+
+`resolveTakes(candidates, options)` where options = `selectTakes`'s options plus `scriptLines?: ScriptLine[]` and `alignments?: ScriptAlignment[]` (from `./script`; index-aligned with candidates):
+
+1. `groups = groupTakes(candidates, options)`; compute `scores` per member as `selectTakes` does; `rank = compareBy(ranking, scores)`.
+2. Per group: `tokensOf(i)` = `beatTokens(candidates[i].beat, fillers)`; `sizeOf(i)` = `alignments?.[i]?.lines.length || tokensOf(i).length` when a script exists, else the token count. `order = [...group].sort((a, b) => sizeOf(b) - sizeOf(a) || rank(a, b))`.
+3. `kept: Array<{ index, cuts }> = []`. For each `m` of `order`:
+   - if `kept` is empty → push `{ index: m, cuts: [] }`, continue.
+   - `reference` = union over kept `k` of `trigrams(tokensOf(k).map(t => t.token))` and, when a script exists, `scriptLines[line].shingles` for every `line` in `alignments[k].lines`.
+   - `cov = coverageOf(tokensOf(m).map(t => t.token), reference)`.
+   - `none`: `cov.fraction < TAKE_COVERED_NONE` → keep whole.
+   - `whole`: `cov.fraction >= TAKE_COVERED_WHOLE` or the uncovered tokens number fewer than `TAKE_MIN_CONTENT_TOKENS` → find `x` = the kept member sharing the most trigrams with `m`. If `rank(m, x) < 0` (m is better) then compute `back = coverageOf(tokensOf(x), trigrams(tokensOf(m)) ∪ script shingles of m's lines)`; if `back` is partial (not whole, not none) and touches an edge of `x` (`back.first === 0` or `back.last === tokens.length - 1`, not both) and leaves at least `TAKE_MIN_CONTENT_TOKENS` tokens → push a cut on `x` covering word indices `[tokensOf(x)[back.first].wordIndex, tokensOf(x)[back.last].wordIndex + 1)` extended to the beat edge (prefix: `wordStart = 0`; suffix: `wordEnd = beat.words.length`) with `coveredBy: m`, and keep `m` whole. Otherwise reject `m` with `coveredBy: x`.
+   - `partial` (in between): if `cov.first === 0` (prefix) or `cov.last === tokens.length - 1` (suffix), and the uncovered remainder has at least `TAKE_MIN_CONTENT_TOKENS` tokens → keep `m` with a cut over the covered span extended to that edge (`coveredBy` = the kept member sharing the most trigrams with the span). If the span is in the middle → find `x` as above; if `coverageOf(tokensOf(x), trigrams(tokensOf(m)))` is whole (x says nothing beyond what m says) → move `x` from `kept` to `rejected` with `coveredBy: m` and keep `m` whole; else keep `m` whole (a duplicate line remains; the caller warns).
+4. Return `{ group, kept (sorted by timelineStart of the candidate), rejected, scores }`. Keep `selectTakes` as is (the energy pre-pass uses it).
+
+Export `resolveTakes` and the new helpers. `rejectedTakeCuts` gets a sibling `replacedTakeCut(candidates, keptIndex, coveredBy, removed: { start, end, text })` returning a `SourceCut` with code `REJECTED_TAKE`, summary `Replaced by the take at ${timelineStart of coveredBy in seconds, one decimal}s (“${excerpt of that take, 60}”)`, and `text: removed.text`.
+
+- [ ] **Step 4: `editorialPass` uses the resolution**
+
+Replace the `selectTakes` loop that builds `rejected` with:
+
+```ts
+const replacements = new Map<Beat, Beat | null>();
+let duplicatesKept = 0;
+for (const resolution of resolveTakes(candidates, {
+  ...options_,
+  scriptLines: useScript ? scriptLines : undefined,
+  alignments: useScript ? alignments : undefined,
+})) {
+  for (const entry of resolution.rejected) {
+    const candidate = candidates[entry.index]!;
+    cuts.push(rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution));
+    replacements.set(candidate.beat, null);
+  }
+  for (const entry of resolution.kept) {
+    if (entry.cuts.length === 0) continue;
+    const candidate = candidates[entry.index]!;
+    const result = cutWordsFromBeat(candidate.beat, entry.cuts);
+    result.removed.forEach((removed, position) => {
+      cuts.push(replacedTakeCut(candidates, entry.index, entry.cuts[position]!.coveredBy, removed));
+    });
+    replacements.set(candidate.beat, result.beat);
+  }
+  duplicatesKept += resolution.duplicatesKept ?? 0;
+}
+for (const [versionId, beats] of beatsByVersion) {
+  beatsByVersion.set(
+    versionId,
+    beats.flatMap((beat) => {
+      if (!replacements.has(beat)) return [beat];
+      const replacement = replacements.get(beat);
+      return replacement ? [replacement] : [];
+    })
+  );
+}
+if (duplicatesKept > 0)
+  warnings.push({
+    code: 'take-overlap-kept',
+    message: `${duplicatesKept} line${duplicatesKept === 1 ? ' is' : 's are'} said twice in the cut because the takes overlap in the middle; review them`,
+  });
+```
+
+`rejectedTakeCut(candidates, index, coveredBy, resolution)` is the per-member form of today's `rejectedTakeCuts` (same summary text, `Take i of n; kept take j (“…”)` with positions from `resolution.group`). Have `resolveTakes` count and return `duplicatesKept` on each resolution. The `keptAlignments` used for the script coverage warnings become the alignments of candidates whose beat was not replaced by null. Delete now-unused code (`rejectedTakeCuts` if nothing uses it; update its test if you remove it).
+
+Run the three test files, then `bun run test`, `bun run check`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib tests
+git commit -m "feat(rough-cut): splice overlapping takes instead of dropping one wholesale
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 4: Reviewer overrides and `applyOverrides`
 
 **Files:**
