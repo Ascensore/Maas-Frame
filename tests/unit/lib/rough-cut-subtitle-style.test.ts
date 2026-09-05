@@ -51,6 +51,55 @@ describe('parseBurnInStyle', () => {
     expect(parseBurnInStyle({ extra: true }).ok).toBe(false);
     expect(parseBurnInStyle(undefined).ok).toBe(true);
   });
+
+  it('refuses a value just outside every bound', () => {
+    // Each of these is one step past a limit, so widening or dropping that
+    // limit is what makes the case go green — the accepted neighbour below
+    // keeps the bound from simply being tightened instead.
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['slower than half speed', { playbackRate: 0.25 }],
+      ['a font size over the ceiling', { fontSize: 121 }],
+      ['a fractional font size', { fontSize: 30.5 }],
+      ['an outline thicker than 6', { outlineWidth: 7 }],
+      ['an opacity over 1', { backgroundOpacity: 1.1 }],
+      ['a margin past the frame', { marginVertical: 401 }],
+      ['more than 14 words to a cue', { maxWordsPerCue: 15 }],
+      ['a cue shorter than half a second', { maxCueSeconds: 0.4 }],
+      ['a colour name instead of a hex triplet', { outlineColor: 'black' }],
+    ];
+    for (const [why, input] of refused) {
+      expect([why, parseBurnInStyle(input).ok]).toEqual([why, false]);
+    }
+    // The value on the legal side of each of those bounds is accepted.
+    expect(
+      parseBurnInStyle({
+        playbackRate: 0.5,
+        fontSize: 120,
+        outlineWidth: 6,
+        backgroundOpacity: 1,
+        marginVertical: 400,
+        maxWordsPerCue: 14,
+        maxCueSeconds: 0.5,
+        outlineColor: '#000000',
+      }).ok
+    ).toBe(true);
+  });
+});
+
+describe('BURN_IN_FONTS', () => {
+  it('offers the six families the worker image installs', () => {
+    // Written out rather than mapped from the constant: the families are what
+    // libass looks up by name, and a typo here has to fail rather than agree
+    // with itself. Keep in step with the font packages in worker/Dockerfile.
+    expect(BURN_IN_FONTS.map((font) => [font.id, font.family, font.label])).toEqual([
+      ['dejavu-sans', 'DejaVu Sans', 'DejaVu Sans'],
+      ['liberation-sans', 'Liberation Sans', 'Liberation Sans (Arial-like)'],
+      ['roboto', 'Roboto', 'Roboto'],
+      ['open-sans', 'Open Sans', 'Open Sans'],
+      ['liberation-serif', 'Liberation Serif', 'Liberation Serif (Times-like)'],
+      ['dejavu-sans-mono', 'DejaVu Sans Mono', 'DejaVu Sans Mono'],
+    ]);
+  });
 });
 
 describe('regroupWordsIntoCues', () => {
@@ -132,6 +181,58 @@ describe('ASS output', () => {
     expect(BURN_IN_FONTS.find((font) => font.id === 'roboto')?.family).toBe('Roboto');
   });
 
+  it('writes the operator\u2019s colours, size and margin into the style line unscaled at 1080', () => {
+    const doc = buildAssDocument(
+      [],
+      style({
+        position: 'bottom',
+        textColor: '#FFCC00',
+        outlineColor: '#101820',
+        fontSize: 64,
+        marginVertical: 120,
+      }),
+      { width: 1920, height: 1080 }
+    );
+    // Fields in order: name, font, size, primary, secondary, outline, back,
+    // bold, italic, underline, strikeout, scaleX, scaleY, spacing, angle,
+    // border style, outline width, shadow, alignment (2 = bottom centre),
+    // marginL, marginR, marginV, encoding. ASS colours are &HAABBGGRR, so
+    // #FFCC00 comes out with its bytes reversed.
+    expect(doc).toContain(
+      'Style: Default,DejaVu Sans,64,&H0000CCFF,&H0000CCFF,&H00201810,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,40,40,120,1'
+    );
+  });
+
+  it('writes a whole document a libass build can read', () => {
+    // Pinned end to end so the section order, both Format lines and the
+    // trailing newline cannot drift; libass reads the Format line to know what
+    // the Style and Dialogue fields mean.
+    expect(
+      buildAssDocument([{ start: 0, end: 1.2, text: 'Hello' }], style(), {
+        width: 1920,
+        height: 1080,
+      })
+    ).toBe(
+      [
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        'PlayResX: 1920',
+        'PlayResY: 1080',
+        'WrapStyle: 0',
+        'ScaledBorderAndShadow: yes',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        'Style: Default,DejaVu Sans,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,40,40,60,1',
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        'Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,Hello',
+        '',
+      ].join('\n')
+    );
+  });
+
   it('draws an outline instead of a box when the background is transparent', () => {
     const doc = buildAssDocument([], style({ outlineWidth: 4, position: 'center' }), {
       width: 1920,
@@ -168,6 +269,120 @@ describe('burnInFfmpegArgs', () => {
     expect(escapeFfmpegFilterPath("/a'b,c[d]")).toBe("/a\\'b\\,c\\[d\\]");
     // A backslash is doubled first, so the escapes added after it are not re-escaped.
     expect(escapeFfmpegFilterPath('/a\\b.ass')).toBe('/a\\\\b.ass');
+  });
+
+  it('spells out every encoder argument at normal speed and at another', () => {
+    // The encode settings are the deliverable, not an implementation detail:
+    // a proxy the browser cannot play is what a dropped -pix_fmt or a missing
+    // +faststart produces, and neither shows up as a failed job.
+    expect(burnInFfmpegArgs('/tmp/in.mp4', '/tmp/subs.ass', '/tmp/out.mp4', style())).toEqual([
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      '/tmp/in.mp4',
+      '-map',
+      '0:v:0',
+      // Optional, so a silent source still encodes at normal speed.
+      '-map',
+      '0:a:0?',
+      '-vf',
+      "ass='/tmp/subs.ass'",
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-ac',
+      '2',
+      '-movflags',
+      '+faststart',
+      '/tmp/out.mp4',
+    ]);
+
+    expect(
+      burnInFfmpegArgs(
+        '/tmp/in.mp4',
+        '/tmp/subs.ass',
+        '/tmp/out.mp4',
+        style({ playbackRate: 1.25 })
+      )
+    ).toEqual([
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      '/tmp/in.mp4',
+      '-filter_complex',
+      "[0:v]setpts=PTS/1.25,ass='/tmp/subs.ass'[v];[0:a]atempo=1.25[a]",
+      '-map',
+      '[v]',
+      '-map',
+      '[a]',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '20',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-ac',
+      '2',
+      '-movflags',
+      '+faststart',
+      '/tmp/out.mp4',
+    ]);
+  });
+
+  it('leaves the audio stream unnamed when the source is silent', () => {
+    // A filtergraph has no optional inputs: `[0:a]` on a source with no audio
+    // stream fails the whole render, which is how a silent clip used to come
+    // back as a failed job at any speed but 1.
+    const silent = burnInFfmpegArgs(
+      '/tmp/in.mp4',
+      '/tmp/subs.ass',
+      '/tmp/out.mp4',
+      style({ playbackRate: 2 }),
+      false
+    );
+    expect(silent[silent.indexOf('-filter_complex') + 1]).toBe(
+      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v]"
+    );
+    expect(silent.slice(silent.indexOf('-filter_complex'), silent.indexOf('-c:v'))).toEqual([
+      '-filter_complex',
+      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v]",
+      '-map',
+      '[v]',
+    ]);
+    expect(silent.join(' ')).not.toContain('atempo');
+
+    // The same call with audio keeps both branches, so `hasAudio` is what
+    // decides and not the rate.
+    const heard = burnInFfmpegArgs(
+      '/tmp/in.mp4',
+      '/tmp/subs.ass',
+      '/tmp/out.mp4',
+      style({ playbackRate: 2 }),
+      true
+    );
+    expect(heard[heard.indexOf('-filter_complex') + 1]).toBe(
+      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v];[0:a]atempo=2[a]"
+    );
+    expect(heard.slice(heard.indexOf('-map'))).toContain('[a]');
   });
 
   it('scales cue times by the playback rate', () => {

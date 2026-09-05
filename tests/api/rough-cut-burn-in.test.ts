@@ -41,7 +41,10 @@ function stubbedDeps(uploads: Uploaded[]): BurnInDeps {
       command === 'ffprobe'
         ? {
             stdout: JSON.stringify({
-              streams: [{ codec_type: 'video', width: 1920, height: 1080 }],
+              streams: [
+                { codec_type: 'video', width: 1920, height: 1080 },
+                { codec_type: 'audio', channels: 2 },
+              ],
             }),
             stderr: '',
             code: 0,
@@ -106,6 +109,51 @@ async function seedTranscribedVersion() {
     ],
   });
   return { ...scenario, video, version };
+}
+
+/**
+ * Which transcript the job burns when the payload names none. Two READY ones
+ * sit on the version in different languages, and a third belongs to a
+ * different version of the same video.
+ */
+async function seedCompetingTranscripts(
+  seeded: Awaited<ReturnType<typeof seedTranscribedVersion>>
+) {
+  const older = await db.transcript.findFirstOrThrow({
+    where: { versionId: seeded.version.id, language: 'en' },
+  });
+  await db.transcript.update({
+    where: { id: older.id },
+    data: { createdAt: new Date('2024-01-01T00:00:00.000Z') },
+  });
+  const newer = await createReadyTranscript({
+    versionId: seeded.version.id,
+    language: 'fr',
+    segments: [{ startSec: 0, endSec: 2, text: 'bonjour tout le monde', words: [] }],
+  });
+  await db.transcript.update({
+    where: { id: newer.id },
+    data: { createdAt: new Date('2024-06-01T00:00:00.000Z') },
+  });
+
+  const other = await createVersion({
+    videoParentId: seeded.video.id,
+    versionNumber: 9,
+    providerId: 'r2',
+    providerVideoId: 'videos/other.mp4',
+    originalUrl: '/api/upload/video/dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    isActive: false,
+  });
+  const stranger = await createReadyTranscript({
+    versionId: other.id,
+    language: 'de',
+    segments: [{ startSec: 0, endSec: 2, text: 'guten tag alle', words: [] }],
+  });
+  await db.transcript.update({
+    where: { id: stranger.id },
+    data: { createdAt: new Date('2020-01-01T00:00:00.000Z') },
+  });
+  return { older, newer, other, stranger };
 }
 
 describe('burnInSubtitles against the real schema', () => {
@@ -184,6 +232,29 @@ describe('burnInSubtitles against the real schema', () => {
 
     const jobs = await db.mediaJob.findMany({ where: { versionId: burned.id } });
     expect(jobs.map((job) => [job.kind, job.status])).toEqual([['PROBE_MEDIA', 'PENDING']]);
+  });
+
+  it('burns the oldest READY transcript of this version when the payload names none', async () => {
+    const seeded = await seedTranscribedVersion();
+    await seedCompetingTranscripts(seeded);
+
+    await burnInSubtitles(
+      stubbedDeps([]),
+      seeded.version.id,
+      payloadOf({ maxWordsPerCue: 2 }, { kind: 'transcript', transcriptId: null })
+    );
+
+    const burned = await db.videoVersion.findFirstOrThrow({
+      where: { videoParentId: seeded.video.id, isActive: true },
+    });
+    // MAX(versionNumber) + 1, past the version 9 sitting on the same video.
+    expect(burned.versionNumber).toBe(10);
+
+    const transcript = await db.transcript.findFirstOrThrow({ where: { versionId: burned.id } });
+    // The English one: older than the French transcript on this same version,
+    // while the older German one belongs to a different version entirely.
+    expect(transcript.language).toBe('en');
+    expect(transcript.searchText).toBe('one two three four five six');
   });
 
   it('burns a caption track when the operator picked one, over the transcript on the same version', async () => {

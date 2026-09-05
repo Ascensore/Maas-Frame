@@ -64,11 +64,29 @@ function payloadOf(overrides: Record<string, unknown>, source: BurnInSource): Bu
   return { style: styleOf(overrides), source };
 }
 
+/** The statements a transaction assertion cares about, in the order they ran. */
+function label(sql: string): string | null {
+  const trimmed = sql.trim();
+  if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(trimmed)) return trimmed;
+  if (trimmed.includes('FOR UPDATE')) return 'lock video';
+  if (trimmed.includes('COALESCE(MAX("versionNumber")')) return 'max version';
+  if (trimmed.includes('UPDATE video_versions')) return 'deactivate';
+  if (trimmed.includes('INSERT INTO video_versions')) return 'insert version';
+  if (trimmed.includes('INSERT INTO transcripts')) return 'upsert transcript';
+  if (trimmed.includes('DELETE FROM transcript_segments')) return 'delete segments';
+  if (trimmed.includes('INSERT INTO transcript_segments')) return 'insert segments';
+  return null;
+}
+
 function harness(
   options: {
     /** `[]` stands for a version nobody ever transcribed. */
     transcripts?: Array<{ id: string; language: string }>;
     ffmpeg?: { code: number; stderr?: string };
+    /** What ffprobe lists; the default is a normal video with sound. */
+    streams?: Array<Record<string, unknown>>;
+    /** The `sourceUrl` the caption-track row holds. */
+    trackUrl?: string;
   } = {}
 ) {
   const queries: Query[] = [];
@@ -76,6 +94,7 @@ function harness(
   const downloads: string[] = [];
   const uploads: Upload[] = [];
   const written: Written[] = [];
+  const removed: string[] = [];
   const media: Array<{ providerId: string; videoId: string; originalUrl: string }> = [];
 
   const query = async (sql: string, params: unknown[] = []) => {
@@ -100,7 +119,7 @@ function harness(
       };
     }
     if (sql.includes('SELECT "sourceUrl"')) {
-      return { rows: [{ sourceUrl: SUBTITLE_URL, language: 'en' }] };
+      return { rows: [{ sourceUrl: options.trackUrl ?? SUBTITLE_URL, language: 'en' }] };
     }
     if (sql.includes('FROM transcripts')) {
       return { rows: options.transcripts ?? [{ id: 't-1', language: 'en' }] };
@@ -122,7 +141,12 @@ function harness(
       runs.push({ command, args });
       if (command === 'ffprobe') {
         return {
-          stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1280, height: 720 }] }),
+          stdout: JSON.stringify({
+            streams: options.streams ?? [
+              { codec_type: 'video', width: 1280, height: 720 },
+              { codec_type: 'audio', channels: 2 },
+            ],
+          }),
           stderr: '',
           code: 0,
         };
@@ -143,12 +167,16 @@ function harness(
     writeText: async (path, text) => {
       written.push({ path, text });
     },
+    removeDir: async (path) => {
+      removed.push(path);
+    },
   };
 
   const find = (needle: string) => queries.find((entry) => entry.sql.includes(needle));
   const all = (needle: string) => queries.filter((entry) => entry.sql.includes(needle));
+  const flow = () => queries.map((entry) => label(entry.sql)).filter((entry) => entry !== null);
 
-  return { deps, queries, runs, downloads, uploads, written, media, find, all };
+  return { deps, queries, runs, downloads, uploads, written, removed, media, find, all, flow };
 }
 
 describe('burnInSubtitles', () => {
@@ -182,6 +210,27 @@ describe('burnInSubtitles', () => {
     const video = h.uploads.filter((upload) => upload.key.startsWith('videos/'));
     expect(video).toHaveLength(1);
     expect(video[0]!.contentType).toBe('video/mp4');
+
+    // The transcript the payload named, read from this version and no other.
+    const transcriptQuery = h.find('FROM transcripts WHERE');
+    expect(transcriptQuery?.params).toEqual(['t-1', 'ver-1']);
+    expect(transcriptQuery?.sql).toContain('version_id = $2');
+    expect(transcriptQuery?.sql).toContain("status = 'READY'");
+
+    // The version flip and the transcript rows each land in one transaction.
+    expect(h.flow()).toEqual([
+      'BEGIN',
+      'lock video',
+      'max version',
+      'deactivate',
+      'insert version',
+      'COMMIT',
+      'BEGIN',
+      'upsert transcript',
+      'delete segments',
+      'insert segments',
+      'COMMIT',
+    ]);
 
     // Another version of the same video, not a second video.
     expect(h.all('INSERT INTO videos')).toHaveLength(0);
@@ -238,6 +287,10 @@ describe('burnInSubtitles', () => {
     const probe = h.find('INSERT INTO media_jobs');
     expect(probe?.sql).toContain('PROBE_MEDIA');
     expect(probe?.params).toEqual([newVersionId]);
+
+    // The working directory goes, and it is the one the job actually used.
+    expect(h.removed).toHaveLength(1);
+    expect(h.written[0]!.path.startsWith(`${h.removed[0]}/`)).toBe(true);
   });
 
   it('re-times the copied transcript when the playback rate is not 1', async () => {
@@ -250,7 +303,10 @@ describe('burnInSubtitles', () => {
     );
 
     const args = h.runs[1]!.args;
-    expect(args[args.indexOf('-filter_complex') + 1]).toContain('setpts=PTS/2');
+    expect(args[args.indexOf('-filter_complex') + 1]).toMatch(
+      /^\[0:v\]setpts=PTS\/2,ass='.+\.ass'\[v\];\[0:a\]atempo=2\[a\]$/
+    );
+    expect(args.slice(args.indexOf('-map'))).toContain('[a]');
     // The cues are half as late as the words they came from.
     expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
       'Dialogue: 0,0:00:00.00,0:00:00.75,Default,,0,0,0,,one two',
@@ -315,6 +371,22 @@ describe('burnInSubtitles', () => {
     ).rejects.toThrow(/no transcript or caption track/);
     expect(empty.runs).toEqual([]);
     expect(empty.all('INSERT INTO video_versions')).toHaveLength(0);
+    // Every row is read before a byte of media is: a version with nothing to
+    // burn fails in a second rather than after pulling a camera master down.
+    expect(empty.media).toEqual([]);
+    const fallback = empty.find('FROM transcripts WHERE');
+    expect(fallback?.params).toEqual(['ver-1']);
+    expect(fallback?.sql).toContain('version_id = $1');
+    expect(fallback?.sql).toContain("status = 'READY'");
+    expect(fallback?.sql).toContain('ORDER BY created_at ASC');
+
+    // A stored URL that is not one our upload API wrote names no object we
+    // could fetch, and is refused instead of being turned into a key.
+    const bogus = harness({ trackUrl: '/api/upload/subtitle/../../secrets.vtt' });
+    await expect(
+      burnInSubtitles(bogus.deps, 'ver-1', payloadOf({}, { kind: 'subtitle', subtitleId: 's-1' }))
+    ).rejects.toThrow(/does not point at a subtitle file/);
+    expect(bogus.downloads).toEqual([]);
   });
 
   it('fails the job when ffmpeg fails and creates nothing', async () => {
@@ -327,6 +399,30 @@ describe('burnInSubtitles', () => {
     expect(h.all('INSERT INTO video_versions')).toHaveLength(0);
     expect(h.uploads).toEqual([]);
     expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
+    // A failed render still takes its working directory with it.
+    expect(h.removed).toHaveLength(1);
+  });
+
+  it('re-times a silent source without naming an audio stream', async () => {
+    const h = harness({ streams: [{ codec_type: 'video', width: 1280, height: 720 }] });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({ playbackRate: 2 }, { kind: 'transcript', transcriptId: 't-1' })
+    );
+
+    // Every stream is listed, so the job knows there is no audio to re-time.
+    expect(h.runs[0]!.args).toContain('-show_streams');
+    expect(h.runs[0]!.args).not.toContain('-select_streams');
+    const args = h.runs[1]!.args;
+    expect(args[args.indexOf('-filter_complex') + 1]).toMatch(
+      /^\[0:v\]setpts=PTS\/2,ass='.+\.ass'\[v\]$/
+    );
+    expect(args).not.toContain('[a]');
+    expect(args.join(' ')).not.toContain('atempo');
+    // The render still happened, so the version is there.
+    expect(h.all('INSERT INTO video_versions')).toHaveLength(1);
   });
 });
 

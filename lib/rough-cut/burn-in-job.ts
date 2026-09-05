@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import { parseSubtitleCues, type SubtitleCue } from '../subtitle-validation';
+import {
+  parseSubtitleCues,
+  subtitleProxyPathToObjectKey,
+  type SubtitleCue,
+} from '../subtitle-validation';
 import { wordsFromSegments } from './beats';
 import { persistDerivedTranscript, type DerivedSegment } from './derived-transcript';
 import { addOutputVersion } from './output-version';
@@ -35,7 +39,10 @@ import type { TranscriptSegmentRow } from './transcript-source';
 export const BURN_IN_PROVIDER = 'burn-in';
 
 /** The default frame size when ffprobe cannot tell us; only the ASS scale depends on it. */
-const FALLBACK_VIDEO = { width: 1920, height: 1080 };
+const FALLBACK_SIZE = { width: 1920, height: 1080 };
+
+/** What the render needs to know about the file it is about to re-encode. */
+type ProbedVideo = { width: number; height: number; hasAudio: boolean };
 
 export type BurnInSource =
   | { kind: 'transcript'; transcriptId: string | null }
@@ -65,6 +72,8 @@ export type BurnInDeps = {
   readText?: (path: string) => Promise<string>;
   /** Writes the ASS document ffmpeg renders from. */
   writeText?: (path: string, text: string) => Promise<void>;
+  /** Removes the working directory; a test can watch that it happens. */
+  removeDir?: (path: string) => Promise<void>;
 };
 
 const burnInSourceSchema = z.union([
@@ -133,13 +142,6 @@ function languageOf(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : 'und';
 }
 
-/** The last path segment of a stored subtitle URL, which is its object name. */
-function subtitleObjectKey(sourceUrl: string): string | null {
-  const name = sourceUrl.split('/').filter(Boolean).pop();
-  if (!name) return null;
-  return `subtitles/${name}`;
-}
-
 async function captionTrackMaterial(
   deps: BurnInDeps,
   versionId: string,
@@ -152,8 +154,14 @@ async function captionTrackMaterial(
   );
   const track = trackRes.rows[0];
   if (!track) return { words: [], language: 'und', segments: null };
-  const key = typeof track.sourceUrl === 'string' ? subtitleObjectKey(track.sourceUrl) : null;
-  if (!key) return { words: [], language: languageOf(track.language), segments: null };
+  // Through the same validator the upload API writes with, so the object key
+  // is one we could have written rather than whatever the column happens to
+  // hold. A row that fails it points at nothing we can fetch.
+  const key =
+    typeof track.sourceUrl === 'string' ? subtitleProxyPathToObjectKey(track.sourceUrl) : null;
+  if (!key) {
+    throw new Error(`Caption track ${subtitleId} does not point at a subtitle file we can read`);
+  }
 
   const dest = join(dir, 'source.vtt');
   await deps.downloadObject(key, dest);
@@ -208,36 +216,31 @@ async function transcriptMaterial(
   };
 }
 
-/** The frame size the ASS document is written against. */
-async function probeVideoSize(
-  deps: BurnInDeps,
-  path: string
-): Promise<{ width: number; height: number }> {
-  const probed = await deps.run('ffprobe', [
-    '-v',
-    'error',
-    '-select_streams',
-    'v:0',
-    '-show_entries',
-    'stream=width,height',
-    '-of',
-    'json',
-    path,
-  ]);
+/**
+ * The frame the ASS document is written against, and whether there is any
+ * audio to re-time with it. Every stream is listed rather than just the first
+ * video one: a re-timed render names `[0:a]` in its filtergraph, and doing that
+ * to a silent source fails the whole encode.
+ */
+async function probeVideo(deps: BurnInDeps, path: string): Promise<ProbedVideo> {
+  const probed = await deps.run('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', path]);
   try {
     const parsed = JSON.parse(probed.stdout) as {
-      streams?: Array<{ width?: unknown; height?: unknown }>;
+      streams?: Array<{ codec_type?: unknown; width?: unknown; height?: unknown }>;
     };
-    const stream = parsed.streams?.[0];
-    const width = Number(stream?.width);
-    const height = Number(stream?.height);
+    const streams = parsed.streams ?? [];
+    const hasAudio = streams.some((stream) => stream.codec_type === 'audio');
+    const video = streams.find((stream) => stream.codec_type === 'video') ?? streams[0];
+    const width = Number(video?.width);
+    const height = Number(video?.height);
     if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
-      return { width, height };
+      return { width, height, hasAudio };
     }
+    return { ...FALLBACK_SIZE, hasAudio };
   } catch {
     // Not JSON, so ffprobe told us nothing usable.
   }
-  return FALLBACK_VIDEO;
+  return { ...FALLBACK_SIZE, hasAudio: true };
 }
 
 /** The source transcript at the new speed: every time divided by the rate. */
@@ -315,17 +318,17 @@ export async function burnInSubtitles(
       },
       sourcePath
     );
-    const size = await probeVideoSize(deps, sourcePath);
+    const probed = await probeVideo(deps, sourcePath);
 
     const assPath = join(dir, 'subtitles.ass');
     const writeText =
       deps.writeText ?? ((path: string, text: string) => writeFile(path, text, 'utf8'));
-    await writeText(assPath, buildAssDocument(cues, style, size));
+    await writeText(assPath, buildAssDocument(cues, style, probed));
 
     const outputPath = join(dir, 'burned-in.mp4');
     const encoded = await deps.run(
       'ffmpeg',
-      burnInFfmpegArgs(sourcePath, assPath, outputPath, style)
+      burnInFfmpegArgs(sourcePath, assPath, outputPath, style, probed.hasAudio)
     );
     if (encoded.code !== 0) throw new Error(`ffmpeg burn-in failed: ${encoded.stderr}`);
     const readOutput = deps.readOutput ?? ((path: string) => readFile(path));
@@ -379,6 +382,8 @@ export async function burnInSubtitles(
       [output.versionId]
     );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    const removeDir =
+      deps.removeDir ?? ((path: string) => rm(path, { recursive: true, force: true }));
+    await removeDir(dir);
   }
 }

@@ -2,14 +2,21 @@ FROM docker.io/oven/bun:1
 
 WORKDIR /worker
 
-# The font packages are what the burn-in job draws with: libass finds a family
-# by name through fontconfig, and a missing one is silently replaced rather than
-# reported, so the families offered in the style picker have to be installed.
+# ffmpeg and the fonts the burn-in job draws with. libass finds a family by
+# name through fontconfig and silently substitutes one it cannot find rather
+# than reporting it, so every family the style picker offers has to be here.
+# Its own step, with no fallback: a package that stops existing has to fail the
+# build rather than take ffmpeg down with it into the `|| echo` below.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \
-       fonts-dejavu-core fonts-liberation2 fonts-roboto fonts-open-sans fontconfig \
-  && rm -rf /var/lib/apt/lists/* \
-  && pip3 install --break-system-packages --no-cache-dir \
+  && apt-get install -y --no-install-recommends \
+       ffmpeg python3 python3-pip python3-venv \
+       fontconfig fonts-dejavu-core fonts-liberation2 fonts-roboto fonts-open-sans \
+  && rm -rf /var/lib/apt/lists/*
+
+# Local transcription and diarization only. The worker runs every ffmpeg job
+# without them, so a wheel that will not build here is not a reason to have no
+# image at all.
+RUN pip3 install --break-system-packages --no-cache-dir \
        --index-url https://download.pytorch.org/whl/cpu \
        torch \
   && pip3 install --break-system-packages --no-cache-dir faster-whisper numpy soundfile scipy pyannote.audio \

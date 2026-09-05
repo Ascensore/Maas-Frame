@@ -72,8 +72,9 @@ function round3(value: number): number {
 }
 
 /**
- * Words become cues by count, duration and pauses; a cue holds until its last
- * word plus a beat, never into the next cue.
+ * Words become cues by count, duration and pauses. A cue holds until its last
+ * word ends, or until a beat after the cue started when that is later, and
+ * never into the next cue.
  */
 export function regroupWordsIntoCues(words: TimedWord[], style: BurnInStyle): SubtitleCue[] {
   const ordered = [...words].filter((word) => word.text.trim()).sort((a, b) => a.start - b.start);
@@ -219,7 +220,9 @@ export function burnInFfmpegArgs(
   inputPath: string,
   assPath: string,
   outputPath: string,
-  style: BurnInStyle
+  style: BurnInStyle,
+  /** False re-times the picture alone; a silent source has no `[0:a]` to name. */
+  hasAudio = true
 ): string[] {
   // The surrounding `'` quotes the whole filter option value; escaping a `'`
   // inside the path as `\'` is what ffmpeg's filtergraph parser expects. See
@@ -262,6 +265,24 @@ export function burnInFfmpegArgs(
     ];
   }
   const rate = String(style.playbackRate);
+  // `-map 0:a:0?` above makes a silent source harmless at normal speed, but a
+  // filtergraph has no optional inputs: naming `[0:a]` when there is no audio
+  // stream fails the whole render.
+  if (!hasAudio) {
+    return [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      inputPath,
+      '-filter_complex',
+      `[0:v]setpts=PTS/${rate},${ass}[v]`,
+      '-map',
+      '[v]',
+      ...encode,
+    ];
+  }
   return [
     '-y',
     '-hide_banner',
