@@ -14,13 +14,15 @@ export function isWaitingForMediaWorker(
 }
 
 /**
- * A RUNNING cut that the worker parked until a transcript is ready reports
- * it through a warning, since the row has no dedicated status for it.
+ * A cut the worker parked until a transcript is ready reports it through a
+ * warning, since the row has no dedicated status for it. The guard is on the
+ * run being unfinished rather than on RUNNING alone: a parked run is queued
+ * again, and a finished one must never read as waiting on its stale warning.
  */
 export function isWaitingForTranscript(
   status: string,
   warnings: ReadonlyArray<{ code: string }> | null | undefined
 ): boolean {
-  if (status !== 'RUNNING') return false;
+  if (status !== 'PENDING' && status !== 'RUNNING') return false;
   return (warnings ?? []).some((warning) => warning.code === WAITING_FOR_TRANSCRIPT_WARNING);
 }

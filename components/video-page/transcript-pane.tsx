@@ -1,16 +1,32 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type MouseEvent } from 'react';
-import { Captions, Languages, Loader2, Search, Upload } from 'lucide-react';
+import { Captions, Languages, Loader2, Pencil, Search, Upload } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  resolveEditableSegment,
+  useTranscriptSegmentEdit,
+} from '@/components/video-page/hooks/use-transcript-segment-edit';
+import type { TranscriptSegment, TranscriptWord } from '@/components/video-page/types';
 import {
   commentRangeFromHighlight,
   commentsAnchoredToSegment,
   spanOverlapsComment,
 } from '@/lib/transcript-comment';
+import { MAX_SEGMENT_TEXT, MAX_SPEAKER_LABEL } from '@/lib/transcript-edit';
 import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
+import { serializeWebVtt } from '@/lib/subtitle-validation';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
 import {
   canShowTranscriptTranslation,
@@ -18,22 +34,6 @@ import {
   type TranscriptTranslationPayload,
 } from '@/lib/transcript-translation';
 import { cn } from '@/lib/utils';
-
-export type TranscriptWord = {
-  start: number;
-  end: number;
-  text: string;
-};
-
-export type TranscriptSegment = {
-  id: string;
-  startSec: number;
-  endSec: number;
-  speaker: string | null;
-  text: string;
-  words: TranscriptWord[] | unknown;
-  position: number;
-};
 
 export type TranscriptPayload = {
   id: string;
@@ -75,15 +75,6 @@ function formatClock(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function toVttTime(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  const secs = Math.floor(clamped % 60);
-  const millis = Math.round((clamped - Math.floor(clamped)) * 1000);
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
-}
-
 function rangeNodeFromDom(node: Node | null): { start: number; end: number } | null {
   const element = node instanceof Element ? node : node?.parentElement;
   const rangeEl = element?.closest('[data-transcript-range][data-start][data-end]');
@@ -106,6 +97,8 @@ interface TranscriptPaneProps {
   ) => void;
   onCommentRange: (start: number, end: number, quote: string) => void;
   onOpenThread: (commentId: string) => void;
+  /** Fired when an edit rebuilt the caption track, so the player can reload it. */
+  onCaptionsChanged?: () => void;
   draftRange: { start: number; end: number } | null;
 }
 
@@ -118,6 +111,9 @@ type TranscriptRowProps = {
   onSeek: TranscriptPaneProps['onSeek'];
   onCommentRange: TranscriptPaneProps['onCommentRange'];
   onOpenThread: TranscriptPaneProps['onOpenThread'];
+  onEditSegment: ((segment: TranscriptSegment) => void) | null;
+  /** Non-null while editing is unavailable; the text is shown as the tooltip. */
+  editDisabledReason: string | null;
   draftRange: { start: number; end: number } | null;
 };
 
@@ -132,6 +128,8 @@ function TranscriptRow({
   onSeek,
   onCommentRange,
   onOpenThread,
+  onEditSegment,
+  editDisabledReason,
   draftRange,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
@@ -183,18 +181,32 @@ function TranscriptRow({
         onMouseUp={handleMouseUp}
       >
         <div className="flex items-center justify-between gap-2 mb-0.5">
-          {timed ? (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground tabular-nums hover:text-foreground"
-              onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
-            >
-              {formatClock(segment.startSec)}
-              {segment.speaker ? ` · ${segment.speaker}` : ''}
-            </button>
-          ) : (
-            <span className="text-xs text-muted-foreground">Script</span>
-          )}
+          <div className="flex items-center gap-1">
+            {timed ? (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground tabular-nums hover:text-foreground"
+                onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
+              >
+                {formatClock(segment.startSec)}
+                {segment.speaker ? ` · ${segment.speaker}` : ''}
+              </button>
+            ) : (
+              <span className="text-xs text-muted-foreground">Script</span>
+            )}
+            {onEditSegment && (
+              <button
+                type="button"
+                aria-label="Edit line"
+                title={editDisabledReason ?? undefined}
+                disabled={editDisabledReason !== null}
+                className="rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                onClick={() => onEditSegment(segment)}
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
+          </div>
           {markers.length > 0 && (
             <div className="relative flex items-center gap-1">
               {markers.map((marker) => (
@@ -297,6 +309,7 @@ export const TranscriptPane = memo(function TranscriptPane({
   onSeek,
   onCommentRange,
   onOpenThread,
+  onCaptionsChanged,
   draftRange,
 }: TranscriptPaneProps) {
   const [transcript, setTranscript] = useState<TranscriptPayload>(null);
@@ -308,8 +321,30 @@ export const TranscriptPane = memo(function TranscriptPane({
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<TranscriptSegment | null>(null);
+  const [editText, setEditText] = useState('');
+  const [editSpeaker, setEditSpeaker] = useState('');
+  const [captionNote, setCaptionNote] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const {
+    save: saveSegment,
+    saving: savingSegment,
+    error: editError,
+    clearError: clearEditError,
+  } = useTranscriptSegmentEdit(versionId);
+
+  const openEditor = useCallback(
+    (segment: TranscriptSegment) => {
+      const source = resolveEditableSegment(segment, transcript?.segments);
+      clearEditError();
+      setCaptionNote(null);
+      setEditing(source);
+      setEditText(source.text);
+      setEditSpeaker(source.speaker ?? '');
+    },
+    [clearEditError, transcript]
+  );
 
   const fetchTranscript = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -341,6 +376,17 @@ export const TranscriptPane = memo(function TranscriptPane({
     setShowTranslated(false);
     void fetchTranscript();
   }, [fetchTranscript]);
+
+  // The note is about the line that was just saved on the version being left,
+  // so it has to go with it: left standing it reads as a claim about the
+  // version now on screen, whose captions nobody has touched. Its own effect
+  // rather than a line in the one above, because it depends on `versionId`
+  // alone — `fetchTranscript` is a callback that could gain another dependency
+  // and start clearing the note for reasons that have nothing to do with the
+  // version changing.
+  useEffect(() => {
+    setCaptionNote(null);
+  }, [versionId]);
 
   useEffect(() => {
     if (!versionId) return;
@@ -381,6 +427,8 @@ export const TranscriptPane = memo(function TranscriptPane({
       onSeek,
       onCommentRange,
       onOpenThread,
+      onEditSegment: canManage ? openEditor : null,
+      editDisabledReason: showTranslated ? 'Switch to the original to edit' : null,
       draftRange,
     }),
     [
@@ -391,6 +439,9 @@ export const TranscriptPane = memo(function TranscriptPane({
       onSeek,
       onCommentRange,
       onOpenThread,
+      canManage,
+      openEditor,
+      showTranslated,
       draftRange,
     ]
   );
@@ -414,14 +465,16 @@ export const TranscriptPane = memo(function TranscriptPane({
   const handleDownloadVtt = () => {
     const segments = visibleSegments;
     if (!transcript || segments.length === 0) return;
-    const body = segments
-      .map((segment) => {
-        const start = toVttTime(segment.startSec);
-        const end = toVttTime(segment.endSec);
-        return `${start} --> ${end}\n${segment.text}`;
-      })
-      .join('\n\n');
-    const blob = new Blob([`WEBVTT\n\n${body}\n`], { type: 'text/vtt' });
+    // The same serializer the upload pipeline and the worker use, so a
+    // downloaded track is byte-for-byte what a re-upload would store.
+    const vtt = serializeWebVtt(
+      segments.map((segment) => ({
+        start: segment.startSec,
+        end: segment.endSec,
+        text: segment.text,
+      }))
+    );
+    const blob = new Blob([vtt], { type: 'text/vtt' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -511,6 +564,52 @@ export const TranscriptPane = memo(function TranscriptPane({
       setError(err instanceof Error ? err.message : 'Failed to upload transcript');
     } finally {
       setUploading(false);
+    }
+  };
+
+  const canSaveSegment = !savingSegment && editText.trim().length > 0;
+
+  const handleSaveSegment = async () => {
+    if (!editing) return;
+    const result = await saveSegment(editing.id, {
+      text: editText,
+      speaker: editSpeaker.trim() || null,
+    });
+    if (!result) return;
+    setTranscript((current) =>
+      current
+        ? {
+            ...current,
+            segments: current.segments.map((segment) =>
+              segment.id === result.segment.id ? result.segment : segment
+            ),
+          }
+        : current
+    );
+    setEditing(null);
+    if (result.captions === 'updated') {
+      setCaptionNote(null);
+      onCaptionsChanged?.();
+    } else if (result.captions === 'empty') {
+      // Nothing went wrong here at all: a pasted or imported transcript has no
+      // timings, and cues cannot be made out of text that is not timed. Saying
+      // "could not be rebuilt" would read as a failure to look into.
+      setCaptionNote('Line saved. There is no caption track to build: this transcript is untimed.');
+    } else if (result.captions === 'skipped') {
+      // Only reachable when this language has no track yet and the version is
+      // already at its limit, so nothing was left behind to be stale: there is
+      // no track here at all, and the way out is to free a slot.
+      setCaptionNote(
+        'Line saved. No caption track was created: this version already holds the maximum number of subtitle tracks. Delete one and rebuild.'
+      );
+    } else if (result.captions === 'quota') {
+      setCaptionNote('Line saved. The captions were not rebuilt: the account is out of storage.');
+    } else {
+      // The correction is stored; only the subtitles are behind. Nothing here
+      // says whose fault that is — a full account is reported as `quota` above,
+      // and what is left is a storage or database failure the operator cannot
+      // clear themselves — so it says what is true and stops there.
+      setCaptionNote('Line saved, but the caption track could not be rebuilt.');
     }
   };
 
@@ -612,6 +711,11 @@ export const TranscriptPane = memo(function TranscriptPane({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {captionNote && (
+        <p className="text-sm text-amber-600 dark:text-amber-500" role="status">
+          {captionNote}
+        </p>
+      )}
 
       {loading && !transcript ? (
         <p className="text-sm text-muted-foreground">Loading transcript…</p>
@@ -638,6 +742,70 @@ export const TranscriptPane = memo(function TranscriptPane({
           />
         </div>
       )}
+
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingSegment) setEditing(null);
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-lg"
+          // Cmd/Ctrl+Enter saves from anywhere in the dialog. A bare Enter has
+          // to stay a newline in the textarea, which is why it is not bound here.
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              if (canSaveSegment) void handleSaveSegment();
+            }
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Edit transcript line</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="transcript-line-text">Text</Label>
+              <Textarea
+                id="transcript-line-text"
+                value={editText}
+                onChange={(event) => setEditText(event.target.value)}
+                maxLength={MAX_SEGMENT_TEXT}
+                rows={4}
+              />
+              {editError && <p className="text-sm text-destructive">{editError}</p>}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="transcript-line-speaker">Speaker</Label>
+              <Input
+                id="transcript-line-speaker"
+                value={editSpeaker}
+                onChange={(event) => setEditSpeaker(event.target.value)}
+                maxLength={MAX_SPEAKER_LABEL}
+                placeholder="Optional"
+                // A one-line field: Enter means "done", as it would in a form.
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey) {
+                    event.preventDefault();
+                    if (canSaveSegment) void handleSaveSegment();
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)} disabled={savingSegment}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleSaveSegment()} disabled={!canSaveSegment}>
+              {savingSegment && <Loader2 className="h-4 w-4 animate-spin" />}
+              <span className={savingSegment ? 'ml-1' : ''}>Save</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 });

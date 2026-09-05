@@ -15,6 +15,7 @@ import { signedInAs, signedOut } from '../helpers/session';
 import {
   createEditorialBrief,
   createFolder,
+  createReadyTranscript,
   createRoughCut,
   createRoughCutProfile,
   createUser,
@@ -23,6 +24,7 @@ import {
   seedProject,
 } from '../factories';
 import { assembleDecisionList } from '@/lib/rough-cut/decision-list';
+import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 
 function cutsUrl(projectId: string) {
   return `/api/projects/${projectId}/rough-cuts`;
@@ -34,11 +36,13 @@ async function seedMulticam() {
     projectId: scenario.project.id,
     title: 'ISO 1',
     metadata: { camera: 'A' },
+    position: 0,
   });
   const camB = await createVideo({
     projectId: scenario.project.id,
     title: 'ISO 2',
     metadata: { camera: 'B' },
+    position: 1,
   });
   const versionA = await createVersion({
     videoParentId: camA.id,
@@ -548,6 +552,286 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(response.status).toBe(409);
     expect(await db.roughCut.count()).toBe(1);
   });
+
+  // A sequential cut reads one transcript per clip, so every clip is ensured.
+  // Multicam reads a single session transcript and is covered on its own below.
+  it('starts a transcription for every sequential clip that has none and parks the run', async () => {
+    const scenario = await seedMulticam();
+    await createReadyTranscript({
+      versionId: scenario.versionA.id,
+      segments: [{ startSec: 0, endSec: 2, text: 'hello' }],
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'SEQUENTIAL' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string; warnings: Array<{ code: string }> | null };
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 1, pending: 1, enqueued: 1, failed: 0 });
+    expect(payload.roughCut.warnings?.map((warning) => warning.code)).toEqual([
+      'waiting-for-transcript',
+    ]);
+
+    const pending = await db.transcript.findMany({ where: { versionId: scenario.versionB.id } });
+    expect(pending.map((row) => row.status)).toEqual(['PENDING']);
+    const jobs = await db.mediaJob.findMany({ where: { versionId: scenario.versionB.id } });
+    expect(jobs.map((job) => job.kind).sort()).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE']);
+    expect(
+      await db.mediaJob.count({ where: { versionId: scenario.versionA.id, kind: 'TRANSCRIBE' } })
+    ).toBe(0);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionB.id);
+  });
+
+  it('ensures only the wide camera on a multicam cut', async () => {
+    const scenario = await seedMulticam();
+    await createReadyTranscript({
+      versionId: scenario.versionA.id,
+      segments: [{ startSec: 0, endSec: 2, text: 'hello' }],
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    // ISO 1 carries `camera: 'A'`, so naming A as the safety shot makes it the
+    // camera whose transcript the assembler will read.
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'MULTICAM', wideCameraRole: 'A' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { warnings: Array<{ code: string }> | null };
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 1, pending: 0, enqueued: 0, failed: 0 });
+    expect(payload.roughCut.warnings).toBeNull();
+
+    expect(await db.transcript.count({ where: { versionId: scenario.versionB.id } })).toBe(0);
+    expect(
+      await db.mediaJob.count({
+        where: { versionId: scenario.versionB.id, kind: { in: ['EXTRACT_AUDIO', 'TRANSCRIBE'] } },
+      })
+    ).toBe(0);
+    expect(vi.mocked(scheduleVersionTranscription)).not.toHaveBeenCalled();
+  });
+
+  it('ensures the wide camera even when another angle already has a transcript', async () => {
+    const scenario = await seedMulticam();
+    await createReadyTranscript({
+      versionId: scenario.versionB.id,
+      segments: [{ startSec: 0, endSec: 2, text: 'hello' }],
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'MULTICAM', wideCameraRole: 'A' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { warnings: Array<{ code: string }> | null };
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 1, enqueued: 1, failed: 0 });
+    expect(payload.roughCut.warnings?.map((warning) => warning.code)).toEqual([
+      'waiting-for-transcript',
+    ]);
+
+    const pending = await db.transcript.findMany({ where: { status: 'PENDING' } });
+    expect(pending.map((row) => row.versionId)).toEqual([scenario.versionA.id]);
+    expect(
+      await db.mediaJob.count({
+        where: { versionId: scenario.versionB.id, kind: { in: ['EXTRACT_AUDIO', 'TRANSCRIBE'] } },
+      })
+    ).toBe(0);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionA.id);
+  });
+
+  it('retries a FAILED transcript when a cut is requested', async () => {
+    const scenario = await seedMulticam();
+    for (const version of [scenario.versionA, scenario.versionB]) {
+      await createReadyTranscript({
+        versionId: version.id,
+        // The route upserts on (versionId, 'und'), so a FAILED row in another
+        // language would be left alone and a second row would appear instead.
+        language: 'und',
+        status: 'FAILED',
+        segments: [],
+      });
+    }
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'SEQUENTIAL' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const rows = await db.transcript.findMany({
+      where: { versionId: { in: [scenario.versionA.id, scenario.versionB.id] } },
+      orderBy: { versionId: 'asc' },
+    });
+    expect(rows.map((row) => row.status)).toEqual(['PENDING', 'PENDING']);
+
+    // A reset row with no jobs behind it would never be picked up again.
+    for (const versionId of [scenario.versionA.id, scenario.versionB.id]) {
+      const jobs = await db.mediaJob.findMany({ where: { versionId } });
+      expect(jobs.filter((job) => job.kind === 'EXTRACT_AUDIO')).toHaveLength(1);
+      expect(jobs.filter((job) => job.kind === 'TRANSCRIBE')).toHaveLength(1);
+    }
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(2);
+    expect(
+      vi
+        .mocked(scheduleVersionTranscription)
+        .mock.calls.map((call) => call[0])
+        .sort()
+    ).toEqual([scenario.versionA.id, scenario.versionB.id].sort());
+  });
+
+  it('does not park the run when transcription is off for this host', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'SEQUENTIAL' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      roughCut: { id: string; warnings: Array<{ code: string }> | null };
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 0, enqueued: 0, failed: 2 });
+    expect(payload.roughCut.warnings).toBeNull();
+    expect(await db.transcript.count()).toBe(0);
+    expect(vi.mocked(scheduleVersionTranscription)).not.toHaveBeenCalled();
+  });
+
+  it('ensures the wide camera when the wide role is the second camera in position order', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    // ISO 2 carries `camera: 'B'` and sits second by position.
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'MULTICAM', wideCameraRole: 'B' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 1, enqueued: 1, failed: 0 });
+
+    const rows = await db.transcript.findMany({});
+    expect(rows.map((row) => row.versionId)).toEqual([scenario.versionB.id]);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionB.id);
+  });
+
+  it('falls back to the first camera in position order when no camera holds the wide role', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    // No camera is named WIDE, so pickWideClip infers the first clip by
+    // position. The reversed clipOrder moves the cut's ordering but not the
+    // positions the assembler ranks by, so the route must ignore it here.
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: {
+          folderId: null,
+          layout: 'MULTICAM',
+          wideCameraRole: 'WIDE',
+          clipOrder: [scenario.camB.id, scenario.camA.id],
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 1, enqueued: 1, failed: 0 });
+
+    const rows = await db.transcript.findMany({});
+    expect(rows.map((row) => row.versionId)).toEqual([scenario.versionA.id]);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionA.id);
+  });
+
+  it('stores a trimmed script and refuses one that is too long', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const refused = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, script: 'x'.repeat(20_001) },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(refused.status).toBe(400);
+    expect(await db.roughCut.count()).toBe(0);
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, script: '  We help founders raise faster.\n\n  ' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string; hasScript: boolean } }>(response);
+    expect(payload.roughCut.hasScript).toBe(true);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.script).toBe('We help founders raise faster.');
+
+    const detail = await callRoute(
+      getRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${payload.roughCut.id}`),
+      { roughCutId: payload.roughCut.id }
+    );
+    const shown = await readData<{ roughCut: { script: string | null } }>(detail);
+    expect(shown.roughCut.script).toBe('We help founders raise faster.');
+  });
 });
 
 /** Two clips that look like nothing in particular: no timecode, no dates, same inferred role. */
@@ -891,20 +1175,26 @@ describe('GET /api/projects/[projectId]/rough-cuts', () => {
     expect(response.status).toBe(401);
   });
 
-  it('lists cuts for the owner', async () => {
+  it('lists cuts for the owner, flagging the script without sending it', async () => {
     const scenario = await seedProject();
     signedInAs(scenario.owner);
     const cut = await createRoughCut({
       projectId: scenario.project.id,
       requestedById: scenario.owner.id,
+      script: 'We help founders raise faster.',
     });
 
-    const payload = await readData<{ roughCuts: Array<{ id: string }> }>(
+    const payload = await readData<{
+      roughCuts: Array<{ id: string; hasScript: boolean }>;
+    }>(
       await callRoute(listRoughCuts, apiRequest(cutsUrl(scenario.project.id)), {
         projectId: scenario.project.id,
       })
     );
     expect(payload.roughCuts.map((row) => row.id)).toEqual([cut.id]);
+    // The list flags the script; only the single-run GET carries the text.
+    expect(payload.roughCuts[0]?.hasScript).toBe(true);
+    expect(Object.keys(payload.roughCuts[0] ?? {})).not.toContain('script');
   });
 
   it('returns 403 to a signed-in stranger', async () => {

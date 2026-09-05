@@ -20,21 +20,21 @@ a workspace lockfile and conflict on every dependency bump.
 
 Copy `.env.example` to `.env` and set real secrets. The values that matter here:
 
-| Variable                                    | Value                                              | Why                                                                                                        |
-| ------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `OPENFRAME_ENABLE_STRIPE`                   | `false`                                            | Billing is wired into authorization. Off, every account has access and no trial caps apply.                |
-| `OPENFRAME_MAX_VIDEO_UPLOAD_BYTES`          | set explicitly (default 100 GiB in the example)    | With Stripe off there is no quota, so the code falls back to a flat **5 GiB** per file unless this is set. |
-| `OPENFRAME_ENABLE_S3_VIDEO_UPLOADS`         | `true`                                             | Direct uploads to R2 / S3-compatible storage.                                                              |
-| `OPENFRAME_ENABLE_BUNNY_UPLOADS`            | `false`                                            | Only one direct-upload backend can be active.                                                              |
-| `OPENFRAME_REQUIRE_INVITE_CODE`             | `true`                                             | Registration stays closed. Set `INVITE_CODE`.                                                              |
-| `OPENFRAME_ALLOWED_SIGNUP_EMAILS`           | comma-separated addresses, or empty                | When set, only these addresses can self-register with the invite code.                                     |
-| `OPENFRAME_ENABLE_ANALYTICS`                | `false`                                            | Leave the marketing funnel off.                                                                            |
-| `OPENFRAME_ENABLE_AGENTS`                   | `false`                                            | In-product review agents. Off until you want them; a non-mock model sends transcript text off-instance.    |
-| `OPENFRAME_AGENT_MODEL`                     | `mock`                                             | `mock` never leaves the process. Cloud models are AI SDK ids such as `openai/gpt-4.1-mini`.                |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | your Workspace OAuth app                           | SSO for the company domain. Restrict the OAuth client to your domain in Google Cloud.                      |
-| `OPENFRAME_ENABLE_TRANSCRIPTION`            | `true`                                             | Enqueue transcription after a version lands.                                                               |
-| `OPENFRAME_TRANSCRIPTION_PROVIDER`          | `whisper-local` (default), `deepgram`, or `openai` | Pluggable. Cloud providers need their API keys.                                                            |
-| `OPENFRAME_ENABLE_PROXY_TRANSCODE`          | `true`                                             | After probe, transcode ProRes/DNx/HEVC/etc. to an H.264 AAC MP4 the browser can play.                      |
+| Variable                                    | Value                                              | Why                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENFRAME_ENABLE_STRIPE`                   | `false`                                            | Billing is wired into authorization. Off, every account has access and no trial caps apply.                                                                                                                                                                                                                               |
+| `OPENFRAME_MAX_VIDEO_UPLOAD_BYTES`          | set explicitly (default 100 GiB in the example)    | With Stripe off there is no quota, so the code falls back to a flat **5 GiB** per file unless this is set.                                                                                                                                                                                                                |
+| `OPENFRAME_ENABLE_S3_VIDEO_UPLOADS`         | `true`                                             | Direct uploads to R2 / S3-compatible storage.                                                                                                                                                                                                                                                                             |
+| `OPENFRAME_ENABLE_BUNNY_UPLOADS`            | `false`                                            | Only one direct-upload backend can be active.                                                                                                                                                                                                                                                                             |
+| `OPENFRAME_REQUIRE_INVITE_CODE`             | `true`                                             | Registration stays closed. Set `INVITE_CODE`.                                                                                                                                                                                                                                                                             |
+| `OPENFRAME_ALLOWED_SIGNUP_EMAILS`           | comma-separated addresses, or empty                | When set, only these addresses can self-register with the invite code.                                                                                                                                                                                                                                                    |
+| `OPENFRAME_ENABLE_ANALYTICS`                | `false`                                            | Leave the marketing funnel off.                                                                                                                                                                                                                                                                                           |
+| `OPENFRAME_ENABLE_AGENTS`                   | `false`                                            | In-product review agents. Off until you want them; a non-mock model sends transcript text off-instance.                                                                                                                                                                                                                   |
+| `OPENFRAME_AGENT_MODEL`                     | `mock`                                             | `mock` never leaves the process. Cloud models are AI SDK ids such as `openai/gpt-4.1-mini`.                                                                                                                                                                                                                               |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | your Workspace OAuth app                           | SSO for the company domain. Restrict the OAuth client to your domain in Google Cloud.                                                                                                                                                                                                                                     |
+| `OPENFRAME_ENABLE_TRANSCRIPTION`            | `true`                                             | Enqueue transcription after a version lands. On (anything but a literal `false`), a rough cut also waits for its clips' transcripts — up to **two hours** — and fails with a message naming the clip rather than falling back to detecting speech from audio energy. Off, the old fallback returns with a 15-minute wait. |
+| `OPENFRAME_TRANSCRIPTION_PROVIDER`          | `whisper-local` (default), `deepgram`, or `openai` | Pluggable. Cloud providers need their API keys.                                                                                                                                                                                                                                                                           |
+| `OPENFRAME_ENABLE_PROXY_TRANSCODE`          | `true`                                             | After probe, transcode ProRes/DNx/HEVC/etc. to an H.264 AAC MP4 the browser can play.                                                                                                                                                                                                                                     |
 
 Vercel hosts the Next.js app at `https://maas-frame.vercel.app`. It does not
 run ffmpeg. Transcription and review proxies need a separate **media worker**
@@ -97,6 +97,15 @@ review proxy when the master will not play in a browser (and burns a
 `CONFIDENTIAL · {project}` label into **new** proxies when the project
 watermark is on), and, when transcription is enabled, extracts audio and
 transcribes it.
+
+It also burns subtitles into a new version on request (`BURN_SUBTITLES`).
+That job draws the text with libass, which finds a font family by name
+through fontconfig and silently substitutes another when it cannot, so
+`worker/Dockerfile` installs `fontconfig`, `fonts-dejavu-core`,
+`fonts-liberation2`, `fonts-roboto` and `fonts-open-sans` and asserts every
+offered family with `fc-match` at build time. A worker image built without
+those packages produces burned-in text in the wrong typeface rather than a
+failed job, which is why the assertion fails the build instead.
 
 ## Media worker host
 
@@ -173,6 +182,28 @@ to the **app** database (the test database is separate):
 ```bash
 bun run db:migrate
 ```
+
+Run it after this pull whichever database you are on:
+`20260907120000_transcript_first_editing` adds the `BURN_SUBTITLES` job kind
+and the `script`, `overrides`, `rendered_overrides` and `rendered_decisions`
+columns on `rough_cuts`. It only adds, so it is safe to apply before the app
+that reads them is deployed; the media worker needs it before it can lease a
+burn-in job at all.
+
+**Rebuild and redeploy the media worker image before deploying an app that can
+queue a burn-in** (see "Media worker host" below for the commands). The image
+needs the new fonts, the new files under `lib/rough-cut`, and `zod`, which is
+now a worker dependency.
+
+A worker that is behind no longer breaks the pipeline: it puts the job it does
+not recognise back to `PENDING`, logs a line naming the job id, the kind and
+`the worker image is out of date`, and keeps publishing the rest of the batch.
+The burn-in waits at `PENDING` until the worker is rebuilt, and everything
+queued behind it keeps moving. Grep the worker's output for that hint, and for
+`worker publish error`, which is what a genuine queue failure logs. Until the
+fix on this branch the same situation stranded every job claimed after the
+burn-in at `QUEUED` — for good, since nothing puts a `QUEUED` row back — so
+probes, transcription and proxies stopped behind it.
 
 Then, in the running app:
 

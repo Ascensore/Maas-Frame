@@ -4,6 +4,7 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
+import { loadRoughCutReview } from '@/lib/rough-cut/review';
 import { shapeRoughCut } from '@/lib/rough-cut/serialize';
 
 type RouteParams = { params: Promise<{ roughCutId: string }> };
@@ -30,6 +31,9 @@ async function loadCutForUser(roughCutId: string, userId: string | undefined) {
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
+    const limited = await rateLimit(request, 'transcript-read');
+    if (limited) return limited;
+
     const session = await auth();
     if (!session?.user?.id) return apiErrors.unauthorized();
 
@@ -38,8 +42,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!loaded) return apiErrors.notFound('Rough cut');
     if (!loaded.access.hasAccess) return apiErrors.forbidden('Access denied');
 
+    // The review payload is several joins wider than the row, so the pane asks
+    // for it and every other caller keeps the cheap answer. It is an editing
+    // payload throughout — the script, the reviewer's decisions and the clips
+    // behind the program — so a caller who may only comment asking for it gets
+    // `review: null` rather than a hollowed out one.
+    const includeReview = request.nextUrl.searchParams.get('include') === 'review';
+    const canEdit = loaded.access.canEdit;
+
     return withCacheControl(
-      successResponse({ roughCut: shapeRoughCut(loaded.row) }),
+      successResponse({
+        roughCut: shapeRoughCut(loaded.row, { includeScript: canEdit }),
+        ...(includeReview ? { review: await loadRoughCutReview(loaded.row, { canEdit }) } : {}),
+      }),
       'private, no-store'
     );
   } catch (error) {

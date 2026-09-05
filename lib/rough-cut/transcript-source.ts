@@ -12,6 +12,9 @@ import type { RoughCutWarning } from './types';
 /** A run waits this long, from its creation, for a transcript before it falls back to VAD. */
 export const TRANSCRIPT_WAIT_LIMIT_SECONDS = 15 * 60;
 
+/** With transcription on, a run waits this long for its transcript before it fails rather than degrades. */
+export const TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS = 2 * 60 * 60;
+
 /** Delay before a waiting assemble job is looked at again. */
 export const TRANSCRIPT_RETRY_DELAY_SECONDS = 60;
 
@@ -52,7 +55,16 @@ export type TranscriptFallbackReason = 'missing' | 'failed' | 'timed-out' | 'emp
 export type TranscriptSourceDecision =
   | { kind: 'use'; transcriptId: string; versionId: string }
   | { kind: 'wait'; transcriptId: string; versionId: string }
-  | { kind: 'fallback'; reason: Exclude<TranscriptFallbackReason, 'empty'> };
+  /**
+   * `versionId` is the candidate whose row produced the reason, so a caller
+   * can name the clip the operator has to fix. It is null for `missing`,
+   * where no candidate has a row at all.
+   */
+  | {
+      kind: 'fallback';
+      reason: Exclude<TranscriptFallbackReason, 'empty'>;
+      versionId: string | null;
+    };
 
 export function parseTranscriptRowStatus(value: unknown): TranscriptRowStatus | null {
   return TRANSCRIPT_ROW_STATUSES.includes(value as TranscriptRowStatus)
@@ -80,12 +92,16 @@ function isInProgress(status: TranscriptRowStatus): boolean {
  *   the worker that will finish the transcript, so a long queue is not a
  *   reason to give up early; a stuck job is caught by the limit.
  * - Otherwise fall back, saying why, so the warning can be specific.
+ *
+ * `waitLimitSeconds` overrides the default limit: a host that requires the
+ * transcript waits much longer, because it has no fallback to degrade to.
  */
 export function decideTranscriptSource(options: {
   rows: TranscriptRow[];
   candidateVersionIds: string[];
   roughCutCreatedAt: Date | string;
   now: Date;
+  waitLimitSeconds?: number;
 }): TranscriptSourceDecision {
   const byVersion = new Map<string, TranscriptRow[]>();
   for (const row of options.rows) {
@@ -106,24 +122,27 @@ export function decideTranscriptSource(options: {
   const ageSeconds = Number.isFinite(createdMs)
     ? (options.now.getTime() - createdMs) / 1000
     : Number.POSITIVE_INFINITY;
-  const canWait = ageSeconds < TRANSCRIPT_WAIT_LIMIT_SECONDS;
+  const limit = options.waitLimitSeconds ?? TRANSCRIPT_WAIT_LIMIT_SECONDS;
+  const canWait = ageSeconds < limit;
 
-  let sawInProgress = false;
-  let sawFailed = false;
+  let inProgressVersionId: string | null = null;
+  let failedVersionId: string | null = null;
   for (const versionId of options.candidateVersionIds) {
     for (const row of byVersion.get(versionId) ?? []) {
       if (isInProgress(row.status)) {
         if (canWait) return { kind: 'wait', transcriptId: row.id, versionId };
-        sawInProgress = true;
+        if (!inProgressVersionId) inProgressVersionId = versionId;
       } else if (row.status === 'FAILED') {
-        sawFailed = true;
+        if (!failedVersionId) failedVersionId = versionId;
       }
     }
   }
 
-  if (sawInProgress) return { kind: 'fallback', reason: 'timed-out' };
-  if (sawFailed) return { kind: 'fallback', reason: 'failed' };
-  return { kind: 'fallback', reason: 'missing' };
+  if (inProgressVersionId) {
+    return { kind: 'fallback', reason: 'timed-out', versionId: inProgressVersionId };
+  }
+  if (failedVersionId) return { kind: 'fallback', reason: 'failed', versionId: failedVersionId };
+  return { kind: 'fallback', reason: 'missing', versionId: null };
 }
 
 function wordCount(segment: TranscriptSegmentRow): number {
@@ -207,7 +226,8 @@ export function waitingForTranscriptWarning(clipTitles: string[]): RoughCutWarni
 
 export function transcriptFallbackWarning(
   reason: TranscriptFallbackReason,
-  clipTitle?: string | null
+  clipTitle?: string | null,
+  waitLimitSeconds = TRANSCRIPT_WAIT_LIMIT_SECONDS
 ): RoughCutWarning {
   const label = clipLabel(clipTitle);
   const cause =
@@ -215,7 +235,7 @@ export function transcriptFallbackWarning(
       ? `Transcription failed${label}`
       : reason === 'timed-out'
         ? `The transcript${label} was still running after ${Math.round(
-            TRANSCRIPT_WAIT_LIMIT_SECONDS / 60
+            waitLimitSeconds / 60
           )} minutes`
         : reason === 'empty'
           ? `The transcript${label} has no spoken segments`
@@ -224,6 +244,39 @@ export function transcriptFallbackWarning(
     code: WEAK_TRANSCRIPT_WARNING,
     message: `${cause}; speech was detected from audio energy instead — review the cuts carefully`,
   };
+}
+
+function clipSubject(clipTitle: string | null | undefined): string {
+  return clipTitle && clipTitle.trim()
+    ? `the transcript for ${clipTitle.trim()}`
+    : 'the transcript';
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Why a run that requires a transcript could not get one. This is the run's
+ * error, so it says what the operator can do about it.
+ */
+export function transcriptRequiredError(
+  reason: TranscriptFallbackReason,
+  clipTitle?: string | null,
+  waitLimitSeconds = TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS
+): string {
+  const label = clipLabel(clipTitle);
+  if (reason === 'failed') {
+    return `Transcription failed${label}; re-run or upload its transcript, then generate the cut again`;
+  }
+  if (reason === 'timed-out') {
+    const hours = Math.round(waitLimitSeconds / 3600);
+    return `${capitalize(clipSubject(clipTitle))} was still not ready after ${hours} ${hours === 1 ? 'hour' : 'hours'}; check the media worker, then generate the cut again`;
+  }
+  if (reason === 'empty') {
+    return `${capitalize(clipSubject(clipTitle))} has no spoken words; check the audio or upload a transcript, then generate the cut again`;
+  }
+  return `No transcript exists${label}; transcribe the clip, then generate the cut again`;
 }
 
 export function weakTranscriptWarning(

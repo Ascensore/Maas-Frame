@@ -1,4 +1,5 @@
 import type { NextResponse } from 'next/server';
+import { lockResourceInTransaction } from '@/lib/advisory-lock';
 import { db } from '@/lib/db';
 import { apiErrors } from '@/lib/api-response';
 import {
@@ -274,15 +275,9 @@ export async function reserveStorageQuota(
 
   try {
     const reservationId = await db.$transaction(async (tx) => {
-      // Serialise quota checks for this user via a per-user advisory lock.
-      // Combine two 32-bit hashtext() halves into a single 64-bit bigint to
-      // eliminate the 32-bit hash-space collision risk of plain hashtext().
-      // Use $executeRaw — the function returns void which $queryRaw cannot deserialize.
-      await tx.$executeRaw`
-        SELECT pg_advisory_xact_lock(
-          ('x' || left(md5(${userId}), 16))::bit(64)::bigint
-        )
-      `;
+      // Serialise quota checks for this user: the sums below are read under the lock,
+      // so two uploads a millisecond apart cannot both see room for the last byte.
+      await lockResourceInTransaction(tx, userId);
 
       // Read committed R2 storage under the lock
       const [r2AssetRow] = await tx.$queryRaw<[{ total: bigint }]>`

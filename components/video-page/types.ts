@@ -58,6 +58,26 @@ export interface Subtitle extends SubtitleTrackOption {
   uploadedByUser: { id: string; name: string | null; image: string | null } | null;
 }
 
+/**
+ * One word as a transcription provider timed it. Shared by the pane, the edit
+ * hook and anything else that reads a transcript line.
+ */
+export interface TranscriptWord {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  startSec: number;
+  endSec: number;
+  speaker: string | null;
+  text: string;
+  words: TranscriptWord[] | unknown;
+  position: number;
+}
+
 export interface ApprovalDecision {
   id: string;
   approverId: string;

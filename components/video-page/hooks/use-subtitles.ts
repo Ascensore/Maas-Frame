@@ -6,8 +6,9 @@ import {
   writeStoredSubtitleLanguage,
 } from '@/components/video-page/hooks/subtitle-preference';
 import type { Subtitle } from '@/components/video-page/types';
+import { readClientApiError } from '@/lib/client/api-error';
 import { getSubtitleExtension } from '@/lib/subtitle-validation';
-import { getTranscriptUploadExtension } from '@/lib/transcript-import';
+import { getTranscriptUploadExtension, isTranscriptSegmentTimed } from '@/lib/transcript-import';
 
 interface UseSubtitlesParams {
   videoId: string;
@@ -17,15 +18,56 @@ interface UseSubtitlesParams {
   supportsSubtitles: boolean;
 }
 
-function readClientApiError(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== 'object') return fallback;
-  const error = (payload as { error?: unknown }).error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object' && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
+/**
+ * The primary subtag, lowercased: `en-US` and `EN` are the same language for
+ * the purpose of deciding whether a transcript answers the request.
+ */
+function primarySubtag(tag: string): string {
+  return tag.trim().toLowerCase().split('-')[0] ?? '';
+}
+
+/**
+ * What the version's transcript can offer. `ok: false` is a probe that did not
+ * answer — a network failure or a broken payload — which is deliberately not
+ * the same as "there is no transcript": silently spending an AI transcription
+ * because a GET timed out is the bug this distinction exists to prevent.
+ */
+type TranscriptProbe = { ok: true; captionable: { language: string } | null } | { ok: false };
+
+/**
+ * The version's transcript, when it is finished and carries at least one timed
+ * line. That is everything a caption file needs, so there is nothing left to
+ * transcribe.
+ */
+async function probeCaptionableTranscript(versionId: string): Promise<TranscriptProbe> {
+  try {
+    const res = await fetch(`/api/versions/${versionId}/transcript`, { cache: 'no-store' });
+    if (!res.ok) return { ok: false };
+    const payload = await res.json().catch(() => null);
+    if (!payload || typeof payload !== 'object' || !('data' in payload)) return { ok: false };
+    const transcript = (
+      payload as {
+        data?: { transcript?: { status?: string; language?: string; segments?: unknown } | null };
+      }
+    ).data?.transcript;
+    if (!transcript || transcript.status !== 'READY') return { ok: true, captionable: null };
+    const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
+    const timed = segments.some(
+      (segment) =>
+        typeof segment === 'object' &&
+        segment !== null &&
+        isTranscriptSegmentTimed(segment as { startSec: number; endSec: number })
+    );
+    if (!timed) return { ok: true, captionable: null };
+    return {
+      ok: true,
+      captionable: {
+        language: typeof transcript.language === 'string' ? transcript.language : '',
+      },
+    };
+  } catch {
+    return { ok: false };
   }
-  return fallback;
 }
 
 /**
@@ -275,6 +317,39 @@ export function useSubtitles({
 
       generateInFlightRef.current = true;
       try {
+        // "Generate AI" on a version that already has a transcript used to run
+        // the transcription again, which cost the AI budget to arrive back at
+        // words we already had. Build the track from the transcript instead —
+        // but only when it is in the language being asked for, since a Turkish
+        // transcript is no basis for the English track the operator picked.
+        const probe = await probeCaptionableTranscript(versionId);
+        if (!probe.ok) {
+          generateInFlightRef.current = false;
+          return 'Could not check this version for an existing transcript';
+        }
+        const existing = probe.captionable;
+        if (existing && primarySubtag(existing.language) === primarySubtag(language)) {
+          const captionRes = await fetch(`/api/versions/${versionId}/transcript/captions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ language: existing.language }),
+          });
+          const captionPayload = await captionRes.json().catch(() => null);
+          generateInFlightRef.current = false;
+          if (!captionRes.ok) {
+            return readClientApiError(
+              captionPayload,
+              'Failed to build captions from the transcript'
+            );
+          }
+          const built = (captionPayload as { data?: { subtitle?: { language?: unknown } } } | null)
+            ?.data?.subtitle?.language;
+          const selected = (typeof built === 'string' && built) || existing.language || language;
+          await refresh();
+          selectSubtitleLanguage(selected.toLowerCase());
+          return null;
+        }
+
         const res = await fetch(`/api/versions/${versionId}/transcript`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -293,7 +368,7 @@ export function useSubtitles({
         return 'Failed to start AI subtitles';
       }
     },
-    [isGeneratingSubtitles, versionId]
+    [isGeneratingSubtitles, refresh, selectSubtitleLanguage, versionId]
   );
 
   useEffect(() => {

@@ -4,6 +4,7 @@ import {
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
+  transcriptRequiredError,
   WAITING_FOR_TRANSCRIPT_WARNING,
   waitingForTranscriptWarning,
   WEAK_TRANSCRIPT_WARNING,
@@ -124,6 +125,18 @@ describe('decideTranscriptSource', () => {
     ).toEqual({ kind: 'wait', transcriptId: 't-wide', versionId: WIDE });
   });
 
+  it('waits past fifteen minutes when a longer limit is given', () => {
+    const decision = decideTranscriptSource({
+      rows: [row({ id: 't1', versionId: 'v1', status: 'RUNNING' })],
+      candidateVersionIds: ['v1'],
+      roughCutCreatedAt: new Date(NOW.getTime() - 20 * 60_000),
+      now: NOW,
+      waitLimitSeconds: 2 * 60 * 60,
+    });
+
+    expect(decision).toEqual({ kind: 'wait', transcriptId: 't1', versionId: 'v1' });
+  });
+
   it('stops waiting once the run reaches the limit', () => {
     const decision = decideTranscriptSource({
       rows: [row({ id: 't-wide', versionId: WIDE, status: 'PENDING' })],
@@ -132,7 +145,7 @@ describe('decideTranscriptSource', () => {
       now: NOW,
     });
 
-    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out' });
+    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out', versionId: WIDE });
   });
 
   it('treats an unreadable creation time as past the limit', () => {
@@ -143,7 +156,7 @@ describe('decideTranscriptSource', () => {
       now: NOW,
     });
 
-    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out' });
+    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out', versionId: WIDE });
   });
 
   it('reports a transcript that timed out ahead of one that failed', () => {
@@ -157,7 +170,7 @@ describe('decideTranscriptSource', () => {
       now: NOW,
     });
 
-    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out' });
+    expect(decision).toEqual({ kind: 'fallback', reason: 'timed-out', versionId: WIDE });
   });
 
   it('reports failed and missing transcripts separately and ignores other versions', () => {
@@ -168,7 +181,7 @@ describe('decideTranscriptSource', () => {
         roughCutCreatedAt: ONE_MINUTE_AGO,
         now: NOW,
       })
-    ).toEqual({ kind: 'fallback', reason: 'failed' });
+    ).toEqual({ kind: 'fallback', reason: 'failed', versionId: WIDE });
     expect(
       decideTranscriptSource({
         rows: [],
@@ -176,7 +189,7 @@ describe('decideTranscriptSource', () => {
         roughCutCreatedAt: ONE_MINUTE_AGO,
         now: NOW,
       })
-    ).toEqual({ kind: 'fallback', reason: 'missing' });
+    ).toEqual({ kind: 'fallback', reason: 'missing', versionId: null });
     expect(
       decideTranscriptSource({
         rows: [row({ id: 't-other', versionId: 'ver-other', status: 'READY' })],
@@ -184,7 +197,20 @@ describe('decideTranscriptSource', () => {
         roughCutCreatedAt: ONE_MINUTE_AGO,
         now: NOW,
       })
-    ).toEqual({ kind: 'fallback', reason: 'missing' });
+    ).toEqual({ kind: 'fallback', reason: 'missing', versionId: null });
+  });
+
+  it('names the candidate whose row failed, not the first candidate', () => {
+    // The wide camera has no row at all; the failure is Cam A's, and only
+    // Cam A's name helps the operator.
+    const decision = decideTranscriptSource({
+      rows: [row({ id: 't-a', versionId: CAM_A, status: 'FAILED' })],
+      candidateVersionIds: [WIDE, CAM_A],
+      roughCutCreatedAt: ONE_MINUTE_AGO,
+      now: NOW,
+    });
+
+    expect(decision).toEqual({ kind: 'fallback', reason: 'failed', versionId: CAM_A });
   });
 });
 
@@ -287,6 +313,26 @@ describe('warnings', () => {
     expect(warning.message).toContain('for Cam A');
     expect(warning.message).toContain('7.3 words/s');
     expect(warning.message).toContain('40% empty segments');
+  });
+});
+
+describe('transcriptRequiredError', () => {
+  it('tells the operator what to do for each reason', () => {
+    expect(transcriptRequiredError('failed', 'Cam A')).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(transcriptRequiredError('timed-out', 'Cam A', 7200)).toBe(
+      'The transcript for Cam A was still not ready after 2 hours; check the media worker, then generate the cut again'
+    );
+    expect(transcriptRequiredError('timed-out', 'Cam A', 3600)).toBe(
+      'The transcript for Cam A was still not ready after 1 hour; check the media worker, then generate the cut again'
+    );
+    expect(transcriptRequiredError('missing', null)).toBe(
+      'No transcript exists; transcribe the clip, then generate the cut again'
+    );
+    expect(transcriptRequiredError('empty', 'Cam A')).toBe(
+      'The transcript for Cam A has no spoken words; check the audio or upload a transcript, then generate the cut again'
+    );
   });
 });
 

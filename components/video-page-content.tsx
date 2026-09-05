@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import Hls from 'hls.js';
 import { usePathname, useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { type AnnotationStroke, type AnnotationCanvasHandle } from '@/components/annotation-canvas';
 import { PlayerCore } from '@/components/video-page/player-core';
@@ -22,11 +23,13 @@ import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progre
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import { useVideoPageData } from '@/components/video-page/hooks/use-video-page-data';
+import { useRoughCutReview } from '@/components/video-page/hooks/use-rough-cut-review';
 import { useCommentExport } from '@/components/video-page/hooks/use-comment-export';
 import { useDownloadActions } from '@/components/video-page/hooks/use-download-actions';
 import { useVersionDurationSync } from '@/components/video-page/hooks/use-version-duration-sync';
 import { CommentComposer } from '@/components/video-page/comment-composer';
 import { CommentsPane } from '@/components/video-page/comments-pane';
+import { RoughCutReviewPane } from '@/components/video-page/rough-cut-review-pane';
 import { ReviewCommandPalette } from '@/components/video-page/review-command-palette';
 import { KeyboardShortcutsModal } from '@/components/keyboard-shortcuts-modal';
 import { useReviewHotkeys } from '@/components/video-page/hooks/use-review-hotkeys';
@@ -47,9 +50,12 @@ import type {
 import { useApprovals } from '@/components/video-page/hooks/use-approvals';
 import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
 import { useSubtitles } from '@/components/video-page/hooks/use-subtitles';
+import { useBurnIn } from '@/components/video-page/hooks/use-burn-in';
+import type { BurnInStyle } from '@/lib/rough-cut/subtitle-style';
+import { BurnInDialog } from '@/components/video-page/burn-in-dialog';
 import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
-import { canAutoTranscribe } from '@/lib/review-kind';
+import { canAutoTranscribe, canBurnInSubtitles } from '@/lib/review-kind';
 
 function formatTime(seconds: number): string {
   const totalSeconds = Math.floor(seconds);
@@ -116,7 +122,7 @@ export function VideoPageContent({
     toggleVoiceSpeed,
   } = useCommentMedia();
   const [showResolved, setShowResolved] = useState(false);
-  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets'>('comments');
+  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets' | 'cuts'>('comments');
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [focusCommentId, setFocusCommentId] = useState<string | null>(null);
   const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null);
@@ -148,6 +154,7 @@ export function VideoPageContent({
   const [selectedCompareVersions, setSelectedCompareVersions] = useState<Set<string>>(new Set());
   const [showApprovalRequestDialog, setShowApprovalRequestDialog] = useState(false);
   const [showApprovalsPanel, setShowApprovalsPanel] = useState(false);
+  const [burnInOpen, setBurnInOpen] = useState(false);
   const router = useRouter();
 
   const {
@@ -162,10 +169,22 @@ export function VideoPageContent({
     setSelectedTagId,
     projectId,
     fetchVersionComments,
+    reloadVideo,
   } = useVideoPageData({
     mode,
     videoId,
     propProjectId,
+  });
+
+  // Asked of every video: "not a rough cut" is an answer, and the API withholds
+  // the review itself from anyone who may not edit, so the tab appears for
+  // editors of a delivered cut and for nobody else. A render started from the
+  // pane adds a version to this very video, so the page reloads itself rather
+  // than asking the reviewer to.
+  const roughCutReview = useRoughCutReview({
+    videoId,
+    enabled: !loading && !!video && (video.kind ?? 'VIDEO') === 'VIDEO',
+    onRendered: () => void reloadVideo(),
   });
 
   const isGuest = video ? !video.isAuthenticated : false;
@@ -375,6 +394,7 @@ export function VideoPageContent({
     generateSubtitles,
     isUploadingSubtitle,
     isGeneratingSubtitles,
+    refreshSubtitles,
   } = useSubtitles({
     videoId,
     versionId: activeVersionId,
@@ -383,6 +403,55 @@ export function VideoPageContent({
   });
   const canManageCaptions = canShareVideo || canManageSubtitles;
   const canGenerateCaptions = supportsSubtitles && canManageCaptions;
+  /**
+   * Everything the burn-in route insists on, asked once. `supportsSubtitles` is
+   * provider-only, so an audio review stored on R2 passes it and would be
+   * offered a burn the route answers 400 to: there is no picture to burn into.
+   * `canBurnInSubtitles` is the route's own gate, asked before the menu entry
+   * is drawn rather than after the operator has filled in the dialog.
+   */
+  const canBurnIn =
+    canManageCaptions &&
+    !!activeVersionId &&
+    canBurnInSubtitles(video?.kind ?? 'VIDEO', activeProviderId ?? '');
+  // A burn-in adds a version to this very video, so the page reloads its own
+  // data rather than asking the operator to.
+  const burnIn = useBurnIn({
+    videoId,
+    versionId: activeVersionId,
+    enabled: canBurnIn,
+    onDone: () => {
+      toast.success('Subtitled version ready');
+      void reloadVideo();
+    },
+  });
+  useEffect(() => {
+    if (burnIn.error) toast.error(burnIn.error);
+  }, [burnIn.error]);
+  const openBurnIn = useCallback(() => setBurnInOpen(true), []);
+  // Whether the dialog is still on screen by the time the POST answers. It can
+  // be dismissed mid-flight on purpose, and a refusal that arrives after that
+  // has nowhere to be shown unless the page says it.
+  const burnInOpenRef = useRef(burnInOpen);
+  useEffect(() => {
+    burnInOpenRef.current = burnInOpen;
+  }, [burnInOpen]);
+  const { start: queueBurnIn } = burnIn;
+  const startBurnIn = useCallback(
+    async (style: Partial<BurnInStyle>, subtitleId?: string) => {
+      const message = await queueBurnIn(style, subtitleId);
+      if (!message) {
+        toast.success('Burning subtitles in. A new version appears here when it is done.');
+        setBurnInOpen(false);
+        return null;
+      }
+      // Only when the dialog has gone: while it is open it shows the refusal
+      // inline, and toasting as well would report one failure twice.
+      if (!burnInOpenRef.current) toast.error(message);
+      return message;
+    },
+    [queueBurnIn]
+  );
   const activeVersionDuration = activeVersion?.duration;
   const bunnyCdnHostname = useMemo(() => resolvePublicBunnyCdnHostname(), []);
   const embedUrl = useMemo(() => {
@@ -1024,6 +1093,9 @@ export function VideoPageContent({
             onSeek={handleTranscriptSeek}
             onCommentRange={handleTranscriptCommentRange}
             onOpenThread={handleOpenTranscriptThread}
+            // Editing a line rewrites the caption track, so the player's list is
+            // stale until it is fetched again.
+            onCaptionsChanged={refreshSubtitles}
           />
         </TranscriptSidebar>
         <div className={cn('flex-1 w-full flex flex-col min-h-0', isFullscreenMode && 'relative')}>
@@ -1162,6 +1234,8 @@ export function VideoPageContent({
             onGenerateSubtitles={generateSubtitles}
             isUploadingSubtitle={isUploadingSubtitle}
             isGeneratingSubtitles={isGeneratingSubtitles}
+            onBurnIn={canBurnIn ? openBurnIn : undefined}
+            burnInRunning={burnIn.isRunning}
             playbackSpeed={playbackSpeed}
             playbackSpeedBounds={playbackSpeedBounds}
             handleSpeedNudge={handleSpeedNudge}
@@ -1265,6 +1339,14 @@ export function VideoPageContent({
           onAssetMentionClick={handleAssetMentionClick}
           activePane={activeSidePane}
           setActivePane={setActiveSidePane}
+          showCutsTab={roughCutReview.isRoughCutOutput}
+          cutsPane={
+            <RoughCutReviewPane
+              review={roughCutReview}
+              getCurrentTime={getCurrentTime}
+              onSeekOutput={handleSeekToTimestamp}
+            />
+          }
           focusCommentId={focusCommentId}
           onFocusCommentHandled={() => setFocusCommentId(null)}
           assetsPane={
@@ -1361,6 +1443,16 @@ export function VideoPageContent({
       />
 
       <ImagePreviewDialog previewImage={previewImage} onClose={() => setPreviewImage(null)} />
+
+      {canBurnIn && (
+        <BurnInDialog
+          open={burnInOpen}
+          onOpenChange={setBurnInOpen}
+          starting={burnIn.starting}
+          subtitles={subtitles}
+          onStart={startBurnIn}
+        />
+      )}
 
       <CompareVersionsDialog
         open={showCompareDialog}

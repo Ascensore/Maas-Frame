@@ -33,9 +33,16 @@ import {
   previewCameraRoles,
   toLayoutGuessClips,
 } from '@/lib/rough-cut/load';
+import { SCRIPT_MAX_CHARS } from '@/lib/rough-cut/script';
 import { enqueueAssembleRoughCut, shapeRoughCut } from '@/lib/rough-cut/serialize';
+import { waitingForTranscriptWarning } from '@/lib/rough-cut/transcript-source';
+import { ensureTranscriptsForVersions } from '@/lib/transcription/ensure';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
+
+// Creating a cut starts transcription for its clips, which schedules work
+// after the response, as the upload routes do.
+export const maxDuration = 300;
 
 function parseFolderId(raw: string | null): string | null | undefined {
   if (raw === null) return undefined;
@@ -69,7 +76,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     });
 
     return withCacheControl(
-      successResponse({ roughCuts: rows.map(shapeRoughCut) }),
+      successResponse({ roughCuts: rows.map((row) => shapeRoughCut(row)) }),
       'private, no-store'
     );
   } catch (error) {
@@ -150,6 +157,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         requestedBriefId = brief.id;
       }
     }
+
+    let script: string | null = null;
+    if (body && body.script !== undefined && body.script !== null) {
+      if (typeof body.script !== 'string') {
+        return apiErrors.badRequest('script must be a string');
+      }
+      const trimmed = body.script.trim();
+      if (trimmed.length > SCRIPT_MAX_CHARS) {
+        return apiErrors.badRequest(`script must be ${SCRIPT_MAX_CHARS} characters or fewer`);
+      }
+      script = trimmed || null;
+    }
+
     const requestedProjectType =
       body?.projectType === undefined ? null : parseEditorialProjectType(body.projectType);
     if (body?.projectType !== undefined && !requestedProjectType) {
@@ -245,6 +265,43 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
+    // Start the transcription each clip needs now rather than leaving it to
+    // the assembler's first attempt, so the worker finds the jobs already
+    // queued and the run carries its waiting warning from the start. Only the
+    // worker transcribes video and only the worker assembles, so this brings
+    // the work forward; it does not make a cut possible without one.
+    //
+    // Multicam reads a single transcript for the whole session — the wide
+    // camera's, with the other angles only as a fallback (`slotCandidates` in
+    // lib/rough-cut/assemble-job.ts) — so only that camera needs one. Linear
+    // and sequential layouts cut every clip against its own transcript.
+    //
+    // `cameras` rather than `orderedCameras`: the assembler's `pickWideClip`
+    // ranks by position then video id, which is the order `loadFolderVideos`
+    // already returns, so searching it here picks the same camera the run
+    // will read. A clip-order override moves `orderedCameras` but not the
+    // positions `pickWideClip` sorts by.
+    const wideRole = (wideRoleParsed.value ?? profile.wideCameraRole).trim().toUpperCase();
+    const wideCamera =
+      cameras.find((camera) => camera.role.toUpperCase() === wideRole) ?? cameras[0];
+    const transcriptCameras =
+      layout === 'MULTICAM' ? (wideCamera ? [wideCamera] : []) : orderedCameras;
+    const transcriptTargets = transcriptCameras.flatMap((camera) =>
+      camera.versionId && camera.providerId
+        ? [{ versionId: camera.versionId, providerId: camera.providerId, title: camera.title }]
+        : []
+    );
+    const readiness = await ensureTranscriptsForVersions(
+      transcriptTargets.map((target) => ({
+        id: target.versionId,
+        providerId: target.providerId,
+        kind: 'VIDEO' as const,
+      }))
+    );
+    const pendingTitles = transcriptTargets
+      .filter((target) => readiness.pending.includes(target.versionId))
+      .map((target) => target.title);
+
     const created = await db.roughCut.create({
       data: {
         projectId,
@@ -258,6 +315,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         }) as Prisma.InputJsonValue,
         requestedById: session.user.id,
         layout,
+        script,
+        warnings:
+          pendingTitles.length > 0
+            ? ([waitingForTranscriptWarning(pendingTitles)] as Prisma.InputJsonValue)
+            : undefined,
         profileSnapshot: snapshotWithAssembly(profile, {
           clipOrder: clipOrderParsed.value,
           cameraRoles: cameraRolesParsed.value,
@@ -279,6 +341,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           layout,
           guessedLayout: guess.layout,
           guessReason: guess.reason,
+          transcripts: {
+            ready: readiness.ready.length,
+            pending: readiness.pending.length,
+            enqueued: readiness.enqueued.length,
+            failed: readiness.failed.length,
+          },
         },
         HttpStatus.CREATED
       ),

@@ -44,6 +44,10 @@ OpenFrame is built for video teams that want one system for review, revision, ap
 - Videos support multiple versions inside the same review thread, each with its own subtitle tracks uploaded as SRT or WebVTT.
 - Teams can switch between versions without losing review context.
 - Compare mode lets reviewers inspect two versions side by side.
+- Transcript lines can be corrected in place, with the word timings and the caption track updated to match.
+- Caption tracks can be built from a version's existing transcript instead of transcribing it again.
+- Subtitles can be burned into the picture as a new version, with the transcript carried across and an optional playback-speed change.
+- An automatically assembled cut lists every removal with its reason, playable against the source, so a reviewer can restore or confirm each one and re-cut.
 
 ### Client And Team Collaboration
 

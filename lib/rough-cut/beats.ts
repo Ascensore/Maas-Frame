@@ -1,6 +1,7 @@
 import type { SilencePolicy } from './brief';
 import { contentTokens, endsSentence, excerpt, type TimedWord } from './text';
 import type { TranscriptSegmentRow } from './transcript-source';
+import type { CutReasonCode as ProgramCutReasonCode } from './types';
 
 /**
  * The material model's speech layer: transcript words become kept speech
@@ -29,7 +30,12 @@ export type Beat = {
   runs: SpeechRun[];
 };
 
-export type CutReasonCode = 'DEAD_AIR' | 'FALSE_START' | 'REJECTED_TAKE';
+/**
+ * The codes the assembler itself can write. Derived from the program's list
+ * rather than repeated, so a code added there cannot quietly diverge; REVIEWER
+ * is excluded because only the reviewer's own cuts ever wear it.
+ */
+export type CutReasonCode = Exclude<ProgramCutReasonCode, 'REVIEWER'>;
 
 /** A removed source range, before it is keyed and placed on a run. */
 export type SourceCut = {
@@ -241,4 +247,73 @@ export function detectFalseStarts(
     });
   }
   return { beats: beats.filter((_, index) => keep[index]), cuts: cuts.reverse() };
+}
+
+export type WordSpan = { wordStart: number; wordEnd: number };
+
+/** A range `cutWordsFromBeat` took out, and which of the given spans asked for it. */
+export type RemovedSpan = { span: number; start: number; end: number; text: string };
+
+/**
+ * Remove word spans (index ranges, end exclusive) from a beat: the words go,
+ * the kept runs are cut around the removed time ranges, and the beat's
+ * extent shrinks to the words that remain. Each surviving run is clamped to
+ * the words still inside it, so the program stops on the last kept word
+ * rather than running into the removed span's silence. Null when nothing
+ * remains.
+ */
+export function cutWordsFromBeat(
+  beat: Beat,
+  spans: WordSpan[]
+): { beat: Beat | null; removed: RemovedSpan[] } {
+  const drop = new Set<number>();
+  const removed: RemovedSpan[] = [];
+  spans.forEach((span, position) => {
+    const first = Math.max(0, span.wordStart);
+    const last = Math.min(beat.words.length, span.wordEnd);
+    if (last <= first) return;
+    for (let index = first; index < last; index += 1) drop.add(index);
+    const words = beat.words.slice(first, last);
+    removed.push({
+      span: position,
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      text: words.map((word) => word.text.trim()).join(' '),
+    });
+  });
+  const words = beat.words.filter((_, index) => !drop.has(index));
+  if (words.length === 0) return { beat: null, removed };
+  let runs = beat.runs.map((run) => ({ ...run }));
+  for (const range of [...removed].sort((a, b) => a.start - b.start)) {
+    const next: SpeechRun[] = [];
+    for (const run of runs) {
+      if (range.end <= run.start + EPSILON || range.start >= run.end - EPSILON) {
+        next.push(run);
+        continue;
+      }
+      if (range.start > run.start + EPSILON) next.push({ start: run.start, end: range.start });
+      if (range.end < run.end - EPSILON) next.push({ start: range.end, end: run.end });
+    }
+    runs = next;
+  }
+  const kept: SpeechRun[] = [];
+  for (const run of runs) {
+    const inside = words.filter(
+      (word) => word.end > run.start + EPSILON && word.start < run.end - EPSILON
+    );
+    if (inside.length === 0) continue;
+    const start = Math.max(run.start, inside[0]!.start);
+    const end = Math.min(run.end, inside[inside.length - 1]!.end);
+    if (end - start > EPSILON) kept.push({ start, end });
+  }
+  return {
+    beat: {
+      ...beat,
+      words,
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      runs: kept,
+    },
+    removed,
+  };
 }

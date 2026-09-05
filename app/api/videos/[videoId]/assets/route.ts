@@ -2,6 +2,7 @@ import { HeadObjectCommand } from '@aws-sdk/client-s3';
 import { VideoAssetProvider } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { parseVideoUrl, getThumbnailUrl } from '@/lib/video-providers';
+import { lockResourceInTransaction } from '@/lib/advisory-lock';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { rateLimit } from '@/lib/rate-limit';
 import { db } from '@/lib/db';
@@ -604,11 +605,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         // Acquire the per-user advisory lock unconditionally so both the happy path
         // (valid reservation) and the fallback path (fake/expired reservation ID) are
         // serialised — eliminating the TOCTOU race in the deleted.count === 0 branch.
-        await tx.$executeRaw`
-          SELECT pg_advisory_xact_lock(
-            ('x' || left(md5(${billedUserId}), 16))::bit(64)::bigint
-          )
-        `;
+        // The billed user id is the same key `reserveStorageQuota` locks on, so the
+        // two contend with each other and not merely with themselves.
+        await lockResourceInTransaction(tx, billedUserId);
         // Validate the reservation by checking it actually exists and belongs to the
         // billed user. A client-supplied fake ID would delete 0 rows — in that case
         // we fall back to a standard (non-locked) quota check so the bypass attempt

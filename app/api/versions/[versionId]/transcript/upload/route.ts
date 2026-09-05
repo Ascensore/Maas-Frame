@@ -1,26 +1,12 @@
 import { NextRequest } from 'next/server';
-import { randomUUID } from 'crypto';
-import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
 import { auth, checkProjectAccess } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
-import { r2Client, R2_BUCKET_NAME } from '@/lib/r2';
-import {
-  releaseStorageReservation,
-  reserveStorageQuota,
-  UPLOAD_RESERVATION_PURPOSES,
-} from '@/lib/storage-quota';
-import {
-  normalizeSubtitleLanguage,
-  serializeWebVtt,
-  SUBTITLE_CONTENT_TYPE,
-  SUBTITLE_OBJECT_KEY_PREFIX,
-  subtitleFileNameToProxyUrl,
-  subtitleProxyPathToObjectKey,
-} from '@/lib/subtitle-validation';
+import { normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
+import { syncCaptionTrackFromSegments } from '@/lib/transcript-caption';
 import {
   importTranscriptFile,
   MAX_TRANSCRIPT_FILE_SIZE,
@@ -31,7 +17,6 @@ import {
 type RouteParams = { params: Promise<{ versionId: string }> };
 
 const MAX_MULTIPART_BODY_SIZE = MAX_TRANSCRIPT_FILE_SIZE + 64 * 1024;
-const MAX_SUBTITLES_PER_VERSION = 20;
 
 function shapeTranscript(
   transcript: {
@@ -58,108 +43,6 @@ function shapeTranscript(
       position,
     })),
   };
-}
-
-async function upsertCaptionTrack(input: {
-  versionId: string;
-  language: string;
-  segments: TranscriptImportSegment[];
-  billedUserId: string;
-  uploadedByUserId: string;
-}): Promise<void> {
-  const vtt = serializeWebVtt(
-    input.segments.map((segment) => ({
-      start: segment.startSec,
-      end: segment.endSec,
-      text: segment.text,
-    }))
-  );
-  const body = Buffer.from(vtt, 'utf8');
-  const sizeBytes = BigInt(body.byteLength);
-
-  const existing = await db.videoSubtitle.findUnique({
-    where: { versionId_language: { versionId: input.versionId, language: input.language } },
-    select: { id: true, sourceUrl: true },
-  });
-
-  if (!existing) {
-    const trackCount = await db.videoSubtitle.count({ where: { versionId: input.versionId } });
-    if (trackCount >= MAX_SUBTITLES_PER_VERSION) {
-      return;
-    }
-  }
-
-  const reserveResult = await reserveStorageQuota(
-    input.billedUserId,
-    sizeBytes,
-    UPLOAD_RESERVATION_PURPOSES.SUBTITLE
-  );
-  if ('error' in reserveResult) {
-    throw new Error('storage-quota');
-  }
-
-  const fileName = `${randomUUID()}.vtt`;
-  const objectKey = `${SUBTITLE_OBJECT_KEY_PREFIX}${fileName}`;
-  let stored = false;
-  try {
-    await r2Client.send(
-      new PutObjectCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key: objectKey,
-        Body: body,
-        ContentType: SUBTITLE_CONTENT_TYPE,
-      })
-    );
-    stored = true;
-
-    await db.$transaction(async (tx) => {
-      if (existing) {
-        await tx.videoSubtitle.delete({ where: { id: existing.id } });
-      }
-      await tx.videoSubtitle.create({
-        data: {
-          versionId: input.versionId,
-          language: input.language,
-          label: `Transcript (${input.language})`,
-          sourceUrl: subtitleFileNameToProxyUrl(fileName),
-          sizeBytes,
-          billedUserId: input.billedUserId,
-          uploadedByUserId: input.uploadedByUserId,
-        },
-      });
-    });
-
-    await releaseStorageReservation(
-      reserveResult.reservationId,
-      input.billedUserId,
-      UPLOAD_RESERVATION_PURPOSES.SUBTITLE
-    );
-
-    if (existing) {
-      const staleKey = subtitleProxyPathToObjectKey(existing.sourceUrl);
-      if (staleKey) {
-        try {
-          await r2Client.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: staleKey }));
-        } catch (deleteError) {
-          logError('Failed to delete replaced transcript caption object:', deleteError);
-        }
-      }
-    }
-  } catch (error) {
-    if (stored) {
-      try {
-        await r2Client.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: objectKey }));
-      } catch (cleanupError) {
-        logError('Failed to clean up transcript caption object:', cleanupError);
-      }
-    }
-    await releaseStorageReservation(
-      reserveResult.reservationId,
-      input.billedUserId,
-      UPLOAD_RESERVATION_PURPOSES.SUBTITLE
-    );
-    throw error;
-  }
 }
 
 // POST /api/versions/[versionId]/transcript/upload
@@ -269,7 +152,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     if (imported.timed) {
       try {
-        await upsertCaptionTrack({
+        await syncCaptionTrackFromSegments({
           versionId,
           language,
           segments: imported.segments,

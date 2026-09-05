@@ -103,6 +103,12 @@ function harness(options: {
   audioUnavailable?: boolean;
   /** The run's stored brief, as the create route writes it. */
   briefSnapshot?: unknown;
+  /** The copy the speaker read, stored on the run. */
+  script?: string | null;
+  /** The run's shortest kept shot, as the stored profile snapshot carries it. */
+  minShotSeconds?: number;
+  /** Rows the dedupe guard sees, i.e. a transcription already on its way. */
+  queuedTranscribeJobs?: Array<{ id: string }>;
 }) {
   const queries: Query[] = [];
   const runs: string[][] = [];
@@ -117,9 +123,13 @@ function harness(options: {
             id: 'cut-1',
             project_id: 'proj-1',
             folder_id: null,
-            profile_snapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
+            profile_snapshot: snapshotFromProfile({
+              ...BUILTIN_ROUGH_CUT_PROFILE,
+              minShotSeconds: options.minShotSeconds ?? BUILTIN_ROUGH_CUT_PROFILE.minShotSeconds,
+            }),
             layout: options.layout,
             brief_snapshot: options.briefSnapshot ?? null,
+            script: options.script ?? null,
             created_at: options.createdAt,
           },
         ],
@@ -132,6 +142,16 @@ function harness(options: {
     }
     if (sql.includes('FROM transcript_segments')) {
       return { rows: options.segments?.[params[0] as string] ?? [] };
+    }
+    // The upsert the job runs when it starts a transcription itself; the
+    // TRANSCRIBE job it queues next carries the id this returns.
+    if (sql.includes('INSERT INTO transcripts')) {
+      return { rows: [{ id: `t-${params[0] as string}` }] };
+    }
+    // Nothing is already queued unless a test says so, so the enqueue is not
+    // skipped by its own dedupe guard.
+    if (sql.includes('FROM media_jobs')) {
+      return { rows: options.queuedTranscribeJobs ?? [] };
     }
     return { rows: [] };
   };
@@ -162,7 +182,13 @@ function harness(options: {
   };
 
   const deps: AssembleDeps = {
-    pool: { query } as unknown as Pool,
+    // The transcription enqueue runs in a transaction on its own client. It
+    // shares this `query`, so BEGIN/COMMIT and its inserts land in `queries`
+    // alongside everything else.
+    pool: {
+      query,
+      connect: async () => ({ query, release: () => {} }),
+    } as unknown as Pool,
     run,
     downloadObject: async (key) => {
       downloads.push(key);
@@ -186,10 +212,22 @@ function harness(options: {
   };
   const mediaJobInserts = () =>
     queries.filter((entry) => entry.sql.includes('INSERT INTO media_jobs'));
+  const transcriptInserts = () =>
+    queries.filter((entry) => entry.sql.includes('INSERT INTO transcripts'));
   const vadRuns = () => runs.filter((args) => args[1] === '--vad-only');
   const failed = () => queries.find((entry) => entry.sql.includes("status = 'FAILED'"));
 
-  return { deps, queries, runs, downloads, persisted, mediaJobInserts, vadRuns, failed };
+  return {
+    deps,
+    queries,
+    runs,
+    downloads,
+    persisted,
+    mediaJobInserts,
+    transcriptInserts,
+    vadRuns,
+    failed,
+  };
 }
 
 describe('assembleRoughCut with a transcript', () => {
@@ -284,6 +322,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back to voice activity once a run has waited past the limit', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: TWENTY_MINUTES_AGO,
@@ -321,6 +361,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back when a READY transcript has no segments', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -368,6 +410,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('decides per clip in a sequential cut and downloads audio only for the fallback', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,
@@ -512,6 +556,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('keeps the diarization path for multicam when no transcript exists', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'MULTICAM',
       createdAt: ONE_MINUTE_AGO,
@@ -536,6 +582,8 @@ describe('assembleRoughCut with a transcript', () => {
     expect(h.vadRuns().map((args) => versionIdFromWav(args[2]))).toEqual(['ver-wide']);
   });
   it('names a failed transcription and uses voice activity for multicam', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'MULTICAM',
       createdAt: ONE_MINUTE_AGO,
@@ -564,6 +612,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back when every transcript segment is blank', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -586,6 +636,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('keeps each clip in full when neither transcript nor voice activity finds speech', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -701,6 +753,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('marks the run FAILED with the error when the fallback cannot get audio', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -726,6 +780,162 @@ describe('assembleRoughCut with a transcript', () => {
       'cut-1',
       'A rough cut needs at least one file-backed video in this folder',
     ]);
+  });
+});
+
+describe('assembleRoughCut requires the transcript when transcription is on', () => {
+  beforeEach(() => {
+    vi.stubEnv('OPENFRAME_ENABLE_DIARIZATION', 'false');
+  });
+
+  it('fails the run instead of falling back when transcription failed', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'FAILED', created_at: NOW_DATE() }],
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(
+      /Transcription failed for Cam A/
+    );
+
+    expect(h.failed()?.params[1]).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(h.persisted()).toBeNull();
+    expect(h.vadRuns()).toHaveLength(0);
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('starts a transcription and parks the run when a clip has none', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.transcriptInserts()).toHaveLength(1);
+    expect(h.transcriptInserts()[0]!.params[0]).toBe('ver-a');
+    const kinds = h.mediaJobInserts().map((entry) => /'(\w+)'/.exec(entry.sql)?.[1]);
+    expect(kinds).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE', 'ASSEMBLE_ROUGH_CUT']);
+    const transcribe = h.mediaJobInserts()[1]!;
+    expect(JSON.parse(transcribe.params[1] as string)).toEqual({
+      language: 'und',
+      transcriptId: 't-ver-a',
+    });
+    expect(h.persisted()).toBeNull();
+    expect(h.failed()).toBeUndefined();
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('keeps waiting for a transcript that is still running after fifteen minutes', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: TWENTY_MINUTES_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'RUNNING', created_at: NOW_DATE() }],
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.mediaJobInserts()).toHaveLength(1);
+    expect(h.mediaJobInserts()[0]!.sql).toContain("'ASSEMBLE_ROUGH_CUT'");
+    expect(h.vadRuns()).toHaveLength(0);
+    expect(h.persisted()).toBeNull();
+  });
+
+  it('fails a run that waited two hours for a transcript that never came', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: new Date(NOW - 3 * 60 * 60_000),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'PENDING', created_at: NOW_DATE() }],
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(/2 hours/);
+    expect(h.failed()?.params[1]).toContain('was still not ready after 2 hours');
+    expect(h.transcriptInserts()).toHaveLength(0);
+  });
+
+  it('fails a run whose only transcript has no spoken words', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
+      segments: { 't-a': [segment(1, 2, '   ')] },
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(/no spoken words/);
+    expect(h.vadRuns()).toHaveLength(0);
+  });
+
+  it('enqueues the wide camera\u2019s transcript for a multicam run with none', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      // Stored with the wide camera second, so picking the first clip rather
+      // than the one whose role is WIDE would transcribe Cam A instead.
+      videos: [
+        video({ version_id: 'ver-a', title: 'Cam A', position: 0 }),
+        video({ version_id: 'ver-wide', title: 'WIDE', position: 1 }),
+      ],
+      transcripts: [],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.transcriptInserts().map((entry) => entry.params[0])).toEqual(['ver-wide']);
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('names the camera whose transcription failed, not the wide one', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'WIDE', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      // The wide camera has no row at all; Cam A's transcription is the one
+      // that failed, so the wide camera's name would send the operator to the
+      // wrong clip.
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'FAILED', created_at: NOW_DATE() }],
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(
+      /Transcription failed for Cam A/
+    );
+
+    expect(h.failed()?.params[1]).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(h.transcriptInserts()).toHaveLength(0);
+  });
+
+  it('does not queue a second transcription when one is already on its way', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+      queuedTranscribeJobs: [{ id: 'job-1' }],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    // The row is still upserted, since the parked run has to have something
+    // to wait on; only the duplicate jobs are skipped.
+    expect(h.transcriptInserts()).toHaveLength(1);
+    const kinds = h.mediaJobInserts().map((entry) => /'(\w+)'/.exec(entry.sql)?.[1]);
+    expect(kinds).toEqual(['ASSEMBLE_ROUGH_CUT']);
   });
 });
 
@@ -881,6 +1091,281 @@ describe('assembleRoughCut editorial pass', () => {
     ]);
   });
 
+  it('keeps the take that reads the script and flags the line nobody spoke', async () => {
+    // Without the script, recency would keep the second take: both are equally
+    // clean, and their trigrams overlap too little to group them at all.
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script:
+        'We help founders raise faster.\nOur product does the heavy lifting.\nThanks for watching.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'we help founders raise faster'),
+          spokenSegment(10, 'we help founders raise much faster'),
+          spokenSegment(20, 'thanks for watching everyone'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected?.map((cut) => [cut.inSeconds, cut.transcriptText])).toEqual([
+      [10, 'we help founders raise much faster'],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([1, 20]);
+    expect(result?.warnings.map((warning) => warning.code)).toContain('script-lines-missing');
+    expect(
+      result?.warnings.find((warning) => warning.code === 'script-lines-missing')?.message
+    ).toContain('Our product does the heavy lifting.');
+  });
+
+  it('splices a re-said tail out of the long take and reports it as replaced', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 120 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'in this video we look at how um founders raise their seed round faster than before'
+          ),
+          spokenSegment(30, 'how founders raise their seed round faster than before'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected).toHaveLength(1);
+    expect(rejected?.[0]?.reason.summary).toMatch(/replaced by the take at 30/i);
+    expect(rejected?.[0]?.transcriptText).toBe(
+      'how um founders raise their seed round faster than before'
+    );
+    expect(result?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual([
+      [1, expect.any(Number)],
+      [30, expect.any(Number)],
+    ]);
+    // The long take now stops before the word "how", the seventh word of the
+    // segment, which the helper starts at 1 + 6 × 0.4.
+    const firstOut = result?.decisions?.edits[0]?.outSeconds ?? 0;
+    expect(firstOut).toBeLessThanOrEqual(1 + 6 * 0.4);
+  });
+
+  it('will not splice a take down to less than the run keeps', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      // Three-second shots: the 1.9 s remainder a splice would leave would be
+      // dropped from the program without a word, so the pickup goes instead.
+      minShotSeconds: 3,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 40 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+          spokenSegment(
+            20,
+            'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa'
+          ),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected?.map((cut) => [cut.inSeconds, cut.reason.summary])).toEqual([
+      [1, expect.stringContaining('Take 1 of 2; kept take 2')],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([20]);
+  });
+
+  it('names the right take on each of the two spans spliced out of one beat', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 80 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+          spokenSegment(
+            20,
+            'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee'
+          ),
+          spokenSegment(60, 'quebec romeo sierra tango uniform victor whiskey xray yankee'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The long take gives its head to the pickup before it and its tail to the
+    // one after it; each removed span has to name its own replacement.
+    const replaced = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(
+      replaced?.map((cut) => [
+        Number(cut.inSeconds.toFixed(1)),
+        cut.transcriptText,
+        cut.reason.summary,
+      ])
+    ).toEqual([
+      [
+        20,
+        'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo',
+        expect.stringContaining('Replaced by the take at 1.0s'),
+      ],
+      [
+        26.8,
+        'quebec romeo sierra tango uniform victor whiskey xray yankee',
+        expect.stringContaining('Replaced by the take at 60.0s'),
+      ],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => Number(edit.inSeconds.toFixed(1)))).toEqual([
+      1, 24.8, 60,
+    ]);
+  });
+
+  it('judges the script by what survived the trim, not by what was recorded', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script:
+        'We help founders raise faster.\nOur product does the heavy lifting today and it always has.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'we help um founders raise faster our product does the heavy lifting today and it always has'
+          ),
+          spokenSegment(30, 'lifting today and it always has'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The long take gives its tail to the cleaner pickup, and neither half now
+    // reads the second line: the warning has to be about the cut, not the tape.
+    expect(
+      result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE')
+    ).toHaveLength(1);
+    expect(
+      result?.warnings.find((warning) => warning.code === 'script-lines-missing')?.message
+    ).toContain('Our product does the heavy lifting today and it always has.');
+  });
+
+  it('warns when two takes overlap in the middle and both stay in the cut', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      // The script is what groups these two: they share one line and nothing else.
+      script: 'Our product does the heavy lifting.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'we help founders raise faster our product does the heavy lifting and we ship on time'
+          ),
+          spokenSegment(
+            40,
+            'the team is twelve people our product does the heavy lifting across two offices in europe'
+          ),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The shared line sits in the middle of both takes, so neither can give it
+    // up at an edge and nothing is cut; the operator is told instead.
+    expect(result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE')).toEqual(
+      []
+    );
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([1, 40]);
+    expect(result?.warnings.find((warning) => warning.code === 'take-overlap-kept')?.message).toBe(
+      '1 take overlaps material already in the cut and could not be trimmed; review it'
+    );
+  });
+
+  it('warns about a script it cannot read', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script: 'ok\nno',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: { 't-a': [spokenSegment(1, 'we help founders raise faster')] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.persisted()?.warnings.map((warning) => warning.code)).toContain('script-unreadable');
+  });
+
+  it('ignores the script when the brief does not select takes', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('ASCENSORE'),
+      script: 'We help founders raise faster.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'we help founders raise faster'),
+          spokenSegment(10, 'we help founders raise faster'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(result?.decisions?.edits).toHaveLength(2);
+    expect(result?.warnings.map((warning) => warning.code)).toContain('script-ignored');
+  });
+
   it('picks a take on the multicam session transcript and removes the loser from the program', async () => {
     const line = 'our revenue this year doubled to four million dollars';
     const h = harness({
@@ -1001,6 +1486,8 @@ describe('assembleRoughCut editorial pass', () => {
   it('places placeholder markers on the kept program across a sequential cut', async () => {
     // Clip 2 is Italian, so its cue list differs; clip 3 has an empty
     // transcript and falls back to voice activity, which has no words.
+    // That fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,

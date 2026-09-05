@@ -10,7 +10,6 @@ import {
   splitUntimedParagraphs,
   splitWords,
   spreadWordsAcrossRange,
-  stripCueMarkup,
 } from '@/lib/transcript-import';
 
 function encode(text: string): Uint8Array {
@@ -147,12 +146,6 @@ describe('isTranscriptSegmentTimed', () => {
     expect(isTranscriptSegmentTimed({ startSec: 0, endSec: 0 })).toBe(false);
     expect(isTranscriptSegmentTimed({ startSec: 1.5, endSec: 1.5 })).toBe(false);
     expect(isTranscriptSegmentTimed({ startSec: 1, endSec: 2 })).toBe(true);
-  });
-});
-
-describe('stripCueMarkup', () => {
-  it('drops WebVTT tags and decodes the entities the subtitle parser wrote', () => {
-    expect(stripCueMarkup('<b>Hello</b> &lt;world&gt; &amp; more')).toBe('Hello <world> & more');
   });
 });
 

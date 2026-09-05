@@ -73,7 +73,9 @@ export type EditDecision = {
   reason?: EditReason;
 };
 
-export const CUT_REASON_CODES = ['DEAD_AIR', 'FALSE_START', 'REJECTED_TAKE'] as const;
+// REVIEWER is not written by the assembler: it is the code a range the reviewer
+// cut by hand wears when the effective cut list is built for an export.
+export const CUT_REASON_CODES = ['DEAD_AIR', 'FALSE_START', 'REJECTED_TAKE', 'REVIEWER'] as const;
 export type CutReasonCode = (typeof CUT_REASON_CODES)[number];
 
 /** A removed source range and why, keyed so overrides survive a regenerate. */

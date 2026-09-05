@@ -74,6 +74,50 @@ describe('SubtitleControls', () => {
     expect(screen.queryByRole('menuitem', { name: 'Generate with AI' })).not.toBeInTheDocument();
   });
 
+  it('offers burn-in in the menu only when the page passes a handler', async () => {
+    const user = userEvent.setup();
+    const onBurnIn = vi.fn();
+    const { unmount } = renderControls({ onBurnIn });
+
+    await user.click(screen.getByRole('button', { name: 'Captions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Burn subtitles into a new version' }));
+    expect(onBurnIn).toHaveBeenCalledTimes(1);
+    unmount();
+
+    renderControls();
+    await user.click(screen.getByRole('button', { name: 'Captions' }));
+    expect(
+      screen.queryByRole('menuitem', { name: 'Burn subtitles into a new version' })
+    ).not.toBeInTheDocument();
+  });
+
+  it('hides burn-in from a viewer who cannot manage captions', async () => {
+    const user = userEvent.setup();
+    const onBurnIn = vi.fn();
+    renderControls({ onBurnIn, canManageSubtitles: false, alwaysShow: true });
+
+    await user.click(screen.getByRole('button', { name: 'Captions' }));
+    expect(
+      screen.queryByRole('menuitem', { name: 'Burn subtitles into a new version' })
+    ).not.toBeInTheDocument();
+  });
+
+  it('disables burn-in and says so while one is running', async () => {
+    const user = userEvent.setup();
+    const onBurnIn = vi.fn();
+    renderControls({ onBurnIn, burnInRunning: true });
+
+    await user.click(screen.getByRole('button', { name: 'Captions' }));
+    const item = screen.getByRole('menuitem', { name: 'Burning in…' });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+
+    await user.click(item);
+    expect(onBurnIn).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('menuitem', { name: 'Burn subtitles into a new version' })
+    ).not.toBeInTheDocument();
+  });
+
   it('opens a generate dialog whose confirm button starts AI subtitles', async () => {
     const user = userEvent.setup();
     renderControls();

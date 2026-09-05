@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readClientApiError } from '@/lib/client/api-error';
 import { downloadNamedFile } from '@/lib/client/download-file';
 import { isWaitingForMediaWorker } from '@/lib/rough-cut/workspace';
 
@@ -38,17 +39,6 @@ export type RoughCutRecord = {
   updatedAt: string;
 };
 
-function readClientApiError(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== 'object') return fallback;
-  const error = (payload as { error?: unknown }).error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object' && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
-  }
-  return fallback;
-}
-
 function parseWarnings(value: unknown): RoughCutWarning[] | null {
   if (!Array.isArray(value)) return null;
   const warnings: RoughCutWarning[] = [];
@@ -63,7 +53,8 @@ function parseWarnings(value: unknown): RoughCutWarning[] | null {
   return warnings;
 }
 
-function parseRoughCut(value: unknown): RoughCutRecord | null {
+/** Shared with the review hook: one reader for the row, whichever route served it. */
+export function parseRoughCut(value: unknown): RoughCutRecord | null {
   if (!value || typeof value !== 'object') return null;
   const row = value as Record<string, unknown>;
   if (typeof row.id !== 'string' || typeof row.status !== 'string') return null;
@@ -182,6 +173,7 @@ export function useRoughCut() {
       clipOrder?: string[];
       cameraRoles?: Record<string, string>;
       wideCameraRole?: string;
+      script?: string;
     }) => {
       if (isStarting) return 'A rough cut is already running';
       setIsStarting(true);
@@ -202,6 +194,7 @@ export function useRoughCut() {
               ? { cameraRoles: options.cameraRoles }
               : {}),
             ...(options.wideCameraRole ? { wideCameraRole: options.wideCameraRole } : {}),
+            ...(options.script ? { script: options.script } : {}),
           }),
         });
         const payload = await response.json().catch(() => null);

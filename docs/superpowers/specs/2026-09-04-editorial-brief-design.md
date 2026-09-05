@@ -408,8 +408,29 @@ format because it has no stable keys.
    so a marker on removed material is dropped and a multicam marker from the session transcript
    still lands at the packed program position when another camera is up. Keys are
    `${versionId}:${kind}:${wordFrame}`. Runs without a brief get no markers.
-5. Overrides route, `applyOverrides`, re-materialize, regenerate with pins.
-6. Cut-review UI on the output video page with source-proxy preview.
+5. Overrides route, `applyOverrides`, re-materialize, regenerate with pins. **Done**, except the
+   last item, which turned out not to be needed. `lib/rough-cut/overrides.ts` holds the stored
+   shape (`{ version: 1, cuts: { [islandKey]: 'restore' | 'keep' }, extraCuts }`, `MAX_EXTRA_CUTS`
+   200), the validation against a run's decisions, the pure `applyOverrides` /
+   `effectiveDecisions` that re-pack the program, and `needsRender`.
+   `PUT /api/rough-cuts/[roughCutId]/overrides` saves them onto the `overrides` column and
+   `POST /api/rough-cuts/[roughCutId]/render` queues a `MATERIALIZE_ROUGH_CUT` job that lands as
+   another version of the output video, labelled `Re-render <n>` — atomically, behind
+   `lockResourceInTransaction` on the run, so two clicks cannot queue two renders. The exports
+   read the same effective decisions, so `?cuts=1` marks a reviewer's cut (`REVIEWER`) and stops
+   marking a restored island. **Regenerate with pins was not built**: overrides are keyed by
+   island and source range rather than by timeline position, and a re-render reuses the same run
+   rather than assembling a second one, so there is nothing to copy pins forward to and no
+   `override-unmapped` case to report.
+6. Cut-review UI on the output video page with source-proxy preview. **Done.** A third "Cuts" tab
+   beside Comments and Assets on the output video (`components/video-page/rough-cut-review-pane.tsx`,
+   state in `hooks/use-rough-cut-review.ts`) lists every removal with its reason and offers
+   Restore / Keep per island, notes, extra cuts marked on the timeline, Save and Re-render.
+   `rough-cut-source-preview.tsx` plays the uncut source range so the reviewer hears what was
+   taken out before deciding. `GET /api/videos/[videoId]/rough-cut` and
+   `GET /api/rough-cuts/[roughCutId]?include=review` serve the payload — decisions, effective
+   program, overrides, the rendered snapshot, `needsRender` and source playback URLs — and
+   withhold it entirely from a caller who may only comment.
 7. Markers in FCP7 XML / OTIO; cut islands as opt-in marker set. **Done**, together with 4.
    `lib/rough-cut/export-markers.ts` builds one marker list for both writers: OTIO gets
    `Marker.2` entries on the Program track (blue infographic, green B-roll, red cut) with the key

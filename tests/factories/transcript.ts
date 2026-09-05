@@ -6,7 +6,14 @@ export interface CreateTranscriptInput {
   language?: string;
   provider?: string;
   status?: TranscriptStatus;
-  segments: Array<{ startSec: number; endSec: number; text: string }>;
+  segments: Array<{
+    startSec: number;
+    endSec: number;
+    text: string;
+    speaker?: string | null;
+    /** Word timings, as a provider writes them. Empty means an untimed segment. */
+    words?: Array<{ start: number; end: number; text: string }>;
+  }>;
 }
 
 export async function createReadyTranscript(input: CreateTranscriptInput): Promise<Transcript> {
@@ -21,8 +28,9 @@ export async function createReadyTranscript(input: CreateTranscriptInput): Promi
         create: input.segments.map((segment, position) => ({
           startSec: segment.startSec,
           endSec: segment.endSec,
+          speaker: segment.speaker ?? null,
           text: segment.text,
-          words: [],
+          words: segment.words ?? [],
           position,
         })),
       },

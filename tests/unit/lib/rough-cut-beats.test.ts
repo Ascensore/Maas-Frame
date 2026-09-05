@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   analyseSpeech,
   beatText,
+  cutWordsFromBeat,
   detectFalseStarts,
   wordsFromSegments,
+  type Beat,
 } from '@/lib/rough-cut/beats';
 import { SILENCE_AGGRESSIVENESS } from '@/lib/rough-cut/brief';
 import { fillerWordsFor } from '@/lib/rough-cut/text';
@@ -309,5 +311,66 @@ describe('detectFalseStarts', () => {
       }
     ).beats;
     expect(detectFalseStarts(shorter, EN).cuts).toEqual([]);
+  });
+});
+
+/** One beat of 0.8 s words a second apart: 0.2 s gaps, well inside the low policy. */
+function beatOf(text: string, at = 0): Beat {
+  return analyseSpeech([spoken(at, text, { gap: 0.2, length: 0.8 })], {
+    versionId: 'v',
+    durationSeconds: 1000,
+    policy: SILENCE_AGGRESSIVENESS.low,
+  }).beats[0]!;
+}
+
+describe('cutWordsFromBeat', () => {
+  it('removes a suffix span, shortens the beat and its run, and reports the removed range', () => {
+    const beat = beatOf('one two three four five six');
+    const result = cutWordsFromBeat(beat, [{ wordStart: 4, wordEnd: 6 }]);
+    expect(result.beat?.words.map((word) => word.text)).toEqual(['one', 'two', 'three', 'four']);
+    expect(result.beat?.end).toBe(3.8);
+    // The kept run ends with the last kept word, not where the removed span starts.
+    expect(result.beat?.runs).toEqual([{ start: 0, end: 3.8 }]);
+    expect(result.removed).toEqual([{ span: 0, start: 4, end: 5.8, text: 'five six' }]);
+  });
+
+  it('splits a run around a middle span and returns null when nothing is left', () => {
+    const beat = beatOf('one two three four five six');
+    const middle = cutWordsFromBeat(beat, [{ wordStart: 2, wordEnd: 4 }]);
+    expect(middle.beat?.runs).toEqual([
+      { start: 0, end: 1.8 },
+      { start: 4, end: 5.8 },
+    ]);
+    expect(middle.beat?.words.map((word) => word.text)).toEqual(['one', 'two', 'five', 'six']);
+    expect(middle.beat?.start).toBe(0);
+    expect(middle.beat?.end).toBe(5.8);
+    expect(cutWordsFromBeat(beat, [{ wordStart: 0, wordEnd: 6 }]).beat).toBeNull();
+  });
+
+  it('ignores an empty or out-of-range span and leaves the beat untouched', () => {
+    const beat = beatOf('one two three four five six');
+    const result = cutWordsFromBeat(beat, [
+      { wordStart: 3, wordEnd: 3 },
+      { wordStart: 9, wordEnd: 12 },
+    ]);
+    expect(result.removed).toEqual([]);
+    expect(result.beat?.words).toHaveLength(6);
+    expect(result.beat?.runs).toEqual([{ start: 0, end: 5.8 }]);
+  });
+
+  it('names the span each removed range came from, skipped spans and all', () => {
+    const beat = beatOf('one two three four five six');
+    // The first span removes nothing, so the caller cannot pair the ranges it
+    // gets back with the spans it gave by position.
+    const result = cutWordsFromBeat(beat, [
+      { wordStart: 3, wordEnd: 3 },
+      { wordStart: 4, wordEnd: 6 },
+      { wordStart: 0, wordEnd: 1 },
+    ]);
+    expect(result.removed.map((removed) => [removed.span, removed.text])).toEqual([
+      [1, 'five six'],
+      [2, 'one'],
+    ]);
+    expect(result.beat?.words.map((word) => word.text)).toEqual(['two', 'three', 'four']);
   });
 });

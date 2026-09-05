@@ -19,6 +19,7 @@ import {
   Pencil,
   Play,
   Reply,
+  Scissors,
   Sparkles,
   Tag,
   Trash2,
@@ -137,9 +138,12 @@ interface CommentsPaneProps {
   composer: ReactNode;
   assets: VideoAsset[];
   onAssetMentionClick: (assetId: string) => void;
-  activePane: 'comments' | 'assets';
-  setActivePane: (pane: 'comments' | 'assets') => void;
+  activePane: 'comments' | 'assets' | 'cuts';
+  setActivePane: (pane: 'comments' | 'assets' | 'cuts') => void;
   assetsPane: ReactNode;
+  /** The cut review of the rough cut this video was delivered from, if it is one. */
+  cutsPane?: ReactNode;
+  showCutsTab?: boolean;
   agentsEnabled?: boolean;
   canManageAgentComments?: boolean;
   agentRunBusy?: boolean;
@@ -228,6 +232,8 @@ export const CommentsPane = memo(function CommentsPane({
   activePane,
   setActivePane,
   assetsPane,
+  cutsPane = null,
+  showCutsTab = false,
   agentsEnabled = false,
   canManageAgentComments = false,
   agentRunBusy = false,
@@ -339,6 +345,17 @@ export const CommentsPane = memo(function CommentsPane({
                   {assets.length}
                 </Badge>
               </Button>
+              {showCutsTab && (
+                <Button
+                  variant={activePane === 'cuts' ? 'default' : 'ghost'}
+                  size="sm"
+                  className="h-8 shrink-0"
+                  onClick={() => setActivePane('cuts')}
+                >
+                  <Scissors className="h-4 w-4 mr-1" />
+                  Cuts
+                </Button>
+              )}
             </div>
             <Button
               variant="ghost"
@@ -473,6 +490,13 @@ export const CommentsPane = memo(function CommentsPane({
             aria-hidden={activePane !== 'assets'}
           >
             {assetsPane}
+          </div>
+
+          <div
+            className={cn(activePane === 'cuts' ? 'block p-4' : 'hidden')}
+            aria-hidden={activePane !== 'cuts'}
+          >
+            {activePane === 'cuts' ? cutsPane : null}
           </div>
 
           <div

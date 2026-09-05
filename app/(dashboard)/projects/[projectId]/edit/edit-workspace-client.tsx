@@ -822,14 +822,12 @@ export function EditWorkspaceClient({
                         <td className="py-2 pr-3">
                           {waiting ? (
                             <span>Waiting for the media worker</span>
+                          ) : isWaitingForTranscript(cut.status, cut.warnings) ? (
+                            'Waiting for the transcript…'
                           ) : cut.status === 'PENDING' ? (
                             'Queued…'
                           ) : cut.status === 'RUNNING' ? (
-                            isWaitingForTranscript(cut.status, cut.warnings) ? (
-                              'Waiting for the transcript…'
-                            ) : (
-                              'Running…'
-                            )
+                            'Running…'
                           ) : cut.status === 'READY' ? (
                             cut.outputVideoId ? (
                               'Ready'

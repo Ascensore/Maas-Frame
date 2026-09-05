@@ -6,6 +6,8 @@ import { applyCameraRole, assemblyFromSnapshot, orderClipsForLinearLayout } from
 import { LOW_ATTRIBUTION_CONFIDENCE, pickHighestRmsCamera, type RmsSample } from './attribute';
 import {
   analyseSpeech,
+  beatText,
+  cutWordsFromBeat,
   detectFalseStarts,
   type Beat,
   type SourceCut,
@@ -23,7 +25,7 @@ import { applyCameraGrammar } from './camera-grammar';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from './camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from './decision-list';
 import { computeLinearDecisions, computeRoughCutDecisions } from './decisions';
-import { isDiarizationEnvEnabled } from './env';
+import { isDiarizationEnvEnabled, isTranscriptionEnvEnabled } from './env';
 import {
   applySequentialOffsets,
   cameraClipToLayoutGuess,
@@ -39,15 +41,32 @@ import {
 import { assignClipExportFileNames } from './media-paths';
 import { profileFromSnapshot } from './profile';
 import { packTimeline, subtractTimelineRanges, toCutIsland } from './program';
+import {
+  alignBeatToScript,
+  parseScript,
+  rankingWithScript,
+  scriptCoverageWarnings,
+  scriptTakeGroups,
+} from './script';
 import { computeTimecodeOffsets } from './sync';
-import { rejectedTakeCuts, selectTakes, type TakeCandidate } from './takes';
+import {
+  groupTakes,
+  rejectedTakeCut,
+  replacedTakeCut,
+  resolveTakes,
+  TAKE_WINDOW_SECONDS,
+  type TakeCandidate,
+} from './takes';
 import { fillerWordsFor } from './text';
 import {
   assessTranscriptQuality,
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
+  transcriptRequiredError,
+  TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS,
   TRANSCRIPT_RETRY_DELAY_SECONDS,
+  TRANSCRIPT_WAIT_LIMIT_SECONDS,
   waitingForTranscriptWarning,
   weakTranscriptWarning,
   type TranscriptFallbackReason,
@@ -185,6 +204,11 @@ function readLayout(value: unknown): RoughCutLayout {
   return 'MULTICAM';
 }
 
+/** The copy the speaker was reading, when the operator gave one. */
+function readScript(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 async function persistReady(
   deps: AssembleDeps,
   roughCutId: string,
@@ -252,6 +276,69 @@ async function deferForTranscript(
   );
 }
 
+/**
+ * Start a transcription for a clip that has none, the way an upload does:
+ * a PENDING transcript row, audio extraction, then the transcribe job. The
+ * worker that runs this job is the worker that will transcribe, so the
+ * run parks itself and comes back when the row is READY.
+ *
+ * All of it goes in one transaction: a row with no jobs behind it would
+ * leave the run waiting on a transcript nobody is writing. The row is
+ * upserted either way, since the parked run needs something to wait on,
+ * but the jobs are skipped when a transcription is already on its way.
+ */
+async function enqueueTranscription(deps: AssembleDeps, versionId: string): Promise<void> {
+  const provider = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local')
+    .trim()
+    .toLowerCase();
+  const client = await deps.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const upsert = await client.query(
+      `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'und', $2, 'PENDING', '', NULL, NOW(), NOW())
+       ON CONFLICT (version_id, language)
+       DO UPDATE SET status = 'PENDING', error = NULL, provider = EXCLUDED.provider, updated_at = NOW()
+       RETURNING id`,
+      [versionId, provider]
+    );
+    const transcriptId = upsert.rows[0]?.id;
+    // After the upsert, never before it: the unique index on (version_id,
+    // language) makes a concurrent run block there until the first commits,
+    // so this SELECT then sees the first run's TRANSCRIBE job.
+    const queued = await client.query(
+      `SELECT id FROM media_jobs
+       WHERE version_id = $1 AND kind = 'TRANSCRIBE' AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+       LIMIT 1`,
+      [versionId]
+    );
+    if (!queued.rows[0]) {
+      await client.query(
+        `INSERT INTO media_jobs (id, kind, status, version_id, attempts, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, 'EXTRACT_AUDIO', 'PENDING', $1, 0, NOW(), NOW())`,
+        [versionId]
+      );
+      await client.query(
+        `INSERT INTO media_jobs (id, kind, status, version_id, payload, attempts, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, 'TRANSCRIBE', 'PENDING', $1, $2::jsonb, 0, NOW(), NOW())`,
+        [versionId, JSON.stringify({ language: 'und', transcriptId: transcriptId ?? null })]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    // A rollback on a dead connection throws in turn; the original failure is
+    // the one worth reporting.
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignored
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function loadTranscriptRows(
   deps: AssembleDeps,
   versionIds: string[]
@@ -303,7 +390,7 @@ async function resolveTranscriptSlot(
   decision: Exclude<TranscriptSourceDecision, { kind: 'wait' }>,
   rows: TranscriptRow[]
 ): Promise<TranscriptSlot> {
-  if (decision.kind === 'fallback') return decision;
+  if (decision.kind === 'fallback') return { kind: 'fallback', reason: decision.reason };
   const segments = await loadTranscriptSegments(deps, decision.transcriptId);
   if (segments.length === 0) return { kind: 'fallback', reason: 'empty' };
   const row = rows.find((entry) => entry.id === decision.transcriptId);
@@ -331,6 +418,9 @@ async function vadTurnsForClip(
  * Speech for one clip: the transcript analysed under the brief's silence
  * policy when it has one, voice activity otherwise. A transcript whose
  * words produce no speech at all counts as empty and falls back too.
+ *
+ * With transcription on there is nothing to fall back to, so the same two
+ * cases fail the run instead.
  */
 async function materialFor(
   deps: AssembleDeps,
@@ -342,6 +432,10 @@ async function materialFor(
     wavFor: (versionId: string) => Promise<string>;
     /** Multicam names the clip on the fallback warning as well; linear names it always. */
     label: string | null;
+    /** Transcription is on for this host, so the transcript is not optional. */
+    required: boolean;
+    /** How long this run was willing to wait, for the timed-out wording. */
+    waitLimitSeconds: number;
   }
 ): Promise<ClipMaterial> {
   const { clip, slot, editorial, warnings } = options;
@@ -357,11 +451,19 @@ async function materialFor(
       if (quality.weak) warnings.push(weakTranscriptWarning(quality, options.label));
       return { kind: 'transcript', clip, analysis, language: slot.language };
     }
+    if (options.required) {
+      throw new Error(transcriptRequiredError('empty', options.label, options.waitLimitSeconds));
+    }
     fallbackReason = 'empty';
   } else {
+    if (options.required) {
+      throw new Error(
+        transcriptRequiredError(slot.reason, options.label, options.waitLimitSeconds)
+      );
+    }
     fallbackReason = slot.reason;
   }
-  warnings.push(transcriptFallbackWarning(fallbackReason, options.label));
+  warnings.push(transcriptFallbackWarning(fallbackReason, options.label, options.waitLimitSeconds));
   const wav = await options.wavFor(clip.versionId);
   const islands = await vadTurnsForClip(deps, wav);
   return {
@@ -398,6 +500,9 @@ async function editorialPass(
     editorial: Editorial;
     warnings: RoughCutWarning[];
     wavFor: (versionId: string) => Promise<string>;
+    script: string | null;
+    /** The run's shortest kept shot, so take splicing never leaves less behind. */
+    minShotSeconds: number;
   }
 ): Promise<EditorialResult> {
   const { editorial, warnings } = options;
@@ -407,6 +512,20 @@ async function editorialPass(
   );
   const language = transcripts.find((material) => material.language)?.language ?? null;
   const fillers = fillerWordsFor(language);
+  const script = options.script ? parseScript(options.script, fillers) : null;
+  const scriptLines = script?.lines ?? [];
+  if (options.script && scriptLines.length === 0) {
+    warnings.push({
+      code: 'script-unreadable',
+      message: 'The script has no line of three or more words, so it was not used',
+    });
+  }
+  if (scriptLines.length > 0 && !editorial.takeSelection) {
+    warnings.push({
+      code: 'script-ignored',
+      message: 'The brief does not select takes, so the script was not used',
+    });
+  }
   const cuts: SourceCut[] = [];
   const beatsByVersion = new Map<string, Beat[]>();
 
@@ -422,11 +541,12 @@ async function editorialPass(
   }
 
   if (editorial.takeSelection && transcripts.length > 0) {
-    if (editorial.ranking.includes('script_match')) {
+    const useScript = scriptLines.length > 0;
+    if (!useScript && editorial.ranking.includes('script_match')) {
       warnings.push({
         code: 'script-match-unavailable',
         message:
-          'The brief ranks takes by script match, which is not available yet; it was ignored',
+          'The brief ranks takes by script match, but this run has no script; it was ignored',
       });
     }
     const candidates: TakeCandidate[] = [];
@@ -436,30 +556,94 @@ async function editorialPass(
         candidates.push({ beat, timelineStart: offset + beat.start, energy: null });
       }
     }
+    // With a script, a beat is a take of the line it reads however it is
+    // worded, and the reading closest to the line wins.
+    const alignments =
+      useScript && script
+        ? candidates.map((candidate) => alignBeatToScript(candidate.beat, script, fillers))
+        : [];
+    alignments.forEach((alignment, index) => {
+      candidates[index]!.scriptMatch = alignment.score;
+    });
+    const ranking = useScript ? rankingWithScript(editorial.ranking) : editorial.ranking;
+    const alsoGroup = useScript
+      ? scriptTakeGroups(candidates, alignments, TAKE_WINDOW_SECONDS)
+      : [];
     const longPauseSeconds = editorial.policy.maxKeptGapInsideBeatSeconds;
-    const options_ = { fillers, ranking: editorial.ranking, longPauseSeconds };
+    const options_ = { fillers, ranking, longPauseSeconds, alsoGroup };
     // Loudness costs a wav download and a python call per beat, so it is
     // measured only for beats that are actually in a group.
-    if (editorial.ranking.includes('energy')) {
-      const grouped = new Set(selectTakes(candidates, options_).flatMap((entry) => entry.group));
+    if (ranking.includes('energy')) {
+      const grouped = new Set(groupTakes(candidates, options_).flat());
       for (const index of grouped) {
         const candidate = candidates[index]!;
         const wav = await options.wavFor(candidate.beat.versionId);
         candidate.energy = await rmsAt(deps, wav, candidate.beat.start, candidate.beat.end);
       }
     }
-    const rejected = new Set<Beat>();
-    for (const decision of selectTakes(candidates, options_)) {
-      cuts.push(...rejectedTakeCuts(candidates, decision));
-      for (const index of decision.group) {
-        if (index !== decision.keptIndex) rejected.add(candidates[index]!.beat);
+    // A beat maps to the beat that replaces it: a shorter one when part of it
+    // was re-said elsewhere, or null when the whole take was rejected.
+    const replacements = new Map<Beat, Beat | null>();
+    let duplicatesKept = 0;
+    for (const resolution of resolveTakes(candidates, {
+      ...options_,
+      scriptLines: useScript ? scriptLines : undefined,
+      alignments: useScript ? alignments : undefined,
+      minShotSeconds: options.minShotSeconds,
+    })) {
+      for (const entry of resolution.rejected) {
+        cuts.push(rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution));
+        replacements.set(candidates[entry.index]!.beat, null);
       }
+      for (const entry of resolution.kept) {
+        if (entry.cuts.length === 0) continue;
+        const candidate = candidates[entry.index]!;
+        const result = cutWordsFromBeat(candidate.beat, entry.cuts);
+        for (const removed of result.removed) {
+          cuts.push(
+            replacedTakeCut(candidates, entry.index, entry.cuts[removed.span]!.coveredBy, removed)
+          );
+        }
+        replacements.set(candidate.beat, result.beat);
+      }
+      duplicatesKept += resolution.duplicatesKept;
     }
     for (const [versionId, beats] of beatsByVersion) {
       beatsByVersion.set(
         versionId,
-        beats.filter((beat) => !rejected.has(beat))
+        beats.flatMap((beat) => {
+          if (!replacements.has(beat)) return [beat];
+          const replacement = replacements.get(beat);
+          return replacement ? [replacement] : [];
+        })
       );
+    }
+    if (duplicatesKept > 0) {
+      const one = duplicatesKept === 1;
+      warnings.push({
+        code: 'take-overlap-kept',
+        message: `${duplicatesKept} take${one ? '' : 's'} overlap${one ? 's' : ''} material already in the cut and could not be trimmed; review ${one ? 'it' : 'them'}`,
+      });
+    }
+    if (useScript && script) {
+      // A spliced beat no longer reads the line it gave up, so the surviving
+      // beat is re-aligned: the warnings are about what is in the cut.
+      const kept = candidates.flatMap((candidate, index) => {
+        const survivor = replacements.has(candidate.beat)
+          ? replacements.get(candidate.beat)
+          : candidate.beat;
+        if (!survivor) return [];
+        return [
+          {
+            alignment:
+              survivor === candidate.beat
+                ? alignments[index]!
+                : alignBeatToScript(survivor, script, fillers),
+            text: beatText(survivor),
+          },
+        ];
+      });
+      warnings.push(...scriptCoverageWarnings(scriptLines, kept));
     }
   }
 
@@ -504,7 +688,10 @@ async function assembleLinearLayout(
     clipOrder: string[] | null;
     slotByVersion: Map<string, TranscriptSlot>;
     editorial: Editorial;
+    script: string | null;
     wavFor: (versionId: string) => Promise<string>;
+    required: boolean;
+    waitLimitSeconds: number;
   }
 ): Promise<void> {
   const { profile, clips, warnings, editorial } = options;
@@ -542,6 +729,8 @@ async function assembleLinearLayout(
         warnings,
         wavFor: options.wavFor,
         label: clip.title,
+        required: options.required,
+        waitLimitSeconds: options.waitLimitSeconds,
       })
     );
   }
@@ -552,6 +741,8 @@ async function assembleLinearLayout(
     editorial,
     warnings,
     wavFor: options.wavFor,
+    script: options.script,
+    minShotSeconds: profile.minShotSeconds,
   });
 
   const turns: AttributedTurn[] = [];
@@ -617,7 +808,7 @@ async function assembleLinearLayout(
 /** The run's row, its resolved settings, and the folder's file-backed videos. */
 async function loadRun(deps: AssembleDeps, roughCutId: string) {
   const cutRes = await deps.pool.query(
-    `SELECT id, project_id, folder_id, profile_snapshot, brief_snapshot, layout, created_at
+    `SELECT id, project_id, folder_id, profile_snapshot, brief_snapshot, layout, script, created_at
      FROM rough_cuts WHERE id = $1`,
     [roughCutId]
   );
@@ -732,34 +923,79 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       deps,
       clips.map((clip) => clip.versionId)
     );
+    // With transcription on, the transcript is not an optimisation: voice
+    // activity knows nothing about takes, so a run without one is wrong
+    // rather than rough. It waits far longer, starts the transcription
+    // itself, and fails with something the operator can act on.
+    const required = isTranscriptionEnvEnabled();
+    const waitLimitSeconds = required
+      ? TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS
+      : TRANSCRIPT_WAIT_LIMIT_SECONDS;
     const now = new Date();
+    const ageSeconds = (now.getTime() - new Date(cut.created_at).getTime()) / 1000;
     const transcriptDecisions = slotCandidates.map((candidateVersionIds) =>
       decideTranscriptSource({
         rows: transcriptRows,
         candidateVersionIds,
         roughCutCreatedAt: cut.created_at,
         now,
+        waitLimitSeconds,
       })
     );
-    const waitingFor = transcriptDecisions.filter(
-      (decision): decision is Extract<TranscriptSourceDecision, { kind: 'wait' }> =>
-        decision.kind === 'wait'
-    );
-    if (waitingFor.length > 0) {
-      const titles = waitingFor.map(
-        (decision) => clips.find((clip) => clip.versionId === decision.versionId)?.title ?? ''
+    const titleOf = (versionId: string) =>
+      clips.find((clip) => clip.versionId === versionId)?.title ?? '';
+    const waitingTitles: string[] = [];
+    for (let index = 0; index < transcriptDecisions.length; index += 1) {
+      const decision = transcriptDecisions[index]!;
+      if (decision.kind === 'wait') {
+        waitingTitles.push(titleOf(decision.versionId));
+        continue;
+      }
+      if (!required || decision.kind !== 'fallback') continue;
+      // Transcription is on, so a clip without a transcript gets one now and
+      // the run waits; anything else the operator has to look at. "Missing"
+      // means no candidate has a row, so the transcription goes to the first
+      // candidate (the wide camera for multicam); the other reasons name the
+      // candidate whose own row is the problem.
+      const first = slotCandidates[index]![0]!;
+      if (decision.reason === 'missing' && ageSeconds < waitLimitSeconds) {
+        await enqueueTranscription(deps, first);
+        waitingTitles.push(titleOf(first));
+        continue;
+      }
+      throw new Error(
+        transcriptRequiredError(
+          decision.reason,
+          titleOf(decision.versionId ?? first),
+          waitLimitSeconds
+        )
       );
+    }
+    if (waitingTitles.length > 0) {
       await deferForTranscript(deps, {
         roughCutId,
         versionId: clips[0]!.versionId,
-        warnings: [...warnings, waitingForTranscriptWarning(titles)],
+        warnings: [...warnings, waitingForTranscriptWarning(waitingTitles)],
       });
       return;
     }
     const slots: TranscriptSlot[] = [];
-    for (const decision of transcriptDecisions) {
+    for (let index = 0; index < transcriptDecisions.length; index += 1) {
+      const decision = transcriptDecisions[index]!;
       if (decision.kind === 'wait') continue;
-      slots.push(await resolveTranscriptSlot(deps, decision, transcriptRows));
+      const slot = await resolveTranscriptSlot(deps, decision, transcriptRows);
+      if (required && slot.kind === 'fallback') {
+        // Only reachable for a READY transcript with no segment rows, so the
+        // clip to name is the one whose transcript was read.
+        throw new Error(
+          transcriptRequiredError(
+            slot.reason,
+            titleOf(decision.versionId ?? slotCandidates[index]![0]!),
+            waitLimitSeconds
+          )
+        );
+      }
+      slots.push(slot);
     }
 
     tmp = await mkdtemp(join(tmpdir(), 'of-rough-'));
@@ -780,7 +1016,10 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         clipOrder: assembly.clipOrder,
         slotByVersion,
         editorial,
+        script: readScript(cut.script),
         wavFor,
+        required,
+        waitLimitSeconds,
       });
       return;
     }
@@ -886,6 +1125,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
             warnings,
             wavFor,
             label: source.title,
+            required,
+            waitLimitSeconds,
           })
         : null;
     if (material && material.kind === 'vad') {
@@ -901,6 +1142,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         editorial,
         warnings,
         wavFor,
+        script: readScript(cut.script),
+        minShotSeconds: profile.minShotSeconds,
       });
       sourceCuts = result.cuts;
       sourceMarkers = result.markers;
@@ -911,7 +1154,10 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         source.offsetSeconds
       ).map((turn) => ({ start: turn.start, end: turn.end, speaker: turn.speaker }));
     } else {
-      if (slot.kind === 'fallback') warnings.push(transcriptFallbackWarning(slot.reason));
+      // Unreachable when `required`: the decision loop above already threw.
+      if (slot.kind === 'fallback') {
+        warnings.push(transcriptFallbackWarning(slot.reason, null, waitLimitSeconds));
+      }
       // No usable transcript: diarize the reference audio as before. These
       // turns are local to the wide camera's file.
       const diarizeArgs = isDiarizationEnabled()

@@ -84,45 +84,51 @@ export function useVideoPageData({ mode, videoId, propProjectId }: UseVideoPageD
     });
   }, []);
 
-  useEffect(() => {
-    async function fetchVideo() {
-      try {
-        const res = await fetch(apiBasePath, { cache: 'no-store' });
-        if (!res.ok) {
-          const errorText = mode === 'dashboard' ? await res.text() : '';
-          setError(
-            mode === 'dashboard'
-              ? `Failed to load video: ${res.status} ${errorText}`
-              : 'Video not found or access denied'
-          );
-          setLoading(false);
-          return;
-        }
-        const response = await res.json();
-        const rawData = response.data as Omit<VideoData, 'versions'> & {
-          versions?: Array<Version & { comments?: Comment[] }>;
-        };
-        const normalizedData: VideoData = {
-          ...rawData,
-          versions: (rawData.versions || []).map((version) => ({
-            ...version,
-            comments: Array.isArray(version.comments) ? version.comments : [],
-          })),
-        };
-
-        setVideo(normalizedData);
-        const active =
-          normalizedData.versions?.find((v) => v.isActive) || normalizedData.versions?.[0];
-        if (active) setActiveVersionId(active.id);
-      } catch (err) {
-        console.error('Error fetching video:', err);
-        setError('Failed to load video');
-      } finally {
+  /**
+   * Also the way the page picks up a version somebody else added — a rough cut
+   * re-rendered from the review pane lands as a new active version of the video
+   * already on screen.
+   */
+  const loadVideo = useCallback(async () => {
+    try {
+      const res = await fetch(apiBasePath, { cache: 'no-store' });
+      if (!res.ok) {
+        const errorText = mode === 'dashboard' ? await res.text() : '';
+        setError(
+          mode === 'dashboard'
+            ? `Failed to load video: ${res.status} ${errorText}`
+            : 'Video not found or access denied'
+        );
         setLoading(false);
+        return;
       }
+      const response = await res.json();
+      const rawData = response.data as Omit<VideoData, 'versions'> & {
+        versions?: Array<Version & { comments?: Comment[] }>;
+      };
+      const normalizedData: VideoData = {
+        ...rawData,
+        versions: (rawData.versions || []).map((version) => ({
+          ...version,
+          comments: Array.isArray(version.comments) ? version.comments : [],
+        })),
+      };
+
+      setVideo(normalizedData);
+      const active =
+        normalizedData.versions?.find((v) => v.isActive) || normalizedData.versions?.[0];
+      if (active) setActiveVersionId(active.id);
+    } catch (err) {
+      console.error('Error fetching video:', err);
+      setError('Failed to load video');
+    } finally {
+      setLoading(false);
     }
-    void fetchVideo();
   }, [apiBasePath, mode]);
+
+  useEffect(() => {
+    void loadVideo();
+  }, [loadVideo]);
 
   useEffect(() => {
     if (!activeVersionId) return;
@@ -171,5 +177,6 @@ export function useVideoPageData({ mode, videoId, propProjectId }: UseVideoPageD
     setSelectedTagId,
     projectId,
     fetchVersionComments,
+    reloadVideo: loadVideo,
   };
 }

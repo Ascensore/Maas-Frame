@@ -22,6 +22,46 @@ export async function enqueueMediaJob(
 }
 
 /**
+ * Start a transcription for one version: a PENDING row (resetting whatever a
+ * previous attempt left behind), the two jobs the media worker runs, and the
+ * inline runner for the hosts it can serve. The caller decides whether the
+ * version should be transcribed at all.
+ *
+ * Uploads and rough-cut requests both come through here, so the two cannot
+ * drift into starting transcription differently.
+ */
+export async function startVersionTranscription(
+  versionId: string,
+  language: string = AUTO_DETECT_TRANSCRIPT_LANGUAGE
+): Promise<{ transcriptId: string }> {
+  const transcript = await db.transcript.upsert({
+    where: { versionId_language: { versionId, language } },
+    create: {
+      versionId,
+      language,
+      provider: getTranscriptionProviderName(),
+      status: TranscriptStatus.PENDING,
+    },
+    update: {
+      status: TranscriptStatus.PENDING,
+      error: null,
+      provider: getTranscriptionProviderName(),
+      translationLanguage: null,
+      translationStatus: null,
+      translationError: null,
+      translatedTexts: Prisma.DbNull,
+    },
+  });
+  await enqueueMediaJob(versionId, MediaJobKind.EXTRACT_AUDIO);
+  await enqueueMediaJob(versionId, MediaJobKind.TRANSCRIBE, {
+    language,
+    transcriptId: transcript.id,
+  });
+  scheduleVersionTranscription(versionId, language, transcript.id);
+  return { transcriptId: transcript.id };
+}
+
+/**
  * Queue probe (file-backed VIDEO and AUDIO) and transcription (file-backed
  * VIDEO and AUDIO, when enabled). Stills and PDFs skip both. YouTube/Vimeo
  * skip probe and STT.
@@ -39,30 +79,6 @@ export async function enqueueJobsForNewVersion(options: {
   }
 
   if (shouldEnqueueTranscribe(kind, providerId, isTranscriptionFeatureEnabled())) {
-    const language = AUTO_DETECT_TRANSCRIPT_LANGUAGE;
-    const transcript = await db.transcript.upsert({
-      where: { versionId_language: { versionId, language } },
-      create: {
-        versionId,
-        language,
-        provider: getTranscriptionProviderName(),
-        status: TranscriptStatus.PENDING,
-      },
-      update: {
-        status: TranscriptStatus.PENDING,
-        error: null,
-        provider: getTranscriptionProviderName(),
-        translationLanguage: null,
-        translationStatus: null,
-        translationError: null,
-        translatedTexts: Prisma.DbNull,
-      },
-    });
-    await enqueueMediaJob(versionId, MediaJobKind.EXTRACT_AUDIO);
-    await enqueueMediaJob(versionId, MediaJobKind.TRANSCRIBE, {
-      language,
-      transcriptId: transcript.id,
-    });
-    scheduleVersionTranscription(versionId, language, transcript.id);
+    await startVersionTranscription(versionId);
   }
 }

@@ -144,6 +144,314 @@ describe('useSubtitles', () => {
     ).toBe(false);
   });
 
+  it('builds captions from a READY transcript instead of starting a transcription', async () => {
+    let captionReady = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript/captions') {
+        captionReady = true;
+        return jsonResponse(
+          {
+            data: {
+              subtitle: {
+                id: 'sub-from-transcript',
+                language: 'en',
+                label: 'Transcript (en)',
+                url: '/api/upload/subtitle/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.vtt',
+              },
+            },
+          },
+          201
+        );
+      }
+      if (url === '/api/versions/version-1/transcript' && init?.method !== 'POST') {
+        return jsonResponse({
+          data: {
+            transcript: {
+              id: 'transcript-1',
+              status: 'READY',
+              language: 'en',
+              segments: [{ id: 'segment-1', startSec: 1, endSec: 3, text: 'we help founders' }],
+            },
+          },
+        });
+      }
+      return jsonResponse({
+        data: {
+          subtitles: captionReady
+            ? [
+                {
+                  id: 'sub-from-transcript',
+                  versionId: 'version-1',
+                  language: 'en',
+                  label: 'Transcript (en)',
+                  url: '/api/upload/subtitle/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.vtt',
+                  sizeBytes: 48,
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  updatedAt: '2026-01-01T00:00:00.000Z',
+                  uploadedByUser: null,
+                  canDelete: true,
+                },
+              ]
+            : [],
+          canManageSubtitles: true,
+        },
+      });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = 'unset';
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    expect(error).toBeNull();
+    // No transcription job: the words and the timings are already on the row.
+    expect(
+      fetchMock.mock.calls.some(
+        (call) =>
+          String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+      )
+    ).toBe(false);
+    const captionsCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]) === '/api/versions/version-1/transcript/captions'
+    );
+    expect(captionsCall?.[1]?.method).toBe('POST');
+    expect(captionsCall?.[1]?.body).toBe(JSON.stringify({ language: 'en' }));
+    expect(result.current.isGeneratingSubtitles).toBe(false);
+    expect(result.current.activeSubtitleLanguage).toBe('en');
+  });
+
+  it('transcribes when the chosen language is not the transcript language', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript' && init?.method === 'POST') {
+        return jsonResponse({ data: { transcript: { status: 'PENDING' } } }, 202);
+      }
+      if (url === '/api/versions/version-1/transcript') {
+        return jsonResponse({
+          data: {
+            transcript: {
+              id: 'transcript-1',
+              status: 'READY',
+              language: 'tr',
+              segments: [{ id: 'segment-1', startSec: 1, endSec: 3, text: 'kurucularla' }],
+            },
+          },
+        });
+      }
+      return jsonResponse({ data: { subtitles: [], canManageSubtitles: true } });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = 'unset';
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    // A Turkish transcript is no basis for the English track that was asked for,
+    // so this goes to AI. (The status poll sees the mocked READY transcript and
+    // finishes immediately, so the AI POST is what proves the path taken.)
+    expect(error).toBeNull();
+    const transcribeCall = fetchMock.mock.calls.find(
+      (call) =>
+        String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+    );
+    expect(transcribeCall?.[1]?.body).toBe(JSON.stringify({ language: 'en' }));
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes('/transcript/captions'))
+    ).toBe(false);
+  });
+
+  it('builds captions when the chosen language differs only by region', async () => {
+    let captionReady = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript/captions') {
+        captionReady = true;
+        return jsonResponse({ data: { subtitle: { id: 's', language: 'en-us', url: '/u' } } }, 201);
+      }
+      if (url === '/api/versions/version-1/transcript' && init?.method !== 'POST') {
+        return jsonResponse({
+          data: {
+            transcript: {
+              id: 'transcript-1',
+              status: 'READY',
+              language: 'en-US',
+              segments: [{ id: 'segment-1', startSec: 1, endSec: 3, text: 'we help founders' }],
+            },
+          },
+        });
+      }
+      return jsonResponse({
+        data: {
+          subtitles: captionReady
+            ? [
+                {
+                  id: 's',
+                  versionId: 'version-1',
+                  language: 'en-us',
+                  label: 'Transcript (en-US)',
+                  url: '/u',
+                  sizeBytes: 48,
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  updatedAt: '2026-01-01T00:00:00.000Z',
+                  uploadedByUser: null,
+                  canDelete: true,
+                },
+              ]
+            : [],
+          canManageSubtitles: true,
+        },
+      });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = 'unset';
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    expect(error).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(
+        (call) =>
+          String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+      )
+    ).toBe(false);
+    expect(result.current.activeSubtitleLanguage).toBe('en-us');
+  });
+
+  it('transcribes when the transcript has no timed line', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript' && init?.method === 'POST') {
+        return jsonResponse({ data: { transcript: { status: 'PENDING' } } }, 202);
+      }
+      if (url === '/api/versions/version-1/transcript') {
+        return jsonResponse({
+          data: {
+            transcript: {
+              id: 'transcript-1',
+              status: 'READY',
+              language: 'en',
+              // An uploaded .txt script: words, no timings, nothing to caption.
+              segments: [{ id: 'segment-1', startSec: 0, endSec: 0, text: 'INT. KITCHEN' }],
+            },
+          },
+        });
+      }
+      return jsonResponse({ data: { subtitles: [], canManageSubtitles: true } });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = 'unset';
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    expect(error).toBeNull();
+    const transcribeCall = fetchMock.mock.calls.find(
+      (call) =>
+        String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+    );
+    expect(transcribeCall?.[1]?.body).toBe(JSON.stringify({ language: 'en' }));
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes('/transcript/captions'))
+    ).toBe(false);
+  });
+
+  it('reports a failed probe instead of silently transcribing', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript' && init?.method !== 'POST') {
+        return jsonResponse({ error: 'boom' }, 500);
+      }
+      if (url === '/api/versions/version-1/transcript') {
+        return jsonResponse({ data: { transcript: { status: 'PENDING' } } }, 202);
+      }
+      return jsonResponse({ data: { subtitles: [], canManageSubtitles: true } });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = null;
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    // A probe that never answered is not proof there is no transcript, and
+    // spending an AI transcription on that assumption is the bug.
+    expect(error).toBe('Could not check this version for an existing transcript');
+    expect(result.current.isGeneratingSubtitles).toBe(false);
+    expect(
+      fetchMock.mock.calls.some(
+        (call) =>
+          String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+      )
+    ).toBe(false);
+
+    // And the failure must not wedge the button: a retry is allowed.
+    let retry: string | null = null;
+    await act(async () => {
+      retry = await result.current.generateSubtitles('en');
+    });
+    expect(retry).toBe('Could not check this version for an existing transcript');
+  });
+
+  it('starts a transcription when there is no transcript', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript' && init?.method === 'POST') {
+        return jsonResponse({ data: { transcript: { status: 'PENDING' } } }, 202);
+      }
+      if (url === '/api/versions/version-1/transcript') {
+        return jsonResponse({ data: { transcript: null } });
+      }
+      return jsonResponse({ data: { subtitles: [], canManageSubtitles: true } });
+    });
+
+    const { result } = renderSubtitles();
+    await waitFor(() => {
+      expect(result.current.canManageSubtitles).toBe(true);
+    });
+
+    let error: string | null = 'unset';
+    await act(async () => {
+      error = await result.current.generateSubtitles('en');
+    });
+
+    expect(error).toBeNull();
+    expect(result.current.isGeneratingSubtitles).toBe(true);
+    const transcribeCall = fetchMock.mock.calls.find(
+      (call) =>
+        String(call[0]) === '/api/versions/version-1/transcript' && call[1]?.method === 'POST'
+    );
+    expect(transcribeCall?.[1]?.body).toBe(JSON.stringify({ language: 'en' }));
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes('/transcript/captions'))
+    ).toBe(false);
+  });
+
   it('POSTs the version transcript route when generating AI subtitles', async () => {
     vi.useFakeTimers();
     let transcriptStatus = 'PENDING';
