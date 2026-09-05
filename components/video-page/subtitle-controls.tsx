@@ -406,8 +406,8 @@ export const SubtitleControls = memo(function SubtitleControls({
           <DialogHeader>
             <DialogTitle>Generate subtitles with AI</DialogTitle>
             <DialogDescription>
-              We transcribe this version and attach the result as captions you can turn on in the
-              player.
+              If this version already has a transcript, the captions are built from it; otherwise we
+              transcribe it first. Either way the result is a track you can turn on in the player.
             </DialogDescription>
           </DialogHeader>
 

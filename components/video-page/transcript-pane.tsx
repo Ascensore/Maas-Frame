@@ -1,10 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, memo, type MouseEvent } from 'react';
-import { Captions, Languages, Loader2, Search, Upload } from 'lucide-react';
+import { Captions, Languages, Loader2, Pencil, Search, Upload } from 'lucide-react';
 import { List, type RowComponentProps } from 'react-window';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { useTranscriptSegmentEdit } from '@/components/video-page/hooks/use-transcript-segment-edit';
+import type { TranscriptSegment, TranscriptWord } from '@/components/video-page/types';
 import {
   commentRangeFromHighlight,
   commentsAnchoredToSegment,
@@ -20,21 +31,7 @@ import {
 } from '@/lib/transcript-translation';
 import { cn } from '@/lib/utils';
 
-export type TranscriptWord = {
-  start: number;
-  end: number;
-  text: string;
-};
-
-export type TranscriptSegment = {
-  id: string;
-  startSec: number;
-  endSec: number;
-  speaker: string | null;
-  text: string;
-  words: TranscriptWord[] | unknown;
-  position: number;
-};
+export type { TranscriptSegment, TranscriptWord };
 
 export type TranscriptPayload = {
   id: string;
@@ -110,6 +107,7 @@ type TranscriptRowProps = {
   onSeek: TranscriptPaneProps['onSeek'];
   onCommentRange: TranscriptPaneProps['onCommentRange'];
   onOpenThread: TranscriptPaneProps['onOpenThread'];
+  onEditSegment: ((segment: TranscriptSegment) => void) | null;
   draftRange: { start: number; end: number } | null;
 };
 
@@ -124,6 +122,7 @@ function TranscriptRow({
   onSeek,
   onCommentRange,
   onOpenThread,
+  onEditSegment,
   draftRange,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
@@ -175,18 +174,30 @@ function TranscriptRow({
         onMouseUp={handleMouseUp}
       >
         <div className="flex items-center justify-between gap-2 mb-0.5">
-          {timed ? (
-            <button
-              type="button"
-              className="text-xs text-muted-foreground tabular-nums hover:text-foreground"
-              onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
-            >
-              {formatClock(segment.startSec)}
-              {segment.speaker ? ` · ${segment.speaker}` : ''}
-            </button>
-          ) : (
-            <span className="text-xs text-muted-foreground">Script</span>
-          )}
+          <div className="flex items-center gap-1">
+            {timed ? (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground tabular-nums hover:text-foreground"
+                onClick={() => onSeek(segment.startSec, { pauseAfterSeek: false })}
+              >
+                {formatClock(segment.startSec)}
+                {segment.speaker ? ` · ${segment.speaker}` : ''}
+              </button>
+            ) : (
+              <span className="text-xs text-muted-foreground">Script</span>
+            )}
+            {onEditSegment && (
+              <button
+                type="button"
+                aria-label="Edit line"
+                className="rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => onEditSegment(segment)}
+              >
+                <Pencil className="h-3 w-3" />
+              </button>
+            )}
+          </div>
           {markers.length > 0 && (
             <div className="relative flex items-center gap-1">
               {markers.map((marker) => (
@@ -300,8 +311,27 @@ export const TranscriptPane = memo(function TranscriptPane({
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [openCommentId, setOpenCommentId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<TranscriptSegment | null>(null);
+  const [editText, setEditText] = useState('');
+  const [editSpeaker, setEditSpeaker] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const {
+    save: saveSegment,
+    saving: savingSegment,
+    error: editError,
+    clearError: clearEditError,
+  } = useTranscriptSegmentEdit(versionId);
+
+  const openEditor = useCallback(
+    (segment: TranscriptSegment) => {
+      clearEditError();
+      setEditing(segment);
+      setEditText(segment.text);
+      setEditSpeaker(segment.speaker ?? '');
+    },
+    [clearEditError]
+  );
 
   const fetchTranscript = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -373,6 +403,7 @@ export const TranscriptPane = memo(function TranscriptPane({
       onSeek,
       onCommentRange,
       onOpenThread,
+      onEditSegment: canManage ? openEditor : null,
       draftRange,
     }),
     [
@@ -383,6 +414,8 @@ export const TranscriptPane = memo(function TranscriptPane({
       onSeek,
       onCommentRange,
       onOpenThread,
+      canManage,
+      openEditor,
       draftRange,
     ]
   );
@@ -506,6 +539,26 @@ export const TranscriptPane = memo(function TranscriptPane({
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleSaveSegment = async () => {
+    if (!editing) return;
+    const saved = await saveSegment(editing.id, {
+      text: editText,
+      speaker: editSpeaker.trim() || null,
+    });
+    if (!saved) return;
+    setTranscript((current) =>
+      current
+        ? {
+            ...current,
+            segments: current.segments.map((segment) =>
+              segment.id === saved.id ? { ...saved, position: segment.position } : segment
+            ),
+          }
+        : current
+    );
+    setEditing(null);
   };
 
   if (!versionId) {
@@ -632,6 +685,54 @@ export const TranscriptPane = memo(function TranscriptPane({
           />
         </div>
       )}
+
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingSegment) setEditing(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit transcript line</DialogTitle>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="transcript-line-text">Text</Label>
+              <Textarea
+                id="transcript-line-text"
+                value={editText}
+                onChange={(event) => setEditText(event.target.value)}
+                rows={4}
+              />
+              {editError && <p className="text-sm text-destructive">{editError}</p>}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="transcript-line-speaker">Speaker</Label>
+              <Input
+                id="transcript-line-speaker"
+                value={editSpeaker}
+                onChange={(event) => setEditSpeaker(event.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)} disabled={savingSegment}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleSaveSegment()}
+              disabled={savingSegment || !editText.trim()}
+            >
+              {savingSegment && <Loader2 className="h-4 w-4 animate-spin" />}
+              <span className={savingSegment ? 'ml-1' : ''}>Save</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 });

@@ -7,7 +7,7 @@ import {
 } from '@/components/video-page/hooks/subtitle-preference';
 import type { Subtitle } from '@/components/video-page/types';
 import { getSubtitleExtension } from '@/lib/subtitle-validation';
-import { getTranscriptUploadExtension } from '@/lib/transcript-import';
+import { getTranscriptUploadExtension, isTranscriptSegmentTimed } from '@/lib/transcript-import';
 
 interface UseSubtitlesParams {
   videoId: string;
@@ -26,6 +26,36 @@ function readClientApiError(payload: unknown, fallback: string): string {
     if (typeof message === 'string' && message.trim()) return message;
   }
   return fallback;
+}
+
+/**
+ * The version's transcript, when it is finished and carries at least one timed
+ * line. That is everything a caption file needs, so there is nothing left to
+ * transcribe. A failed probe answers null and the caller falls back to AI.
+ */
+async function readCaptionableTranscript(versionId: string): Promise<{ language: string } | null> {
+  try {
+    const res = await fetch(`/api/versions/${versionId}/transcript`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const payload = await res.json().catch(() => null);
+    const transcript = (
+      payload as {
+        data?: { transcript?: { status?: string; language?: string; segments?: unknown } };
+      } | null
+    )?.data?.transcript;
+    if (!transcript || transcript.status !== 'READY') return null;
+    const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
+    const timed = segments.some(
+      (segment) =>
+        typeof segment === 'object' &&
+        segment !== null &&
+        isTranscriptSegmentTimed(segment as { startSec: number; endSec: number })
+    );
+    if (!timed) return null;
+    return { language: typeof transcript.language === 'string' ? transcript.language : '' };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -275,6 +305,32 @@ export function useSubtitles({
 
       generateInFlightRef.current = true;
       try {
+        // "Generate AI" on a version that already has a transcript used to run
+        // the transcription again, which cost the AI budget to arrive back at
+        // words we already had. Build the track from the transcript instead.
+        const existing = await readCaptionableTranscript(versionId);
+        if (existing) {
+          const captionRes = await fetch(`/api/versions/${versionId}/transcript/captions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          const captionPayload = await captionRes.json().catch(() => null);
+          generateInFlightRef.current = false;
+          if (!captionRes.ok) {
+            return readClientApiError(
+              captionPayload,
+              'Failed to build captions from the transcript'
+            );
+          }
+          const built = (captionPayload as { data?: { subtitle?: { language?: unknown } } } | null)
+            ?.data?.subtitle?.language;
+          const selected = (typeof built === 'string' && built) || existing.language || language;
+          await refresh();
+          selectSubtitleLanguage(selected.toLowerCase());
+          return null;
+        }
+
         const res = await fetch(`/api/versions/${versionId}/transcript`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -293,7 +349,7 @@ export function useSubtitles({
         return 'Failed to start AI subtitles';
       }
     },
-    [isGeneratingSubtitles, versionId]
+    [isGeneratingSubtitles, refresh, selectSubtitleLanguage, versionId]
   );
 
   useEffect(() => {

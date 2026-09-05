@@ -45,6 +45,7 @@ import {
   createVideoAsset,
   createWorkspace,
   createInvitation,
+  createReadyTranscript,
 } from '../factories';
 
 import * as adminFeedbackRoute from '@/app/api/admin/feedback/[feedbackId]/route';
@@ -105,7 +106,9 @@ import * as commentsExportRoute from '@/app/api/versions/[versionId]/comments/ex
 import * as commentsLiveRoute from '@/app/api/versions/[versionId]/comments/live/route';
 import * as versionCommentsRoute from '@/app/api/versions/[versionId]/comments/route';
 import * as versionDownloadRoute from '@/app/api/versions/[versionId]/download/route';
+import * as versionTranscriptCaptionsRoute from '@/app/api/versions/[versionId]/transcript/captions/route';
 import * as versionTranscriptRoute from '@/app/api/versions/[versionId]/transcript/route';
+import * as versionTranscriptSegmentRoute from '@/app/api/versions/[versionId]/transcript/segments/[segmentId]/route';
 import * as versionTranscriptTranslateRoute from '@/app/api/versions/[versionId]/transcript/translate/route';
 import * as versionTranscriptUploadRoute from '@/app/api/versions/[versionId]/transcript/upload/route';
 import * as v1ProjectsRoute from '@/app/api/v1/projects/route';
@@ -185,7 +188,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 100;
+const EXPECTED_ROUTE_MODULE_COUNT = 102;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -265,6 +268,7 @@ interface Fixtures {
   videoId: string;
   versionId: string;
   commentId: string;
+  segmentId: string;
   assetId: string;
   subtitleId: string;
   approvalRequestId: string;
@@ -327,6 +331,23 @@ async function seedFixtures(): Promise<Fixtures> {
     sizeBytes: BigInt(1024),
   });
   const comment = await createComment({ versionId: version.id, authorId: owner.id });
+
+  // A real transcript line, so PATCH .../transcript/segments/[segmentId] is refused
+  // by its access check rather than by the row not existing.
+  const transcript = await createReadyTranscript({
+    versionId: version.id,
+    segments: [
+      {
+        startSec: 1,
+        endSec: 3,
+        text: 'Matrix fixture line',
+        words: [{ start: 1, end: 3, text: 'Matrix fixture line' }],
+      },
+    ],
+  });
+  const segment = await db.transcriptSegment.findFirstOrThrow({
+    where: { transcriptId: transcript.id },
+  });
 
   const asset = await createVideoAsset({
     videoId: video.id,
@@ -399,6 +420,7 @@ async function seedFixtures(): Promise<Fixtures> {
     videoId: video.id,
     versionId: version.id,
     commentId: comment.id,
+    segmentId: segment.id,
     assetId: asset.id,
     subtitleId: subtitle.id,
     approvalRequestId: approvalRequest.id,
@@ -801,11 +823,24 @@ const ROUTE_CASES: readonly RouteCase[] = [
     body: { isResolved: true },
   },
   {
+    file: 'versions/[versionId]/transcript/captions/route.ts',
+    module: versionTranscriptCaptionsRoute,
+    url: (f) => `/api/versions/${f.versionId}/transcript/captions`,
+    params: (f) => ({ versionId: f.versionId }),
+  },
+  {
     file: 'versions/[versionId]/transcript/route.ts',
     module: versionTranscriptRoute,
     url: (f) => `/api/versions/${f.versionId}/transcript`,
     params: (f) => ({ versionId: f.versionId }),
     body: { language: 'en' },
+  },
+  {
+    file: 'versions/[versionId]/transcript/segments/[segmentId]/route.ts',
+    module: versionTranscriptSegmentRoute,
+    url: (f) => `/api/versions/${f.versionId}/transcript/segments/${f.segmentId}`,
+    params: (f) => ({ versionId: f.versionId, segmentId: f.segmentId }),
+    body: { text: 'Hello' },
   },
   {
     file: 'versions/[versionId]/transcript/translate/route.ts',
