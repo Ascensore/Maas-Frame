@@ -10,7 +10,7 @@ import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegAr
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
 import { claimDueMediaJobs } from '../lib/media-job-queue';
 import { upsertCaptionTrack } from '../lib/rough-cut/caption-track';
-import { serializeWebVtt } from '../lib/rough-cut/vtt';
+import { serializeWebVtt } from '../lib/subtitle-validation';
 import { importDriveFile } from './import-drive';
 import { materializeRoughCut } from './materialize-rough-cut';
 import {

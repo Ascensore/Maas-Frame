@@ -156,15 +156,83 @@ describe('deriveProgramTranscript', () => {
     );
   });
 
-  it('follows the program order across clips and reads the language off the first transcript that has one', () => {
+  it('says a word straddling a reviewer cut once, on the side that keeps most of it', () => {
+    // Ten tokens spread over 30s, so each spans 3s; the cut takes 4.0-4.8,
+    // which is inside the second token and leaves 1s of it before the cut and
+    // 1.2s after. Both sides clear the "a full second of it" rule.
+    const many = Array.from({ length: 10 }, (_, index) => `t${index}`).join(' ');
+    const transcripts = new Map([
+      [
+        'v1',
+        {
+          language: 'en',
+          segments: [{ startSec: 0, endSec: 30, speaker: null, text: many, words: [] }],
+        },
+      ],
+    ]);
+    const result = deriveProgramTranscript([edit(0, 0, 4), edit(4, 4.8, 30)], transcripts);
+    const spoken = result.segments.flatMap((segment) => segment.words.map((word) => word.text));
+    expect(spoken).toEqual(['t0', 't1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't9']);
+    // The larger share is after the cut, so t1 is spoken there.
+    expect(result.segments[0]!.text).toBe('t0');
+  });
+
+  it('gives a word cut exactly down the middle to the earlier side', () => {
+    // `bb` runs 2-6 and the cut takes 3.5-4.5, leaving 1.5s of it on each
+    // side. Neither side is more than half the word, so both clear only the
+    // "a full second of it" rule and the program order breaks the tie.
+    const transcripts = new Map([
+      [
+        'v1',
+        {
+          language: 'en',
+          segments: [
+            {
+              startSec: 0,
+              endSec: 10,
+              speaker: null,
+              text: 'a bb c',
+              words: [
+                { start: 0, end: 2, text: 'a' },
+                { start: 2, end: 6, text: 'bb' },
+                { start: 6, end: 10, text: 'c' },
+              ],
+            },
+          ],
+        },
+      ],
+    ]);
+    const result = deriveProgramTranscript([edit(0, 0, 3.5), edit(3.5, 4.5, 10)], transcripts);
+    expect(result.segments.map((segment) => segment.text)).toEqual(['a bb', 'c']);
+  });
+
+  it('follows the program order across clips and skips a source with no language of its own', () => {
     const transcripts = new Map([
       ['a', { language: 'und', segments: [timed(0, 'from a')] }],
       ['b', { language: 'en', segments: [timed(0, 'from b')] }],
     ]);
-    const result = deriveProgramTranscript([edit(0, 0, 2, 'b'), edit(2, 0, 2, 'a')], transcripts);
+    // `a` carries 6s of the program to `b`'s 2s, so it is asked first and
+    // passed over for having no language.
+    const result = deriveProgramTranscript([edit(0, 0, 2, 'b'), edit(2, 0, 6, 'a')], transcripts);
     expect(result.segments.map((segment) => segment.text)).toEqual(['from b', 'from a']);
     expect(result.segments.map((segment) => segment.startSec)).toEqual([0, 2]);
     expect(result.language).toBe('en');
     expect(deriveProgramTranscript([], new Map())).toEqual({ language: 'und', segments: [] });
+  });
+
+  it('takes the language of the source that carries most of the program, not the map order', () => {
+    const transcripts = new Map([
+      ['de-1', { language: 'de', segments: [timed(0, 'eins zwei')] }],
+      ['en-1', { language: 'en', segments: [timed(0, 'one two three four')] }],
+    ]);
+    const result = deriveProgramTranscript(
+      [edit(0, 0, 4, 'en-1'), edit(4, 0, 2, 'de-1')],
+      transcripts
+    );
+    expect(result.language).toBe('en');
+    // A tie goes to the source the program opens on.
+    expect(
+      deriveProgramTranscript([edit(0, 0, 2, 'de-1'), edit(2, 0, 2, 'en-1')], transcripts).language
+    ).toBe('de');
   });
 });

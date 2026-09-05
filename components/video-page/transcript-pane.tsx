@@ -11,6 +11,7 @@ import {
   spanOverlapsComment,
 } from '@/lib/transcript-comment';
 import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
+import { serializeWebVtt } from '@/lib/subtitle-validation';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
 import {
   canShowTranscriptTranslation,
@@ -73,15 +74,6 @@ function formatClock(seconds: number): string {
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-function toVttTime(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  const secs = Math.floor(clamped % 60);
-  const millis = Math.round((clamped - Math.floor(clamped)) * 1000);
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
 }
 
 function rangeNodeFromDom(node: Node | null): { start: number; end: number } | null {
@@ -414,14 +406,16 @@ export const TranscriptPane = memo(function TranscriptPane({
   const handleDownloadVtt = () => {
     const segments = visibleSegments;
     if (!transcript || segments.length === 0) return;
-    const body = segments
-      .map((segment) => {
-        const start = toVttTime(segment.startSec);
-        const end = toVttTime(segment.endSec);
-        return `${start} --> ${end}\n${segment.text}`;
-      })
-      .join('\n\n');
-    const blob = new Blob([`WEBVTT\n\n${body}\n`], { type: 'text/vtt' });
+    // The same serializer the upload pipeline and the worker use, so a
+    // downloaded track is byte-for-byte what a re-upload would store.
+    const vtt = serializeWebVtt(
+      segments.map((segment) => ({
+        start: segment.startSec,
+        end: segment.endSec,
+        text: segment.text,
+      }))
+    );
+    const blob = new Blob([vtt], { type: 'text/vtt' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

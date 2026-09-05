@@ -682,6 +682,25 @@ describe('effectiveDecisions', () => {
     ]);
   });
 
+  it('describes a cut whose note is only whitespace', () => {
+    // The overrides schema trims the note, so a reviewer who typed spaces
+    // stores an empty string rather than null.
+    const effective = effectiveDecisions(linearDecisions(), {
+      version: 1,
+      cuts: {},
+      extraCuts: [
+        {
+          key: extraCutKey('v1', 2, 3, RATE),
+          sourceVersionId: 'v1',
+          inSeconds: 2,
+          outSeconds: 3,
+          note: '',
+        },
+      ],
+    });
+    expect(effective.cuts?.at(-1)?.reason.summary).toBe('Removed by the reviewer');
+  });
+
   it('describes an unexplained cut, and leaves out an empty cut list altogether', () => {
     const decisions = linearDecisions();
     const effective = effectiveDecisions(decisions, {

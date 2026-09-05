@@ -22,6 +22,8 @@ COPY lib/timecode.ts ./lib/timecode.ts
 COPY lib/folders.ts ./lib/folders.ts
 COPY lib/export-file-names.ts ./lib/export-file-names.ts
 COPY lib/media-job-queue.ts ./lib/media-job-queue.ts
+# The one WebVTT serializer, shared with the app. Imports nothing.
+COPY lib/subtitle-validation.ts ./lib/subtitle-validation.ts
 COPY lib/rough-cut ./lib/rough-cut
 
 CMD ["bun", "run", "start"]

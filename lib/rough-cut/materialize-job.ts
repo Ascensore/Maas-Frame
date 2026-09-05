@@ -11,7 +11,7 @@ import {
   type SourceTranscript,
 } from './derived-transcript';
 import { materializeFfmpegArgs } from './materialize';
-import { applyOverrides, parseRoughCutOverrides } from './overrides';
+import { effectiveDecisions, parseRoughCutOverrides } from './overrides';
 import type { RoughCutDecisionList } from './types';
 
 /**
@@ -53,13 +53,20 @@ export async function materializeRoughCut(
   const cut = cutRes.rows[0];
   if (!cut) throw new Error('Rough cut not found');
 
+  // Thrown rather than skipped: the job is the render, and a run whose
+  // decisions are missing or unreadable has to show up as a failed render
+  // instead of a job that reports success and delivers nothing.
   const decisions = parseRoughCutDecisionList(cut.decisions);
-  if (!decisions || decisions.edits.length === 0) return;
+  if (!decisions || decisions.edits.length === 0) {
+    throw new Error('Rough cut has no program to render');
+  }
 
   // The render is of the program the reviewer approved, not of the one the
   // assembler proposed; the review API re-enqueues this job after every save.
+  // `effectiveDecisions` carries the same program as `applyOverrides` plus a
+  // cut list that agrees with it, which is what gets stored below.
   const overrides = parseRoughCutOverrides(cut.overrides);
-  const effective = applyOverrides(decisions, overrides);
+  const effective = effectiveDecisions(decisions, overrides);
   if (effective.edits.length === 0) {
     throw new Error('Nothing is left in the program after the reviewer’s cuts');
   }
@@ -170,34 +177,60 @@ async function outputTitle(deps: MaterializeDeps, folderId: string | null): Prom
  * it already has one, so the re-render is a version the reviewer can compare
  * against; a new video in the project otherwise.
  */
+type OutputOptions = {
+  projectId: string;
+  folderId: string | null;
+  existingVideoId: string | null;
+  objectKey: string;
+  originalUrl: string;
+  sizeBytes: number;
+};
+
 async function createOutputVersion(
   deps: MaterializeDeps,
-  options: {
-    projectId: string;
-    folderId: string | null;
-    existingVideoId: string | null;
-    objectKey: string;
-    originalUrl: string;
-    sizeBytes: number;
-  }
+  options: OutputOptions
 ): Promise<{ videoId: string; versionId: string }> {
-  const existing = options.existingVideoId
-    ? await deps.pool.query(`SELECT id FROM videos WHERE id = $1`, [options.existingVideoId])
-    : null;
-  const versionRowId = randomUUID();
+  if (options.existingVideoId) {
+    const added = await addOutputVersion(deps, options, options.existingVideoId);
+    if (added) return added;
+  }
+  return createOutputVideo(deps, options);
+}
 
-  if (existing?.rows[0]) {
-    const videoId = String(existing.rows[0].id);
-    const max = await deps.pool.query(
+/**
+ * Another version of the video the last render delivered. Reading the highest
+ * version number, deactivating the versions that are there and inserting the
+ * new one is one transaction behind a row lock on the video: two renders that
+ * overlap would otherwise pick the same number and fail the unique index, or
+ * both mark themselves active. Answers null when the video is gone, so the
+ * render falls back to making a new one.
+ */
+async function addOutputVersion(
+  deps: MaterializeDeps,
+  options: OutputOptions,
+  existingVideoId: string
+): Promise<{ videoId: string; versionId: string } | null> {
+  const versionRowId = randomUUID();
+  const client = await deps.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query(`SELECT id FROM videos WHERE id = $1 FOR UPDATE`, [
+      existingVideoId,
+    ]);
+    if (!locked.rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const videoId = String(locked.rows[0].id);
+    const max = await client.query(
       `SELECT COALESCE(MAX("versionNumber"), 0) AS max FROM video_versions WHERE "videoParentId" = $1`,
       [videoId]
     );
     const next = Number(max.rows[0]?.max ?? 0) + 1;
-    await deps.pool.query(
-      `UPDATE video_versions SET "isActive" = false WHERE "videoParentId" = $1`,
-      [videoId]
-    );
-    await deps.pool.query(
+    await client.query(`UPDATE video_versions SET "isActive" = false WHERE "videoParentId" = $1`, [
+      videoId,
+    ]);
+    await client.query(
       `INSERT INTO video_versions (
          id, "versionNumber", "versionLabel", "providerId", "videoId", "originalUrl", title,
          "thumbnailUrl", size_bytes, "isActive", "videoParentId", "createdAt", proxy_status
@@ -213,9 +246,22 @@ async function createOutputVersion(
         videoId,
       ]
     );
+    await client.query('COMMIT');
     return { videoId, versionId: versionRowId };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
   }
+}
 
+/** The first render: a video of its own, at the end of the project. */
+async function createOutputVideo(
+  deps: MaterializeDeps,
+  options: OutputOptions
+): Promise<{ videoId: string; versionId: string }> {
+  const versionRowId = randomUUID();
   const title = await outputTitle(deps, options.folderId);
   const last = await deps.pool.query(
     `SELECT position FROM videos WHERE "projectId" = $1 ORDER BY position DESC LIMIT 1`,

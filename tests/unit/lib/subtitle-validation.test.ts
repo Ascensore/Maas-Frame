@@ -209,3 +209,37 @@ describe('subtitle proxy paths', () => {
     expect(subtitleProxyPathToObjectKey(`/api/upload/image/${UUID}.png`)).toBeNull();
   });
 });
+
+describe('serializeWebVtt timestamps', () => {
+  /**
+   * A fraction that rounds up to a whole second used to be formatted as
+   * `00:00:01.1000`: the seconds field was floored from the unrounded value
+   * while the millisecond field was rounded on its own. WebVTT allows exactly
+   * three digits there, so browsers dropped the cue.
+   */
+  it('carries a rounded-up millisecond into the seconds field', () => {
+    const vtt = serializeWebVtt([{ start: 1.9997, end: 2.5, text: 'x' }]);
+    expect(vtt).toContain('00:00:02.000 --> 00:00:02.500');
+    expect(vtt).not.toContain('.1000');
+  });
+
+  it('never writes a four-digit millisecond field, at any boundary', () => {
+    const cues = [59.9999, 3599.9996, 0.9995, 7199.99999].map((start) => ({
+      start,
+      end: start + 1,
+      text: 'x',
+    }));
+    const timings = serializeWebVtt(cues)
+      .split('\n')
+      .filter((line) => line.includes('-->'));
+    expect(timings).toEqual([
+      '00:01:00.000 --> 00:01:01.000',
+      '01:00:00.000 --> 01:00:01.000',
+      '00:00:01.000 --> 00:00:02.000',
+      '02:00:00.000 --> 02:00:01.000',
+    ]);
+    for (const line of timings) {
+      expect(line).toMatch(/^\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}$/);
+    }
+  });
+});

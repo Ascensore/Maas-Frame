@@ -45,6 +45,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Checking for a running render and queueing one has to be one step, or two
     // clicks a moment apart both see an idle cut and queue a job each. The lock
     // is per rough cut, so renders of different cuts never wait on each other.
+    // Reading after taking the lock only sees the other click's job under READ
+    // COMMITTED, which is this database's default; under SERIALIZABLE the
+    // snapshot would predate the lock and both callers would queue.
     const job = await db.$transaction(async (tx) => {
       await tx.$executeRaw`
         SELECT pg_advisory_xact_lock(

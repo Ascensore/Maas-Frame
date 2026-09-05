@@ -8,7 +8,8 @@ import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
  * The materialize job against a fake pool and a fake ffmpeg. What matters here
  * is the program it renders (the reviewer's decisions applied), where the
  * output lands (a new video, or a new version of the one already rendered),
- * and the transcript and captions it derives for that version.
+ * the transcript and captions it derives for that version, and that the
+ * multi-row writes happen inside a transaction.
  */
 
 type Query = { sql: string; params: unknown[] };
@@ -67,26 +68,46 @@ function decisionList(): RoughCutDecisionList {
   };
 }
 
-/** One word a second, half a second long, spanning the island the reviewer restores. */
-function transcriptSegmentRow() {
-  const words = ['one', 'two', 'three', 'four', 'five', 'six'].map((text, index) => ({
-    start: index + 1,
-    end: index + 1.5,
+/**
+ * Two source segments, one word a second and half a second long, spanning the
+ * island the reviewer restores. Two segments so the derived transcript has a
+ * position to get wrong.
+ */
+function transcriptSegmentRows() {
+  const line = (at: number, text: string, speaker: string | null) => ({
+    start_sec: at,
+    end_sec: at + 2.5,
+    speaker,
     text,
-  }));
-  return {
-    start_sec: 1,
-    end_sec: 6.5,
-    speaker: null,
-    text: 'one two three four five six',
-    words,
-  };
+    words: text.split(' ').map((word, index) => ({
+      start: at + index,
+      end: at + index + 0.5,
+      text: word,
+    })),
+  });
+  return [line(1, 'one two three', null), line(4, 'four five six', 'B')];
+}
+
+/** The statements a transaction assertion cares about, in the order they ran. */
+function label(sql: string): string | null {
+  const trimmed = sql.trim();
+  if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(trimmed)) return trimmed;
+  if (trimmed.includes('FOR UPDATE')) return 'lock video';
+  if (trimmed.includes('COALESCE(MAX("versionNumber")')) return 'max version';
+  if (trimmed.includes('UPDATE video_versions')) return 'deactivate';
+  if (trimmed.includes('INSERT INTO video_versions')) return 'insert version';
+  if (trimmed.includes('INSERT INTO transcripts')) return 'upsert transcript';
+  if (trimmed.includes('DELETE FROM transcript_segments')) return 'delete segments';
+  if (trimmed.includes('INSERT INTO transcript_segments')) return 'insert segments';
+  return null;
 }
 
 function harness(options: {
   overrides?: unknown;
   outputVideoId?: string | null;
-  /** `[]` stands for the upsert coming back without an id, as a conflict on a locked row would. */
+  /** The stored decisions column; anything the schema refuses reads as no program. */
+  decisions?: unknown;
+  /** `[]` stands for the upsert coming back without an id, as a lost row would. */
   transcriptRows?: Array<{ id: string }>;
 }) {
   const queries: Query[] = [];
@@ -103,7 +124,7 @@ function harness(options: {
             id: 'cut-1',
             project_id: 'proj-1',
             folder_id: null,
-            decisions: decisionList(),
+            decisions: 'decisions' in options ? options.decisions : decisionList(),
             overrides: options.overrides ?? null,
             output_video_id: options.outputVideoId ?? null,
           },
@@ -131,13 +152,18 @@ function harness(options: {
     if (sql.includes('FROM transcripts')) {
       return { rows: [{ id: 't-a', version_id: 'ver-a', language: 'en' }] };
     }
-    if (sql.includes('SELECT start_sec')) return { rows: [transcriptSegmentRow()] };
+    if (sql.includes('SELECT start_sec')) return { rows: transcriptSegmentRows() };
     if (sql.includes('SELECT p."ownerId"')) return { rows: [{ owner_id: 'owner-1' }] };
     return { rows: [] };
   };
 
   const deps: MaterializeDeps = {
-    pool: { query } as unknown as Pool,
+    // The version flip and the transcript write each run on a connected client.
+    // It shares this `query`, so BEGIN/COMMIT land in `queries` in order.
+    pool: {
+      query,
+      connect: async () => ({ query, release: () => {} }),
+    } as unknown as Pool,
     run: async (_command, args) => {
       runs.push(args);
       return { stdout: '', stderr: '', code: 0 };
@@ -154,8 +180,9 @@ function harness(options: {
 
   const find = (needle: string) => queries.find((entry) => entry.sql.includes(needle));
   const all = (needle: string) => queries.filter((entry) => entry.sql.includes(needle));
+  const flow = () => queries.map((entry) => label(entry.sql)).filter((entry) => entry !== null);
 
-  return { deps, queries, runs, downloads, uploads, find, all };
+  return { deps, queries, runs, downloads, uploads, find, all, flow };
 }
 
 describe('materializeRoughCut', () => {
@@ -169,13 +196,28 @@ describe('materializeRoughCut', () => {
 
     await materializeRoughCut(h.deps, 'cut-1');
 
-    // Restoring the island joins the two edits into one 1s–10s range.
+    // Restoring the island joins the two edits into one 1s-10s range.
     expect(h.downloads).toEqual(['videos/ver-a.mp4']);
     expect(h.runs).toHaveLength(1);
     const args = h.runs[0]!;
     expect([args[args.indexOf('-ss') + 1], args[args.indexOf('-t') + 1]]).toEqual([
       '1.000',
       '9.000',
+    ]);
+
+    // The version flip and the transcript rows each land in one transaction.
+    expect(h.flow()).toEqual([
+      'BEGIN',
+      'lock video',
+      'max version',
+      'deactivate',
+      'insert version',
+      'COMMIT',
+      'BEGIN',
+      'upsert transcript',
+      'delete segments',
+      'insert segments',
+      'COMMIT',
     ]);
 
     expect(h.find('UPDATE video_versions')?.params).toEqual(['out-1']);
@@ -189,7 +231,8 @@ describe('materializeRoughCut', () => {
     const update = h.find('UPDATE rough_cuts');
     expect(update?.params[1]).toBe('out-1');
     expect(JSON.parse(String(update?.params[2]))).toEqual(overrides);
-    expect(JSON.parse(String(update?.params[3])).edits).toEqual([
+    const rendered = JSON.parse(String(update?.params[3])) as RoughCutDecisionList;
+    expect(rendered.edits).toEqual([
       {
         timelineStartSeconds: 0,
         timelineEndSeconds: 9,
@@ -201,8 +244,12 @@ describe('materializeRoughCut', () => {
         reason: { code: 'KEPT', summary: 'Restored by the reviewer' },
       },
     ]);
+    // The stored cut list agrees with the stored program: the island the
+    // reviewer put back is not a cut any more, so nothing is left to list.
+    expect(rendered.cuts).toBeUndefined();
 
-    // Every word of the source lands in the program, one second earlier.
+    // Every word of the source lands in the program, one second earlier, in
+    // the two lines the source transcript was written in.
     expect(h.find('INSERT INTO transcripts')?.params).toEqual([
       newVersionId,
       'en',
@@ -211,25 +258,32 @@ describe('materializeRoughCut', () => {
     ]);
     const segmentInserts = h.all('INSERT INTO transcript_segments');
     expect(segmentInserts).toHaveLength(1);
-    expect(segmentInserts[0]!.params.slice(1, 5)).toEqual([
-      0,
-      5.5,
-      null,
-      'one two three four five six',
-    ]);
-    expect(JSON.parse(String(segmentInserts[0]!.params[5]))).toEqual([
-      { start: 0, end: 0.5, text: 'one' },
-      { start: 1, end: 1.5, text: 'two' },
-      { start: 2, end: 2.5, text: 'three' },
-      { start: 3, end: 3.5, text: 'four' },
-      { start: 4, end: 4.5, text: 'five' },
-      { start: 5, end: 5.5, text: 'six' },
+    const [transcriptId, starts, ends, speakers, texts, words, positions] = segmentInserts[0]!
+      .params as [string, number[], number[], Array<string | null>, string[], string[], number[]];
+    expect(transcriptId).toBe('t-out');
+    expect(starts).toEqual([0, 3]);
+    expect(ends).toEqual([2.5, 5.5]);
+    expect(speakers).toEqual([null, 'B']);
+    expect(texts).toEqual(['one two three', 'four five six']);
+    expect(positions).toEqual([0, 1]);
+    expect(words.map((entry) => JSON.parse(entry))).toEqual([
+      [
+        { start: 0, end: 0.5, text: 'one' },
+        { start: 1, end: 1.5, text: 'two' },
+        { start: 2, end: 2.5, text: 'three' },
+      ],
+      [
+        { start: 3, end: 3.5, text: 'four' },
+        { start: 4, end: 4.5, text: 'five' },
+        { start: 5, end: 5.5, text: 'six' },
+      ],
     ]);
 
     const subtitle = h.uploads.find((upload) => upload.key.startsWith('subtitles/'));
     expect(subtitle?.contentType).toBe('text/vtt');
     expect(subtitle?.body).toBe(
-      'WEBVTT\n\n00:00:00.000 --> 00:00:05.500\none two three four five six\n'
+      'WEBVTT\n\n00:00:00.000 --> 00:00:02.500\none two three\n\n' +
+        '00:00:03.000 --> 00:00:05.500\nfour five six\n'
     );
     expect(h.find('INSERT INTO video_subtitles')?.params.slice(0, 3)).toEqual([
       newVersionId,
@@ -267,11 +321,15 @@ describe('materializeRoughCut', () => {
       OUTPUT_BYTES.length,
       videoId,
     ]);
+    // Nothing to deactivate and no version number to race for.
     expect(h.all('UPDATE video_versions')).toHaveLength(0);
+    expect(h.all('FOR UPDATE')).toHaveLength(0);
 
     const update = h.find('UPDATE rough_cuts');
     expect(update?.params[1]).toBe(videoId);
     expect(update?.params[2]).toBeNull();
+    // The run's own cut list, unchanged: the reviewer decided nothing.
+    expect(JSON.parse(String(update?.params[3])).cuts).toHaveLength(1);
     expect(h.find('INSERT INTO media_jobs')?.params).toEqual([versionInsert?.params[0]]);
   });
 
@@ -290,6 +348,14 @@ describe('materializeRoughCut', () => {
     expect(h.all('UPDATE rough_cuts')).toHaveLength(0);
   });
 
+  it('fails the job when the run has no program to render', async () => {
+    const h = harness({ decisions: null });
+
+    await expect(materializeRoughCut(h.deps, 'cut-1')).rejects.toThrow(/no program to render/);
+    expect(h.runs).toEqual([]);
+    expect(h.all('UPDATE rough_cuts')).toHaveLength(0);
+  });
+
   it('does not fail the render when the derived transcript cannot be written', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const h = harness({ outputVideoId: 'out-1', transcriptRows: [] });
@@ -297,6 +363,8 @@ describe('materializeRoughCut', () => {
     try {
       await materializeRoughCut(h.deps, 'cut-1');
 
+      // The transcript transaction is rolled back, and the render is not.
+      expect(h.flow().slice(-3)).toEqual(['BEGIN', 'upsert transcript', 'ROLLBACK']);
       expect(h.all('INSERT INTO transcript_segments')).toHaveLength(0);
       expect(h.uploads.some((upload) => upload.key.startsWith('subtitles/'))).toBe(false);
       expect(h.find('UPDATE rough_cuts')?.params[1]).toBe('out-1');

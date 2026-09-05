@@ -1,6 +1,7 @@
 import type { SilencePolicy } from './brief';
 import { contentTokens, endsSentence, excerpt, type TimedWord } from './text';
 import type { TranscriptSegmentRow } from './transcript-source';
+import type { CutReasonCode as ProgramCutReasonCode } from './types';
 
 /**
  * The material model's speech layer: transcript words become kept speech
@@ -29,7 +30,12 @@ export type Beat = {
   runs: SpeechRun[];
 };
 
-export type CutReasonCode = 'DEAD_AIR' | 'FALSE_START' | 'REJECTED_TAKE';
+/**
+ * The codes the assembler itself can write. Derived from the program's list
+ * rather than repeated, so a code added there cannot quietly diverge; REVIEWER
+ * is excluded because only the reviewer's own cuts ever wear it.
+ */
+export type CutReasonCode = Exclude<ProgramCutReasonCode, 'REVIEWER'>;
 
 /** A removed source range, before it is keyed and placed on a run. */
 export type SourceCut = {

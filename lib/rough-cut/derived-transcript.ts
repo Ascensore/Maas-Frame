@@ -1,9 +1,9 @@
 import type { Pool } from 'pg';
+import { serializeWebVtt } from '../subtitle-validation';
 import { upsertCaptionTrack } from './caption-track';
 import type { TimedWord } from './text';
 import type { TranscriptSegmentRow } from './transcript-source';
 import type { EditDecision } from './types';
-import { serializeWebVtt } from './vtt';
 
 /**
  * The transcript of a rendered program, derived from the source transcripts
@@ -80,12 +80,66 @@ function flattenSource(segments: TranscriptSegmentRow[]): SourceWord[] {
   return out.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
+/** Seconds of a word an edit keeps; zero or less when the edit misses it. */
+function overlapSeconds(word: TimedWord, inSeconds: number, outSeconds: number): number {
+  return Math.min(word.end, outSeconds) - Math.max(word.start, inSeconds);
+}
+
 /** A word belongs to an edit when at least half of it, or a full second of it, is inside. */
-function wordInRange(word: TimedWord, inSeconds: number, outSeconds: number): boolean {
-  const overlap = Math.min(word.end, outSeconds) - Math.max(word.start, inSeconds);
+function wordInRange(word: TimedWord, overlap: number): boolean {
   if (overlap <= EPSILON) return false;
   const duration = Math.max(word.end - word.start, EPSILON);
   return overlap >= duration / 2 || overlap >= 1;
+}
+
+/**
+ * The one edit each source word is spoken in. A word can reach far enough into
+ * two edits either side of a cut to qualify for both, and emitting it twice
+ * would stutter the caption and the transcript; the edit that keeps the most of
+ * it wins, and an exact tie goes to the earlier position in the program.
+ */
+function ownersByWord(
+  ordered: EditDecision[],
+  wordsByVersion: Map<string, SourceWord[]>
+): Map<string, number> {
+  const owners = new Map<string, number>();
+  const best = new Map<string, number>();
+  ordered.forEach((edit, editIndex) => {
+    const words = wordsByVersion.get(edit.sourceVersionId) ?? [];
+    words.forEach((word, wordIndex) => {
+      const overlap = overlapSeconds(word, edit.inSeconds, edit.outSeconds);
+      if (!wordInRange(word, overlap)) return;
+      const key = `${edit.sourceVersionId}#${wordIndex}`;
+      const incumbent = best.get(key);
+      if (incumbent !== undefined && overlap <= incumbent + EPSILON) return;
+      best.set(key, overlap);
+      owners.set(key, editIndex);
+    });
+  });
+  return owners;
+}
+
+/**
+ * The program's language: the one spoken for the longest, not whichever
+ * transcript happens to come first. A source whose transcript never got a
+ * language is passed over rather than making the whole program `und`.
+ */
+function programLanguage(
+  ordered: EditDecision[],
+  transcripts: Map<string, SourceTranscript>
+): string {
+  const seconds = new Map<string, number>();
+  ordered.forEach((edit) => {
+    const held = Math.max(0, edit.timelineEndSeconds - edit.timelineStartSeconds);
+    seconds.set(edit.sourceVersionId, (seconds.get(edit.sourceVersionId) ?? 0) + held);
+  });
+  // Insertion order is program order, so a tie keeps the earliest edit's source.
+  const ranked = [...seconds.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [versionId] of ranked) {
+    const language = transcripts.get(versionId)?.language;
+    if (language && language !== 'und') return language;
+  }
+  return 'und';
 }
 
 /**
@@ -126,10 +180,12 @@ export function deriveProgramTranscript(
   };
 
   const ordered = [...edits].sort((a, b) => a.timelineStartSeconds - b.timelineStartSeconds);
+  const owners = ownersByWord(ordered, wordsByVersion);
   ordered.forEach((edit, editIndex) => {
     const shift = edit.timelineStartSeconds - edit.inSeconds;
-    for (const word of wordsByVersion.get(edit.sourceVersionId) ?? []) {
-      if (!wordInRange(word, edit.inSeconds, edit.outSeconds)) continue;
+    const words = wordsByVersion.get(edit.sourceVersionId) ?? [];
+    words.forEach((word, wordIndex) => {
+      if (owners.get(`${edit.sourceVersionId}#${wordIndex}`) !== editIndex) return;
       const start = Math.max(edit.timelineStartSeconds, word.start + shift);
       const end = Math.min(edit.timelineEndSeconds, Math.max(start, word.end + shift));
       const key = `${editIndex}:${word.segmentIndex}`;
@@ -144,13 +200,11 @@ export function deriveProgramTranscript(
       target.words.push({ start, end, text: word.text });
       target.endSec = Math.max(target.endSec, end);
       target.text = target.words.map((entry) => entry.text).join(' ');
-    }
+    });
   });
   close();
 
-  const languages = [...transcripts.values()].map((transcript) => transcript.language);
-  const language = languages.find((entry) => entry && entry !== 'und') ?? languages[0] ?? 'und';
-  return { language: language || 'und', segments };
+  return { language: programLanguage(ordered, transcripts), segments };
 }
 
 export type DerivedTranscriptDeps = {
@@ -158,52 +212,79 @@ export type DerivedTranscriptDeps = {
   uploadObject: (key: string, body: Buffer, contentType: string) => Promise<void>;
 };
 
-/** Write the derived transcript as the version's READY transcript and its caption track. */
+/**
+ * Write the derived transcript as the version's READY transcript, then its
+ * caption track. The transcript and its segments go in one transaction: a
+ * failure halfway through the segments would otherwise leave a READY row whose
+ * text is half of the old transcript and half of the new one. The caption track
+ * is written after the commit — it is a separate object in storage and a
+ * separate row, and losing it is not a reason to throw the transcript away.
+ */
 export async function persistDerivedTranscript(
   deps: DerivedTranscriptDeps,
   options: { versionId: string; language: string; provider: string; segments: DerivedSegment[] }
 ): Promise<{ transcriptId: string }> {
   const searchText = options.segments.map((segment) => segment.text).join(' ');
-  const upsert = await deps.pool.query(
-    `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, $1, $2, $3, 'READY', $4, NULL, NOW(), NOW())
-     ON CONFLICT (version_id, language)
-     DO UPDATE SET provider = EXCLUDED.provider, status = 'READY', search_text = EXCLUDED.search_text, error = NULL,
-       translation_language = NULL, translation_status = NULL, translation_error = NULL, translated_texts = NULL, updated_at = NOW()
-     RETURNING id`,
-    [options.versionId, options.language, options.provider, searchText]
-  );
-  const transcriptId = upsert.rows[0]?.id;
-  if (typeof transcriptId !== 'string' || !transcriptId) {
-    throw new Error('Could not store the derived transcript');
-  }
-  await deps.pool.query(`DELETE FROM transcript_segments WHERE transcript_id = $1`, [transcriptId]);
-  for (let index = 0; index < options.segments.length; index += 1) {
-    const segment = options.segments[index]!;
-    await deps.pool.query(
-      `INSERT INTO transcript_segments (id, transcript_id, start_sec, end_sec, speaker, text, words, position, created_at)
-       VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6::jsonb, $7, NOW())`,
-      [
-        transcriptId,
-        segment.startSec,
-        segment.endSec,
-        segment.speaker,
-        segment.text,
-        JSON.stringify(segment.words),
-        index,
-      ]
+  const client = await deps.pool.connect();
+  let transcriptId: string;
+  try {
+    await client.query('BEGIN');
+    const upsert = await client.query(
+      `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, $3, 'READY', $4, NULL, NOW(), NOW())
+       ON CONFLICT (version_id, language)
+       DO UPDATE SET provider = EXCLUDED.provider, status = 'READY', search_text = EXCLUDED.search_text, error = NULL,
+         translation_language = NULL, translation_status = NULL, translation_error = NULL, translated_texts = NULL, updated_at = NOW()
+       RETURNING id`,
+      [options.versionId, options.language, options.provider, searchText]
     );
+    const id = upsert.rows[0]?.id;
+    if (typeof id !== 'string' || !id) {
+      throw new Error('Could not store the derived transcript');
+    }
+    await client.query(`DELETE FROM transcript_segments WHERE transcript_id = $1`, [id]);
+    if (options.segments.length > 0) {
+      // One statement rather than a round trip per caption line: a
+      // half-hour interview derives hundreds of them.
+      await client.query(
+        `INSERT INTO transcript_segments (id, transcript_id, start_sec, end_sec, speaker, text, words, position, created_at)
+         SELECT gen_random_uuid()::text, $1, s.start_sec, s.end_sec, s.speaker, s.text, s.words::jsonb, s.position, NOW()
+         FROM unnest($2::float8[], $3::float8[], $4::text[], $5::text[], $6::text[], $7::int[])
+           AS s(start_sec, end_sec, speaker, text, words, position)`,
+        [
+          id,
+          options.segments.map((segment) => segment.startSec),
+          options.segments.map((segment) => segment.endSec),
+          options.segments.map((segment) => segment.speaker),
+          options.segments.map((segment) => segment.text),
+          options.segments.map((segment) => JSON.stringify(segment.words)),
+          options.segments.map((_segment, index) => index),
+        ]
+      );
+    }
+    await client.query('COMMIT');
+    transcriptId = id;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
   }
-  await upsertCaptionTrack(deps, {
-    versionId: options.versionId,
-    language: options.language,
-    vtt: serializeWebVtt(
-      options.segments.map((segment) => ({
-        start: segment.startSec,
-        end: segment.endSec,
-        text: segment.text,
-      }))
-    ),
-  });
+
+  try {
+    await upsertCaptionTrack(deps, {
+      versionId: options.versionId,
+      language: options.language,
+      vtt: serializeWebVtt(
+        options.segments.map((segment) => ({
+          start: segment.startSec,
+          end: segment.endSec,
+          text: segment.text,
+        }))
+      ),
+    });
+  } catch (error) {
+    console.error(`caption track for version ${options.versionId} failed`, error);
+  }
   return { transcriptId };
 }

@@ -451,7 +451,9 @@ export function effectiveDecisions(
       sourceVersionId: cut.sourceVersionId,
       inSeconds: cut.inSeconds,
       outSeconds: cut.outSeconds,
-      reason: { code: REVIEWER_CUT, summary: cut.note ?? 'Removed by the reviewer' },
+      // `||`, not `??`: the schema trims the note, so a note of only spaces
+      // arrives as an empty string and still needs the default summary.
+      reason: { code: REVIEWER_CUT, summary: cut.note || 'Removed by the reviewer' },
       transcriptText: null,
     })),
   ];
