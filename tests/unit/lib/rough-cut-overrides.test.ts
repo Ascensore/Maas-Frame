@@ -136,8 +136,8 @@ describe('parseRoughCutOverrides', () => {
       ],
     });
     expect(parsed?.extraCuts).toEqual([
-      { key: 'manual:v1:2-3', sourceVersionId: 'v1', inSeconds: 2, outSeconds: 3, note: null },
-      { key: 'manual:v1:4-5', sourceVersionId: 'v1', inSeconds: 4, outSeconds: 5, note: 'slow' },
+      { key: 'stored:v1:2-3', sourceVersionId: 'v1', inSeconds: 2, outSeconds: 3, note: null },
+      { key: 'stored:v1:4-5', sourceVersionId: 'v1', inSeconds: 4, outSeconds: 5, note: 'slow' },
       {
         key: 'manual:v1:250-275',
         sourceVersionId: 'v1',
@@ -146,6 +146,17 @@ describe('parseRoughCutOverrides', () => {
         note: null,
       },
     ]);
+  });
+
+  it('keeps a keyless stored cut apart from the frame key that shares its numbers', () => {
+    // 2–3 s at 25 fps is frames 50–75, the numbers a keyless row at 50–75
+    // seconds carries; only the prefix keeps the two cuts apart.
+    const parsed = parseRoughCutOverrides({
+      version: 1,
+      extraCuts: [{ sourceVersionId: 'v1', inSeconds: 50, outSeconds: 75 }],
+    });
+    expect(parsed?.extraCuts[0]?.key).toBe('stored:v1:50-75');
+    expect(parsed?.extraCuts[0]?.key).not.toBe(extraCutKey('v1', 2, 3, RATE));
   });
 });
 
@@ -578,5 +589,9 @@ describe('overrideSummary / overridesEqual', () => {
       overridesEqual(a, overrides({ 'v1:0-25': 'keep', 'v1:50-75': 'keep' }, a.extraCuts))
     ).toBe(false);
     expect(overridesEqual(a, overrides(a.cuts, [a.extraCuts[0]!]))).toBe(false);
+    // A draft that drew the same cut twice holds one decision, not two.
+    expect(
+      overridesEqual(a, overrides(a.cuts, [...a.extraCuts, cut('manual:v1:50-75', 2, 'again')]))
+    ).toBe(true);
   });
 });

@@ -78,9 +78,12 @@ function snapToFrame(seconds: number, rate: FrameRate): number {
  * A key for a stored cut written before keys were derived, or by something
  * that left the field out. Seconds rather than frames because a stored row
  * carries no rate; deterministic, so the same row always reads back the same.
+ * Its own prefix, because seconds and frames share a number space: a keyless
+ * row at 50–75 seconds would otherwise collide with the derived key of a cut
+ * at 2–3 seconds on a 25 fps timeline.
  */
 function storedExtraCutKey(sourceVersionId: string, inSeconds: number, outSeconds: number): string {
-  return `manual:${sourceVersionId}:${inSeconds}-${outSeconds}`;
+  return `stored:${sourceVersionId}:${inSeconds}-${outSeconds}`;
 }
 
 /** Read the stored column. A malformed value reads as no overrides rather than failing the render. */
@@ -457,7 +460,9 @@ function canonical(overrides: RoughCutOverrides | null): string {
   const cuts = Object.keys(overrides?.cuts ?? {})
     .sort()
     .map((key) => `${key}=${overrides?.cuts[key]}`);
-  const extra = (overrides?.extraCuts ?? []).map((cut) => cut.key).sort();
+  // Two cuts inside the same frame are one cut, so a draft that holds the
+  // same key twice is the same set of decisions as the one that holds it once.
+  const extra = [...new Set((overrides?.extraCuts ?? []).map((cut) => cut.key))].sort();
   return JSON.stringify({ cuts, extra });
 }
 

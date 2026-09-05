@@ -299,6 +299,27 @@ describe('resolveTakes', () => {
     expect(coverageOf(tokens, new Set())).toEqual({ fraction: 0, first: null, last: null });
   });
 
+  it('marks a phrase too short to shingle only when the reference holds it whole', () => {
+    // Under three tokens there is no trigram, so the whole phrase is the key,
+    // the way trigrams() shingles a short line.
+    expect(coverageOf(['thank', 'you'], new Set(['thank you']))).toEqual({
+      fraction: 1,
+      first: 0,
+      last: 1,
+    });
+    expect(coverageOf(['hello'], new Set(['hello']))).toEqual({ fraction: 1, first: 0, last: 0 });
+    expect(coverageOf(['thank', 'you'], new Set(['thank', 'you']))).toEqual({
+      fraction: 0,
+      first: null,
+      last: null,
+    });
+    expect(coverageOf([], new Set(['thank you']))).toEqual({
+      fraction: 0,
+      first: null,
+      last: null,
+    });
+  });
+
   it('replaces the tail of a long take with a cleaner retake of that tail', () => {
     const long = candidate(
       0,
@@ -447,6 +468,69 @@ describe('resolveTakes', () => {
     expect(resolution?.kept).toEqual([
       { index: 0, cuts: [] },
       { index: 1, cuts: [] },
+    ]);
+    expect(resolution?.duplicatesKept).toBe(1);
+  });
+
+  it('keeps an anchor a trimmed take was told to follow, even when a later take says it all', () => {
+    const script = parseScript('Our product does the heavy lifting.', EN);
+    const takes = [
+      candidate(0, 'our product does the heavy lifting'),
+      candidate(10, 'our product does the um heavy lifting and we ship it on time every week'),
+      candidate(
+        20,
+        'the team is um twelve people our product does the heavy lifting um across two offices in europe'
+      ),
+    ];
+    const alignments = takes.map((take) => alignBeatToScript(take.beat, script, EN));
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      scriptLines: script.lines,
+      alignments,
+      alsoGroup: scriptTakeGroups(takes, alignments, 600),
+    });
+
+    // One script line each, so rank orders them: the clean read anchors, the
+    // second gives its head up to it, and the third says the line in its
+    // middle and wholly covers the anchor. Dropping the anchor now would leave
+    // the second take's cut naming a take that is not in the cut and its
+    // remainder playing before the line it was trimmed to follow.
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [{ wordStart: 0, wordEnd: 7, coveredBy: 0 }] },
+      { index: 2, cuts: [] },
+    ]);
+    expect(takes[1]!.beat.words[7]?.text).toBe('and');
+    expect(resolution?.duplicatesKept).toBe(1);
+  });
+
+  it('keeps an anchor another take was rejected in favour of', () => {
+    const script = parseScript('Our product does the heavy lifting.', EN);
+    const takes = [
+      candidate(0, 'our product does the heavy lifting'),
+      candidate(10, 'our product does the um heavy lifting today already'),
+      candidate(
+        20,
+        'the um team is um twelve people our product does the heavy lifting um across two offices in europe'
+      ),
+    ];
+    const alignments = takes.map((take) => alignBeatToScript(take.beat, script, EN));
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      scriptLines: script.lines,
+      alignments,
+      alsoGroup: scriptTakeGroups(takes, alignments, 600),
+    });
+
+    // The second take is rejected in favour of the first, so the first has to
+    // stay: its summary is what tells the operator which take was kept.
+    expect(resolution?.rejected).toEqual([{ index: 1, coveredBy: 0 }]);
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 2, cuts: [] },
     ]);
     expect(resolution?.duplicatesKept).toBe(1);
   });

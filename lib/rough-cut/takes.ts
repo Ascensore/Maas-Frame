@@ -463,7 +463,14 @@ export function resolveTakes(
 
       const anchor = closestKept(trigrams(tokens));
       const back = coverageOf(tokensOf(anchor), trigrams(tokens));
-      if (back.fraction >= TAKE_COVERED_WHOLE) {
+      // Un-keeping an anchor another member already gave a span up to, or was
+      // rejected in favour of, would leave those cuts naming a take that is no
+      // longer in the cut, and a trimmed remainder playing before the line it
+      // was trimmed to follow. The duplicate is the lesser evil.
+      const reliedOn =
+        kept.some((entry) => entry.cuts.some((cut) => cut.coveredBy === anchor)) ||
+        rejected.some((entry) => entry.coveredBy === anchor);
+      if (back.fraction >= TAKE_COVERED_WHOLE && !reliedOn) {
         const position = kept.findIndex((entry) => entry.index === anchor);
         if (position >= 0) kept.splice(position, 1);
         rejected.push({ index: anchor, coveredBy: member });
