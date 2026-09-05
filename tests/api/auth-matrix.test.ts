@@ -115,6 +115,8 @@ import * as v1VersionCommentsRoute from '@/app/api/v1/versions/[versionId]/comme
 import * as v1VersionAgentRunsRoute from '@/app/api/v1/versions/[versionId]/agent-runs/route';
 import * as v1VersionTranscriptRoute from '@/app/api/v1/versions/[versionId]/transcript/route';
 import * as v1SequenceLinkRoute from '@/app/api/v1/versions/[versionId]/sequence-link/route';
+import * as v1SequenceLinkLookupRoute from '@/app/api/v1/sequence-link/lookup/route';
+import * as v1CommentsLiveRoute from '@/app/api/v1/versions/[versionId]/comments/live/route';
 import * as v1CommentRoute from '@/app/api/v1/comments/[commentId]/route';
 import * as assetDownloadRoute from '@/app/api/videos/[videoId]/assets/[assetId]/download/route';
 import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
@@ -182,7 +184,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 97;
+const EXPECTED_ROUTE_MODULE_COUNT = 99;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -789,6 +791,20 @@ const ROUTE_CASES: readonly RouteCase[] = [
       frameRateDen: 1,
       dropFrame: false,
     },
+  },
+  {
+    // Takes no version in the path, so an anonymous caller is refused by
+    // withApiAuth before any row is read.
+    file: 'v1/sequence-link/lookup/route.ts',
+    module: v1SequenceLinkLookupRoute,
+    url: () => '/api/v1/sequence-link/lookup?nle=premiere&sequenceId=seq-1',
+    params: () => ({}),
+  },
+  {
+    file: 'v1/versions/[versionId]/comments/live/route.ts',
+    module: v1CommentsLiveRoute,
+    url: (f) => `/api/v1/versions/${f.versionId}/comments/live`,
+    params: (f) => ({ versionId: f.versionId }),
   },
   {
     file: 'v1/comments/[commentId]/route.ts',

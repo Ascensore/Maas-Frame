@@ -34,6 +34,27 @@ export type SyncPlan = {
   remove: LocalMarker[];
 };
 
+/**
+ * A write-back decision. Resolving a comment on the web because its marker left
+ * the timeline is not reversible, so the unsafe cases are refused rather than
+ * guessed at, and the panel tells the editor what it declined to do.
+ */
+export type TimelineResolveDecision =
+  | { ok: true; ids: string[] }
+  | {
+      ok: false;
+      reason: 'timeline-not-bound' | 'over-cap';
+      refusedIds: string[];
+      cap: number;
+    };
+
+/** Above this many resolves in one pass, ask a human instead. */
+export const DEFAULT_AUTO_RESOLVE_CAP = 5;
+
+/** Poll cadence for auto-sync. Matches the web client's comment poll. */
+export const AUTO_SYNC_BASE_MS = 10000;
+export const AUTO_SYNC_MAX_BACKOFF_MS = 300000;
+
 export const SENTINEL_RE = /\[of:([a-z0-9]+)\]/i;
 
 export function commentSentinel(commentId: string): string {
@@ -88,6 +109,203 @@ export function commentsRemovedFromTimeline(
     if (openIds.has(id) && !present.has(id)) removed.push(id);
   }
   return removed;
+}
+
+/**
+ * What the host and the server each believe the sequence is.
+ *
+ * `hostSequenceId` is what the NLE reports for the sequence in front of the
+ * editor right now (Premiere sequence GUID, Resolve timeline unique id).
+ * `linkedSequenceId` is what an earlier sync stored for this version.
+ */
+/**
+ * Validates a host-reported sequence id against an allowlist.
+ *
+ * An allowlist, not a denylist of known junk. A value that is bogus but *the
+ * same for every sequence* -- '[object Promise]' from a promise-valued guid, a
+ * stringified accessor, 'true' -- is worse than no id at all: two different
+ * sequences compare equal, and the identity check then declares them bound and
+ * overrides the marker heuristic that would have refused. Anything not
+ * obviously an opaque id returns null, which falls back to markers.
+ */
+const SEQUENCE_ID_RE = /^[A-Za-z0-9._:{}-]{8,200}$/;
+
+export function normalizeSequenceId(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  let value: unknown = raw;
+  if (typeof value !== 'string') {
+    // A null-prototype object has no toString at all; calling it would throw.
+    if (typeof (value as { toString?: unknown })?.toString !== 'function') return null;
+    try {
+      value = String(value);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return SEQUENCE_ID_RE.test(trimmed) ? trimmed : null;
+}
+
+export type SequenceIdentity = {
+  hostSequenceId?: string | null;
+  linkedSequenceId?: string | null;
+};
+
+/**
+ * Whether the sequence in front of us is the one this version is synced to.
+ *
+ * When both sides can name the sequence, that answer is exact and settles it.
+ * Otherwise this falls back to the marker heuristic, which cannot tell an
+ * original from a duplicate: duplicating a sequence copies its markers but gets
+ * a fresh id, so a stale duplicate looks bound by markers alone.
+ */
+export function sequenceIsBound(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  identity: SequenceIdentity = {}
+): boolean {
+  const host = identity.hostSequenceId ?? null;
+  const linked = identity.linkedSequenceId ?? null;
+  if (host && linked) return host === linked;
+  return timelineLooksBound(local, previouslySyncedIds);
+}
+
+/**
+ * Whether an *unattended* pass may write to the sequence in front of us.
+ *
+ * Stricter than `sequenceIsBound`. When the host can name the sequence, the
+ * server has to agree by name: a link the server has never recorded means this
+ * sequence was never deliberately bound, and `sequenceIsBound` would otherwise
+ * fall through to the marker heuristic, which says "bound" for any sequence at
+ * all when nothing has been synced on this machine yet. First bind is a
+ * deliberate press of Sync markers, not something a poll decides.
+ *
+ * A host that cannot name its sequences keeps the old heuristic.
+ */
+export function autoSyncMayWrite(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  identity: SequenceIdentity = {}
+): boolean {
+  const host = identity.hostSequenceId ?? null;
+  if (host) return Boolean(identity.linkedSequenceId) && identity.linkedSequenceId === host;
+  return timelineLooksBound(local, previouslySyncedIds);
+}
+
+/**
+ * Whether the markers in front of us plausibly belong to the version being
+ * synced: at least one marker this version placed is still on the timeline.
+ *
+ * "Does the timeline hold any review marker at all" is too weak — a timeline
+ * carrying another version's markers passes that. A first sync (nothing synced
+ * yet) has nothing to contradict, so it counts as bound.
+ */
+export function timelineLooksBound(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[]
+): boolean {
+  if (previouslySyncedIds.length === 0) return true;
+  const present = new Set(collectSyncedMarkerIds(local));
+  return previouslySyncedIds.some((id) => present.has(id));
+}
+
+/** True when a sync would change nothing, so the host never opens a transaction. */
+export function planIsEmpty(plan: SyncPlan): boolean {
+  return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
+}
+
+/**
+ * Decides which comments a sync may resolve on the web because their markers
+ * left the timeline.
+ *
+ * `commentsRemovedFromTimeline` cannot tell "the editor deleted this marker"
+ * apart from "these markers were never on the timeline I am looking at". When
+ * the front sequence is not the bound one, every previously synced comment reads
+ * as deleted and would be resolved in a single pass. Two refusals close that:
+ *
+ * - `timeline-not-bound`: we previously synced markers and the timeline now
+ *   carries none at all. Deleting the genuinely last review marker also lands
+ *   here; refusing is recoverable, resolving wrongly is not.
+ * - `over-cap`: more resolves in one pass than a person plausibly performed.
+ */
+export function planTimelineResolves(
+  remote: RemoteComment[],
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  options: { cap?: number; identity?: SequenceIdentity } = {}
+): TimelineResolveDecision {
+  const cap = options.cap ?? DEFAULT_AUTO_RESOLVE_CAP;
+  const ids = commentsRemovedFromTimeline(remote, local, previouslySyncedIds);
+  // ids is a subset of previouslySyncedIds, so reaching here means both are
+  // non-empty and the binding check below is the only thing left to decide.
+  if (ids.length === 0) return { ok: true, ids: [] };
+  if (!sequenceIsBound(local, previouslySyncedIds, options.identity)) {
+    return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap };
+  }
+  if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap };
+  return { ok: true, ids };
+}
+
+/**
+ * The ids a caller may actually resolve. Read a decision through this rather
+ * than reaching for a field: a refusal's ids are the set that was refused, and
+ * iterating them is the exact bug this whole guard exists to prevent.
+ */
+export function resolvableIds(decision: TimelineResolveDecision): string[] {
+  return decision.ok ? decision.ids : [];
+}
+
+/** Explains a refusal in the panel status line. */
+export function describeResolveRefusal(decision: TimelineResolveDecision): string | null {
+  if (decision.ok) return null;
+  const count = decision.refusedIds.length;
+  if (decision.reason === 'timeline-not-bound') {
+    return `Did not resolve ${count} comment(s): the open sequence is not the one this version is synced to. Resolve them in the web app if that was intended.`;
+  }
+  return `Did not resolve ${count} comment(s): more than the ${decision.cap} allowed in one sync. Resolve them in the web app if that was intended.`;
+}
+
+export type SseEvent = { event: string; data: string };
+
+/**
+ * Pulls whole SSE frames out of a growing buffer, returning the trailing
+ * partial frame for the next read.
+ *
+ * A panel reads the live stream with `fetch` rather than `EventSource` because
+ * the endpoint authenticates a Bearer header, and EventSource cannot send one —
+ * the alternative is a token in the query string, which ends up in server and
+ * proxy logs.
+ */
+export function parseSseFrames(buffer: string): { events: SseEvent[]; rest: string } {
+  // CRLF is as valid as LF in the SSE spec, and a proxy may rewrite one to the
+  // other. Splitting on '\n\n' alone turns a CRLF stream into zero events and a
+  // buffer that grows for the life of the connection.
+  const parts = buffer.split(/\r\n\r\n|\n\n|\r\r/);
+  const rest = parts.pop() ?? '';
+  const events: SseEvent[] = [];
+  for (const frame of parts) {
+    let event = 'message';
+    const data: string[] = [];
+    for (const line of frame.split(/\r\n|\n|\r/)) {
+      if (line.startsWith(':')) continue; // keep-alive comment
+      if (line.startsWith('event:')) event = line.slice('event:'.length).trim();
+      else if (line.startsWith('data:')) data.push(line.slice('data:'.length).trim());
+    }
+    if (data.length > 0 || event !== 'message') events.push({ event, data: data.join('\n') });
+  }
+  return { events, rest };
+}
+
+/** Exponential backoff for the auto-sync poll, so a down server is not hammered. */
+export function nextPollDelayMs(
+  consecutiveFailures: number,
+  baseMs: number = AUTO_SYNC_BASE_MS,
+  maxMs: number = AUTO_SYNC_MAX_BACKOFF_MS
+): number {
+  if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return baseMs;
+  const exponent = Math.min(consecutiveFailures, 10);
+  return Math.min(maxMs, baseMs * 2 ** exponent);
 }
 
 export function parseSyncedMarkerIds(raw: string | null | undefined): string[] {
@@ -182,9 +400,15 @@ export function nearestResolveColor(hex: string | null | undefined): string {
   return best.name;
 }
 
-export function sequenceOffsetSeconds(startTimecode: string, fps: number): number {
-  const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(startTimecode.trim());
-  if (!match) return 0;
+/**
+ * Returns null when the start timecode cannot be parsed. A sequence starting at
+ * 01:00:00:00 whose timecode failed to parse used to yield 0, which silently put
+ * every marker an hour away from its comment. Callers must decide what to do
+ * with null; auto-sync refuses to write.
+ */
+export function sequenceOffsetSeconds(startTimecode: string, fps: number): number | null {
+  const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(String(startTimecode ?? '').trim());
+  if (!match) return null;
   const rate = Math.max(1, fps);
   return (
     Number(match[1]) * 3600 +

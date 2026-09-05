@@ -9,6 +9,22 @@ import { logError } from '@/lib/logger';
 type RouteParams = { params: Promise<{ versionId: string }> };
 
 const NLE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
+const SEQUENCE_ID_MAX = 200;
+
+/**
+ * The host's own id for the sequence. Optional: a panel on an older host may not
+ * be able to report one, and links written before the column existed have none.
+ */
+function parseSequenceId(value: unknown): string | null | undefined | 'invalid' {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  // Anything else is a caller bug. Silently keeping the stored id would hide a
+  // panel sending the wrong shape and leave a stale identity in place.
+  if (typeof value !== 'string') return 'invalid';
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, SEQUENCE_ID_MAX);
+}
 
 function parseNle(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -31,6 +47,7 @@ function offsetSecondsFor(row: {
 
 function shape(row: {
   nle: string;
+  sequenceId: string | null;
   sequenceName: string;
   startTimecode: string;
   frameRateNum: number;
@@ -40,6 +57,7 @@ function shape(row: {
 }) {
   return {
     nle: row.nle,
+    sequenceId: row.sequenceId,
     sequenceName: row.sequenceName,
     startTimecode: row.startTimecode,
     frameRateNum: row.frameRateNum,
@@ -100,8 +118,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const frameRateNum = Number(body?.frameRateNum);
     const frameRateDen = Number(body?.frameRateDen);
     const dropFrame = Boolean(body?.dropFrame);
+    const sequenceId = parseSequenceId(body?.sequenceId);
 
     if (!nle) return apiErrors.badRequest('nle is required');
+    if (sequenceId === 'invalid') {
+      return apiErrors.badRequest('sequenceId must be a string or null');
+    }
     if (!sequenceName || sequenceName.length > 200) {
       return apiErrors.badRequest('sequenceName is required and must be at most 200 characters');
     }
@@ -126,6 +148,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         userId: authContext.userId,
         versionId,
         nle,
+        sequenceId: sequenceId ?? null,
         sequenceName,
         startTimecode,
         frameRateNum: reduced.num,
@@ -133,6 +156,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         dropFrame,
       },
       update: {
+        // undefined leaves the stored id alone, so a panel that cannot report
+        // one does not wipe an identity an earlier sync established.
+        ...(sequenceId === undefined ? {} : { sequenceId }),
         sequenceName,
         startTimecode,
         frameRateNum: reduced.num,

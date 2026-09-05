@@ -1,6 +1,6 @@
 const { app } = require('electron');
 const path = require('path');
-const nleCore = require('../core/nle-core.cjs');
+const nleCore = require('./nle-core.cjs');
 
 function parseCustomData(raw) {
   if (!raw || typeof raw !== 'string' || !raw.startsWith('{')) return null;
@@ -8,6 +8,36 @@ function parseCustomData(raw) {
     return JSON.parse(raw);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Resolve's own id for the timeline. Duplicating a timeline copies its markers
+ * but gets a fresh id, so this is what tells an original from a stale duplicate.
+ * Older hosts without GetUniqueId return null and fall back to the marker
+ * heuristic.
+ */
+function hostSequenceId(timeline) {
+  return nleCore.normalizeSequenceId(timeline.GetUniqueId?.());
+}
+
+/**
+ * What the server has stored for the version we are syncing. Returns
+ * `{ ok: false }` on a failed read: collapsing that into "no id stored" would
+ * downgrade the identity check to the marker heuristic on any transient blip,
+ * which is what lets a duplicate timeline through.
+ */
+async function storedSequenceId(baseUrl, token, versionId) {
+  try {
+    const response = await fetch(
+      `${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/sequence-link?nle=resolve`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) return { ok: false, sequenceId: null };
+    const payload = await response.json();
+    return { ok: true, sequenceId: payload.data?.sequenceLink?.sequenceId ?? null };
+  } catch {
+    return { ok: false, sequenceId: null };
   }
 }
 
@@ -40,7 +70,18 @@ async function createWindow() {
   });
   await win.loadFile(path.join(__dirname, 'index.html'));
 
-  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds }) => {
+  // The renderer drives the loop but only the main process can talk to Resolve,
+  // so identifying the front timeline has to come back across IPC.
+  ipcMain.handle('timeline-identity', async () => {
+    const resolve = app.resolve;
+    if (!resolve) return null;
+    const project = resolve.GetProjectManager()?.GetCurrentProject();
+    const timeline = project?.GetCurrentTimeline();
+    if (!timeline) return null;
+    return { sequenceId: hostSequenceId(timeline), sequenceName: timeline.GetName?.() || 'Untitled' };
+  });
+
+  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds, auto }) => {
     const resolve = app.resolve;
     if (!resolve) throw new Error('Resolve scripting API is unavailable. Studio is required.');
     const projectManager = resolve.GetProjectManager();
@@ -49,28 +90,23 @@ async function createWindow() {
     const timeline = project.GetCurrentTimeline();
     if (!timeline) throw new Error('No timeline open');
 
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/comments`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const comments = payload.data?.comments ?? [];
-
     const fps = Number(timeline.GetSetting('timelineFrameRate')) || 24;
     const startTc =
       timeline.GetStartTimecode?.() || timeline.GetSetting?.('timelineStartTimecode') || '00:00:00:00';
     const dropFrame = String(startTc).includes(';');
-    const offsetSeconds = nleCore.sequenceOffsetSeconds(startTc, fps);
+    const parsedOffset = nleCore.sequenceOffsetSeconds(startTc, fps);
+    if (parsedOffset === null && auto) {
+      // Guessing 0 here puts every marker an hour from its comment on a
+      // timeline starting at 01:00:00:00. A human can still force it.
+      return {
+        message: `Auto-sync paused: could not read the timeline start timecode (${startTc}). Sync manually to place markers at 00:00:00:00.`,
+        syncedIds: previousIds || [],
+      };
+    }
+    const offsetSeconds = parsedOffset === null ? 0 : parsedOffset;
     const sequenceName = timeline.GetName?.() || 'Untitled';
+    const sequenceId = hostSequenceId(timeline);
     const rational = nleCore.fpsToRational(fps);
-    const persistError = await persistSequenceLink(baseUrl, token, versionId, {
-      nle: 'resolve',
-      sequenceName: String(sequenceName).slice(0, 200),
-      startTimecode: startTc,
-      frameRateNum: rational.num,
-      frameRateDen: rational.den,
-      dropFrame,
-    });
 
     const existing = timeline.GetMarkers() || {};
     const local = [];
@@ -89,9 +125,55 @@ async function createWindow() {
       });
     }
 
-    const toResolve = nleCore.commentsRemovedFromTimeline(comments, local, previousIds || []);
+    // Everything below writes: markers onto the timeline, the sequence link on
+    // the server, and the record of which comments have markers. Resolve cannot
+    // tell us the editor switched timelines, so this check is what stops an
+    // unattended pass from acting on somebody else's timeline.
+    const stored = await storedSequenceId(baseUrl, token, versionId);
+    if (auto && !stored.ok) {
+      return {
+        message: 'Auto-sync paused: could not confirm which timeline this version is synced to.',
+        syncedIds: previousIds || [],
+      };
+    }
+    const identity = { hostSequenceId: sequenceId, linkedSequenceId: stored.sequenceId };
+    if (auto && !nleCore.autoSyncMayWrite(local, previousIds || [], identity)) {
+      return {
+        message:
+          'Auto-sync paused: this timeline is not the one this version is synced to. Press Sync markers to bind the timeline you are on.',
+        syncedIds: previousIds || [],
+      };
+    }
+
+    // Auto-sync is read-only, so it does not rebind the sequence link.
+    const persistError = auto
+      ? null
+      : await persistSequenceLink(baseUrl, token, versionId, {
+          nle: 'resolve',
+          sequenceId,
+          sequenceName: String(sequenceName).slice(0, 200),
+          startTimecode: startTc,
+          frameRateNum: rational.num,
+          frameRateDen: rational.den,
+          dropFrame,
+        });
+
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/comments`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const comments = payload.data?.comments ?? [];
+
+    // Auto-sync runs the read direction only: putting a comment on the timeline
+    // is recoverable, resolving one on the review record is not.
+    const decision = auto
+      ? { ok: true, ids: [] }
+      : nleCore.planTimelineResolves(comments, local, previousIds || [], { identity });
+    const refusal = nleCore.describeResolveRefusal(decision);
     const resolvedIds = [];
-    for (const commentId of toResolve) {
+    // Read through resolvableIds: a refusal's ids are the set that was refused.
+    for (const commentId of nleCore.resolvableIds(decision)) {
       const patch = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/comments/${commentId}`, {
         method: 'PATCH',
         headers: {
@@ -167,11 +249,16 @@ async function createWindow() {
       });
     }
 
-    const summary = `Synced. Added ${added}, moved ${moved}, removed ${removed}, resolved ${resolvedIds.length}. Offset ${offsetSeconds.toFixed(2)}s.`;
-    return {
-      message: persistError ? `${summary} Sequence link was not saved: ${persistError}` : summary,
-      syncedIds: nleCore.collectSyncedMarkerIds(afterLocal),
-    };
+    const syncedIds = nleCore.collectSyncedMarkerIds(afterLocal);
+    if (auto && added === 0 && moved === 0 && removed === 0) {
+      return { message: `Auto-sync on. No changes at ${new Date().toLocaleTimeString()}.`, syncedIds };
+    }
+    const parts = [`Synced. Added ${added}, moved ${moved}, removed ${removed}.`];
+    if (!auto) parts.push(`Resolved ${resolvedIds.length}.`);
+    parts.push(`Offset ${offsetSeconds.toFixed(2)}s${parsedOffset === null ? ' (assumed)' : ''}.`);
+    if (refusal) parts.push(refusal);
+    if (persistError) parts.push(`Sequence link was not saved: ${persistError}`);
+    return { message: parts.join(' '), syncedIds };
   });
 }
 

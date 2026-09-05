@@ -9,6 +9,9 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   var SENTINEL_RE = /\[of:([a-z0-9]+)\]/i;
+  var DEFAULT_AUTO_RESOLVE_CAP = 5;
+  var AUTO_SYNC_BASE_MS = 10000;
+  var AUTO_SYNC_MAX_BACKOFF_MS = 300000;
 
   function commentSentinel(commentId) {
     return '[of:' + commentId + ']';
@@ -159,10 +162,12 @@
     return best.name;
   }
 
+  /* Returns null when the timecode does not parse, so callers fail closed
+     instead of placing every marker an hour from its comment. */
   function sequenceOffsetSeconds(startTimecode, fps) {
     var match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(String(startTimecode || '').trim());
-    if (!match) return 0;
-    var rate = Math.max(1, Number(fps) || 24);
+    if (!match) return null;
+    var rate = Math.max(1, fps);
     return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / rate;
   }
 
@@ -204,12 +209,140 @@
     return pad(hours) + ':' + pad(minutes) + ':' + pad(secs) + sep + pad(frames);
   }
 
+  /* Identity beats the marker heuristic when both sides can name the sequence:
+     a duplicate copies markers but gets a fresh id. See sequenceIsBound in
+     ../core/src/index.ts. */
+  function sequenceIsBound(local, previouslySyncedIds, identity) {
+    var host = (identity && identity.hostSequenceId) || null;
+    var linked = (identity && identity.linkedSequenceId) || null;
+    if (host && linked) return host === linked;
+    return timelineLooksBound(local, previouslySyncedIds);
+  }
+
+  /* Allowlist for host-reported sequence ids. A bogus-but-constant value is
+     worse than none: two sequences would compare equal and the identity check
+     would declare them bound. See normalizeSequenceId in ../core/src/index.ts. */
+  var SEQUENCE_ID_RE = /^[A-Za-z0-9._:{}-]{8,200}$/;
+
+  function normalizeSequenceId(raw) {
+    if (raw === null || raw === undefined) return null;
+    var value = raw;
+    if (typeof value !== 'string') {
+      if (!value || typeof value.toString !== 'function') return null;
+      try {
+        value = String(value);
+      } catch (error) {
+        return null;
+      }
+    }
+    if (typeof value !== 'string') return null;
+    var trimmed = value.trim();
+    return SEQUENCE_ID_RE.test(trimmed) ? trimmed : null;
+  }
+
+  /* Stricter than sequenceIsBound: an unattended pass may only write to a
+     sequence the server has actually recorded a link for. See autoSyncMayWrite
+     in ../core/src/index.ts. */
+  function autoSyncMayWrite(local, previouslySyncedIds, identity) {
+    var host = (identity && identity.hostSequenceId) || null;
+    var linked = (identity && identity.linkedSequenceId) || null;
+    if (host) return Boolean(linked) && linked === host;
+    return timelineLooksBound(local, previouslySyncedIds);
+  }
+
+  /* At least one marker this version placed is still on the timeline. See
+     timelineLooksBound in ../core/src/index.ts. */
+  function timelineLooksBound(local, previouslySyncedIds) {
+    var previous = previouslySyncedIds || [];
+    if (previous.length === 0) return true;
+    var presentIds = collectSyncedMarkerIds(local);
+    return previous.some(function (id) {
+      return presentIds.indexOf(id) !== -1;
+    });
+  }
+
+  function planIsEmpty(plan) {
+    return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
+  }
+
+  /* See planTimelineResolves in ../core/src/index.ts for why these refusals exist. */
+  function planTimelineResolves(remote, local, previouslySyncedIds, options) {
+    var cap = (options && typeof options.cap === 'number') ? options.cap : DEFAULT_AUTO_RESOLVE_CAP;
+    var previous = previouslySyncedIds || [];
+    var ids = commentsRemovedFromTimeline(remote, local, previous);
+    if (ids.length === 0) return { ok: true, ids: [] };
+    if (!sequenceIsBound(local, previous, options && options.identity)) {
+      return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap: cap };
+    }
+    if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap: cap };
+    return { ok: true, ids: ids };
+  }
+
+  /* Read a decision through this: a refusal's ids are the refused set. */
+  function resolvableIds(decision) {
+    return decision.ok ? decision.ids : [];
+  }
+
+  function describeResolveRefusal(decision) {
+    if (decision.ok) return null;
+    var count = decision.refusedIds.length;
+    if (decision.reason === 'timeline-not-bound') {
+      return 'Did not resolve ' + count + ' comment(s): the open sequence is not the one this version is synced to. Resolve them in the web app if that was intended.';
+    }
+    return 'Did not resolve ' + count + ' comment(s): more than the ' + decision.cap + ' allowed in one sync. Resolve them in the web app if that was intended.';
+  }
+
+  /* See parseSseFrames in ../core/src/index.ts. */
+  function parseSseFrames(buffer) {
+    /* CRLF is as valid as LF in the SSE spec; splitting on '\n\n' alone turns a
+       CRLF stream into zero events and an ever-growing buffer. */
+    var parts = String(buffer || '').split(/\r\n\r\n|\n\n|\r\r/);
+    var rest = parts.pop() || '';
+    var events = [];
+    for (var i = 0; i < parts.length; i += 1) {
+      var lines = parts[i].split(/\r\n|\n|\r/);
+      var event = 'message';
+      var data = [];
+      for (var j = 0; j < lines.length; j += 1) {
+        var line = lines[j];
+        if (line.charAt(0) === ':') continue;
+        if (line.indexOf('event:') === 0) event = line.slice(6).trim();
+        else if (line.indexOf('data:') === 0) data.push(line.slice(5).trim());
+      }
+      if (data.length > 0 || event !== 'message') {
+        events.push({ event: event, data: data.join('\n') });
+      }
+    }
+    return { events: events, rest: rest };
+  }
+
+  function nextPollDelayMs(consecutiveFailures, baseMs, maxMs) {
+    var base = typeof baseMs === 'number' ? baseMs : AUTO_SYNC_BASE_MS;
+    var max = typeof maxMs === 'number' ? maxMs : AUTO_SYNC_MAX_BACKOFF_MS;
+    if (!isFinite(consecutiveFailures) || consecutiveFailures <= 0) return base;
+    var exponent = Math.min(consecutiveFailures, 10);
+    return Math.min(max, base * Math.pow(2, exponent));
+  }
+
   function resolveCustomData(commentId, versionId) {
     return JSON.stringify({ ofId: commentId, versionId: versionId });
   }
 
   return {
     SENTINEL_RE: SENTINEL_RE,
+    DEFAULT_AUTO_RESOLVE_CAP: DEFAULT_AUTO_RESOLVE_CAP,
+    AUTO_SYNC_BASE_MS: AUTO_SYNC_BASE_MS,
+    AUTO_SYNC_MAX_BACKOFF_MS: AUTO_SYNC_MAX_BACKOFF_MS,
+    planIsEmpty: planIsEmpty,
+    timelineLooksBound: timelineLooksBound,
+    sequenceIsBound: sequenceIsBound,
+    autoSyncMayWrite: autoSyncMayWrite,
+    normalizeSequenceId: normalizeSequenceId,
+    resolvableIds: resolvableIds,
+    planTimelineResolves: planTimelineResolves,
+    describeResolveRefusal: describeResolveRefusal,
+    nextPollDelayMs: nextPollDelayMs,
+    parseSseFrames: parseSseFrames,
     commentSentinel: commentSentinel,
     parseSentinel: parseSentinel,
     commentLabel: commentLabel,
