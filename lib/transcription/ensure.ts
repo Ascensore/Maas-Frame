@@ -1,10 +1,8 @@
-import { MediaJobKind, Prisma, TranscriptStatus } from '@prisma/client';
+import { TranscriptStatus } from '@prisma/client';
 import { db } from '@/lib/db';
-import { getTranscriptionProviderName, isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
-import { enqueueMediaJob } from '@/lib/media-jobs';
+import { isTranscriptionFeatureEnabled } from '@/lib/feature-flags';
+import { startVersionTranscription } from '@/lib/media-jobs';
 import { canAutoTranscribe, type ReviewKind } from '@/lib/review-kind';
-import { AUTO_DETECT_TRANSCRIPT_LANGUAGE } from '@/lib/transcription/language';
-import { scheduleVersionTranscription } from '@/lib/transcription/schedule';
 
 export type TranscriptReadiness = {
   /** Versions with a READY transcript. */
@@ -18,11 +16,20 @@ export type TranscriptReadiness = {
 };
 
 /**
- * Before a cut is assembled, every clip needs a transcript on the way. READY
- * and in-progress rows are left alone. A version with no row, or whose rows
- * all FAILED, gets a fresh PENDING row plus the extract and transcribe jobs,
- * exactly as an upload does, and the inline runner is scheduled for hosts
- * without a media worker. Auto-detect is the language, as on upload.
+ * Queue the transcription a cut needs at the moment the cut is requested.
+ *
+ * This does not make a rough cut possible on a host without a media worker.
+ * Video is transcribed only by the worker's EXTRACT_AUDIO/TRANSCRIBE jobs —
+ * the inline runner behind `scheduleVersionTranscription` handles AUDIO alone
+ * (`canRunInlineTranscription` in lib/transcription/source.ts) — and only the
+ * worker runs ASSEMBLE_ROUGH_CUT at all. What this buys is timing: the jobs
+ * are waiting for the worker from the request rather than from the run's
+ * first assemble attempt, and the run carries its waiting warning
+ * immediately instead of after a round trip through the assembler.
+ *
+ * READY and in-progress rows are left alone. A version with no row, or whose
+ * rows all FAILED, gets a fresh PENDING row and the jobs, through the same
+ * `startVersionTranscription` an upload uses.
  */
 export async function ensureTranscriptsForVersions(
   versions: Array<{ id: string; providerId: string; kind: ReviewKind }>
@@ -59,31 +66,7 @@ export async function ensureTranscriptsForVersions(
       continue;
     }
 
-    const language = AUTO_DETECT_TRANSCRIPT_LANGUAGE;
-    const transcript = await db.transcript.upsert({
-      where: { versionId_language: { versionId: version.id, language } },
-      create: {
-        versionId: version.id,
-        language,
-        provider: getTranscriptionProviderName(),
-        status: TranscriptStatus.PENDING,
-      },
-      update: {
-        status: TranscriptStatus.PENDING,
-        error: null,
-        provider: getTranscriptionProviderName(),
-        translationLanguage: null,
-        translationStatus: null,
-        translationError: null,
-        translatedTexts: Prisma.DbNull,
-      },
-    });
-    await enqueueMediaJob(version.id, MediaJobKind.EXTRACT_AUDIO);
-    await enqueueMediaJob(version.id, MediaJobKind.TRANSCRIBE, {
-      language,
-      transcriptId: transcript.id,
-    });
-    scheduleVersionTranscription(version.id, language, transcript.id);
+    await startVersionTranscription(version.id);
     readiness.enqueued.push(version.id);
     readiness.pending.push(version.id);
   }

@@ -40,6 +40,10 @@ import { ensureTranscriptsForVersions } from '@/lib/transcription/ensure';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
+// Creating a cut starts transcription for its clips, which schedules work
+// after the response, as the upload routes do.
+export const maxDuration = 300;
+
 function parseFolderId(raw: string | null): string | null | undefined {
   if (raw === null) return undefined;
   if (raw === '' || raw === 'root') return null;
@@ -261,19 +265,37 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    // Transcription first: every clip must have a transcript on the way
-    // before the run is queued. The assembler parks the run until they are
-    // READY (lib/rough-cut/assemble-job.ts).
+    // Start the transcription each clip needs now rather than leaving it to
+    // the assembler's first attempt, so the worker finds the jobs already
+    // queued and the run carries its waiting warning from the start. Only the
+    // worker transcribes video and only the worker assembles, so this brings
+    // the work forward; it does not make a cut possible without one.
+    //
+    // Multicam reads a single transcript for the whole session — the wide
+    // camera's, with the other angles only as a fallback (`slotCandidates` in
+    // lib/rough-cut/assemble-job.ts) — so only that camera needs one. Linear
+    // and sequential layouts cut every clip against its own transcript.
+    const wideRole = (wideRoleParsed.value ?? profile.wideCameraRole).trim().toUpperCase();
+    const wideCamera =
+      orderedCameras.find((camera) => camera.role.trim().toUpperCase() === wideRole) ??
+      orderedCameras[0];
+    const transcriptCameras =
+      layout === 'MULTICAM' ? (wideCamera ? [wideCamera] : []) : orderedCameras;
+    const transcriptTargets = transcriptCameras.flatMap((camera) =>
+      camera.versionId && camera.providerId
+        ? [{ versionId: camera.versionId, providerId: camera.providerId, title: camera.title }]
+        : []
+    );
     const readiness = await ensureTranscriptsForVersions(
-      fileBacked.map((video) => ({
-        id: video.versions[0]!.id,
-        providerId: video.versions[0]!.providerId,
+      transcriptTargets.map((target) => ({
+        id: target.versionId,
+        providerId: target.providerId,
         kind: 'VIDEO' as const,
       }))
     );
-    const pendingTitles = fileBacked
-      .filter((video) => readiness.pending.includes(video.versions[0]!.id))
-      .map((video) => video.title);
+    const pendingTitles = transcriptTargets
+      .filter((target) => readiness.pending.includes(target.versionId))
+      .map((target) => target.title);
 
     const created = await db.roughCut.create({
       data: {

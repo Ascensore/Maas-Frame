@@ -60,6 +60,7 @@ export interface CreateRoughCutInput {
   status?: RoughCutStatus;
   layout?: RoughCutLayout;
   decisions?: object | null;
+  script?: string | null;
 }
 
 export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughCut> {
@@ -73,6 +74,7 @@ export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughC
       layout: input.layout ?? 'MULTICAM',
       profileSnapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
       decisions: input.decisions ?? undefined,
+      script: input.script ?? null,
     },
   });
 }

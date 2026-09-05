@@ -129,8 +129,17 @@ export function RoughCutDialog({
   videoCount,
   videos,
 }: RoughCutDialogProps) {
-  const { roughCut, cameras, error, isStarting, isDownloading, start, download, reset } =
-    useRoughCut();
+  const {
+    roughCut,
+    cameras,
+    error,
+    isStarting,
+    isDownloading,
+    waitingForWorker,
+    start,
+    download,
+    reset,
+  } = useRoughCut();
   const [profiles, setProfiles] = useState<RoughCutDialogProfile[]>([]);
   const [profileId, setProfileId] = useState<string>('default');
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -469,11 +478,13 @@ export function RoughCutDialog({
           {status === 'PENDING' || status === 'RUNNING' ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {waitingForTranscript
-                ? 'Waiting for the transcript…'
-                : status === 'PENDING'
-                  ? 'Queued…'
-                  : 'Assembling the rough cut…'}
+              {waitingForWorker
+                ? 'Waiting for the media worker…'
+                : waitingForTranscript
+                  ? 'Waiting for the transcript…'
+                  : status === 'PENDING'
+                    ? 'Queued…'
+                    : 'Assembling the rough cut…'}
             </div>
           ) : null}
 
