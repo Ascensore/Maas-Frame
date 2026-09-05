@@ -171,7 +171,7 @@ cue times to match.
 
 ## Data model
 
-Migration `prisma/migrations/20260907110000_transcript_first_editing`:
+Migration `prisma/migrations/20260907120000_transcript_first_editing`:
 
 - `MediaJobKind` gains `BURN_SUBTITLES`.
 - `rough_cuts.script` (`TEXT`) — the copy the speaker read.
@@ -269,7 +269,7 @@ pre-existing `weak-transcript` also still apply.
 - **Job kinds** — the worker now runs `BURN_SUBTITLES` in addition to `PROBE_MEDIA`,
   `EXTRACT_AUDIO`, `TRANSCRIBE`, `TRANSCODE_PROXY`, `DIARIZE`, `ASSEMBLE_ROUGH_CUT`,
   `IMPORT_DRIVE` and `MATERIALIZE_ROUGH_CUT`.
-- **Migration** — apply `20260907110000_transcript_first_editing` with `bun run db:migrate`
+- **Migration** — apply `20260907120000_transcript_first_editing` with `bun run db:migrate`
   before the deploy.
 - **Rebuild the media worker before the app that can queue a burn-in.** The image needs the new
   fonts, the new files under `lib/rough-cut`, and `zod` (now a worker dependency). A worker that

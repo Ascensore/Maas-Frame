@@ -29,7 +29,7 @@
 
 | Path                                                                                                                                                                                     | Responsibility                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `prisma/schema.prisma`, `prisma/migrations/20260907110000_transcript_first_editing/migration.sql`                                                                                        | `BURN_SUBTITLES` job kind; `RoughCut.script`, `overrides`, `renderedOverrides`, `renderedDecisions` |
+| `prisma/schema.prisma`, `prisma/migrations/20260907120000_transcript_first_editing/migration.sql`                                                                                        | `BURN_SUBTITLES` job kind; `RoughCut.script`, `overrides`, `renderedOverrides`, `renderedDecisions` |
 | `lib/rough-cut/env.ts`                                                                                                                                                                   | `isTranscriptionEnvEnabled` (worker-safe flag read)                                                 |
 | `lib/rough-cut/transcript-source.ts`                                                                                                                                                     | wait limits, `transcriptRequiredError`                                                              |
 | `lib/rough-cut/assemble-job.ts`                                                                                                                                                          | transcript-required policy, auto-enqueue transcription, script-aware editorial pass                 |
@@ -60,7 +60,7 @@
 **Files:**
 
 - Modify: `prisma/schema.prisma` (enum `MediaJobKind`, model `RoughCut`)
-- Create: `prisma/migrations/20260907110000_transcript_first_editing/migration.sql`
+- Create: `prisma/migrations/20260907120000_transcript_first_editing/migration.sql`
 - Modify: `tests/setup/db-global.ts` (`REVIEWED_MIGRATIONS`)
 - Modify: `lib/rough-cut/env.ts`
 - Modify: `lib/rough-cut/transcript-source.ts`
@@ -81,7 +81,7 @@ In `prisma/schema.prisma`, add `BURN_SUBTITLES` as the last value of `enum Media
   renderedDecisions Json?           @map("rendered_decisions")
 ```
 
-Create `prisma/migrations/20260907110000_transcript_first_editing/migration.sql`:
+Create `prisma/migrations/20260907120000_transcript_first_editing/migration.sql`:
 
 ```sql
 -- AlterEnum
@@ -98,7 +98,7 @@ ADD COLUMN "rendered_overrides" JSONB,
 ADD COLUMN "rendered_decisions" JSONB;
 ```
 
-Append `'20260907110000_transcript_first_editing',` to `REVIEWED_MIGRATIONS` in `tests/setup/db-global.ts` (plain enum/column additions: no `POST_PUSH_SQL` entry). Run `bun run db:generate`.
+Append `'20260907120000_transcript_first_editing',` to `REVIEWED_MIGRATIONS` in `tests/setup/db-global.ts` (plain enum/column additions: no `POST_PUSH_SQL` entry). Run `bun run db:generate`.
 
 - [x] **Step 2: Failing unit tests for the env flag and the wait policy**
 
@@ -5377,7 +5377,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 In the editorial-brief spec, mark phase 5 as **Done** (overrides route, `applyOverrides`, re-materialize as a new version; regenerate-with-pins not built: overrides survive because they are keyed by source range and re-rendering reuses the same run) and phase 6 as **Done** (Cuts tab on the output video with a source preview).
 
-`INTERNAL.md`: in the env table, note that with `OPENFRAME_ENABLE_TRANSCRIPTION=true` a rough cut waits for transcripts (up to two hours) and fails rather than falling back; in "Services", add that the worker also burns subtitles (`BURN_SUBTITLES`) and needs the fonts the Dockerfile installs; in "After pulling master", add `bun run db:migrate` for `20260907110000_transcript_first_editing`.
+`INTERNAL.md`: in the env table, note that with `OPENFRAME_ENABLE_TRANSCRIPTION=true` a rough cut waits for transcripts (up to two hours) and fails rather than falling back; in "Services", add that the worker also burns subtitles (`BURN_SUBTITLES`) and needs the fonts the Dockerfile installs; in "After pulling master", add `bun run db:migrate` for `20260907120000_transcript_first_editing`.
 
 `README.md`: add bullets for editing transcript lines in place, captions built from the transcript, burned-in subtitle versions, and reviewing a rough cut's removals against the source.
 

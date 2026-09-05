@@ -184,7 +184,7 @@ bun run db:migrate
 ```
 
 Run it after this pull whichever database you are on:
-`20260907110000_transcript_first_editing` adds the `BURN_SUBTITLES` job kind
+`20260907120000_transcript_first_editing` adds the `BURN_SUBTITLES` job kind
 and the `script`, `overrides`, `rendered_overrides` and `rendered_decisions`
 columns on `rough_cuts`. It only adds, so it is safe to apply before the app
 that reads them is deployed; the media worker needs it before it can lease a
