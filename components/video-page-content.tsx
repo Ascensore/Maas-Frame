@@ -389,6 +389,7 @@ export function VideoPageContent({
     generateSubtitles,
     isUploadingSubtitle,
     isGeneratingSubtitles,
+    refreshSubtitles,
   } = useSubtitles({
     videoId,
     versionId: activeVersionId,
@@ -1038,6 +1039,9 @@ export function VideoPageContent({
             onSeek={handleTranscriptSeek}
             onCommentRange={handleTranscriptCommentRange}
             onOpenThread={handleOpenTranscriptThread}
+            // Editing a line rewrites the caption track, so the player's list is
+            // stale until it is fetched again.
+            onCaptionsChanged={refreshSubtitles}
           />
         </TranscriptSidebar>
         <div className={cn('flex-1 w-full flex flex-col min-h-0', isFullscreenMode && 'relative')}>

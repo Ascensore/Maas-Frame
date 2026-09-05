@@ -14,13 +14,17 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { useTranscriptSegmentEdit } from '@/components/video-page/hooks/use-transcript-segment-edit';
+import {
+  resolveEditableSegment,
+  useTranscriptSegmentEdit,
+} from '@/components/video-page/hooks/use-transcript-segment-edit';
 import type { TranscriptSegment, TranscriptWord } from '@/components/video-page/types';
 import {
   commentRangeFromHighlight,
   commentsAnchoredToSegment,
   spanOverlapsComment,
 } from '@/lib/transcript-comment';
+import { MAX_SEGMENT_TEXT, MAX_SPEAKER_LABEL } from '@/lib/transcript-edit';
 import { isTranscriptSegmentTimed } from '@/lib/transcript-import';
 import { serializeWebVtt } from '@/lib/subtitle-validation';
 import { applyTranscriptHighlight } from '@/lib/transcript-active';
@@ -30,8 +34,6 @@ import {
   type TranscriptTranslationPayload,
 } from '@/lib/transcript-translation';
 import { cn } from '@/lib/utils';
-
-export type { TranscriptSegment, TranscriptWord };
 
 export type TranscriptPayload = {
   id: string;
@@ -95,6 +97,8 @@ interface TranscriptPaneProps {
   ) => void;
   onCommentRange: (start: number, end: number, quote: string) => void;
   onOpenThread: (commentId: string) => void;
+  /** Fired when an edit rebuilt the caption track, so the player can reload it. */
+  onCaptionsChanged?: () => void;
   draftRange: { start: number; end: number } | null;
 }
 
@@ -108,6 +112,8 @@ type TranscriptRowProps = {
   onCommentRange: TranscriptPaneProps['onCommentRange'];
   onOpenThread: TranscriptPaneProps['onOpenThread'];
   onEditSegment: ((segment: TranscriptSegment) => void) | null;
+  /** Non-null while editing is unavailable; the text is shown as the tooltip. */
+  editDisabledReason: string | null;
   draftRange: { start: number; end: number } | null;
 };
 
@@ -123,6 +129,7 @@ function TranscriptRow({
   onCommentRange,
   onOpenThread,
   onEditSegment,
+  editDisabledReason,
   draftRange,
 }: RowComponentProps<TranscriptRowProps>) {
   const segment = segments[index];
@@ -191,7 +198,9 @@ function TranscriptRow({
               <button
                 type="button"
                 aria-label="Edit line"
-                className="rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                title={editDisabledReason ?? undefined}
+                disabled={editDisabledReason !== null}
+                className="rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                 onClick={() => onEditSegment(segment)}
               >
                 <Pencil className="h-3 w-3" />
@@ -300,6 +309,7 @@ export const TranscriptPane = memo(function TranscriptPane({
   onSeek,
   onCommentRange,
   onOpenThread,
+  onCaptionsChanged,
   draftRange,
 }: TranscriptPaneProps) {
   const [transcript, setTranscript] = useState<TranscriptPayload>(null);
@@ -314,6 +324,7 @@ export const TranscriptPane = memo(function TranscriptPane({
   const [editing, setEditing] = useState<TranscriptSegment | null>(null);
   const [editText, setEditText] = useState('');
   const [editSpeaker, setEditSpeaker] = useState('');
+  const [captionNote, setCaptionNote] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
@@ -325,12 +336,14 @@ export const TranscriptPane = memo(function TranscriptPane({
 
   const openEditor = useCallback(
     (segment: TranscriptSegment) => {
+      const source = resolveEditableSegment(segment, transcript?.segments);
       clearEditError();
-      setEditing(segment);
-      setEditText(segment.text);
-      setEditSpeaker(segment.speaker ?? '');
+      setCaptionNote(null);
+      setEditing(source);
+      setEditText(source.text);
+      setEditSpeaker(source.speaker ?? '');
     },
-    [clearEditError]
+    [clearEditError, transcript]
   );
 
   const fetchTranscript = useCallback(
@@ -404,6 +417,7 @@ export const TranscriptPane = memo(function TranscriptPane({
       onCommentRange,
       onOpenThread,
       onEditSegment: canManage ? openEditor : null,
+      editDisabledReason: showTranslated ? 'Switch to the original to edit' : null,
       draftRange,
     }),
     [
@@ -416,6 +430,7 @@ export const TranscriptPane = memo(function TranscriptPane({
       onOpenThread,
       canManage,
       openEditor,
+      showTranslated,
       draftRange,
     ]
   );
@@ -541,24 +556,34 @@ export const TranscriptPane = memo(function TranscriptPane({
     }
   };
 
+  const canSaveSegment = !savingSegment && editText.trim().length > 0;
+
   const handleSaveSegment = async () => {
     if (!editing) return;
-    const saved = await saveSegment(editing.id, {
+    const result = await saveSegment(editing.id, {
       text: editText,
       speaker: editSpeaker.trim() || null,
     });
-    if (!saved) return;
+    if (!result) return;
     setTranscript((current) =>
       current
         ? {
             ...current,
             segments: current.segments.map((segment) =>
-              segment.id === saved.id ? { ...saved, position: segment.position } : segment
+              segment.id === result.segment.id ? result.segment : segment
             ),
           }
         : current
     );
     setEditing(null);
+    if (result.captions === 'updated') {
+      setCaptionNote(null);
+      onCaptionsChanged?.();
+    } else {
+      // Not an error: the correction is stored. The subtitles are the part that
+      // is behind, and saying so beats leaving the operator to discover it.
+      setCaptionNote('Line saved, but the caption track could not be rebuilt.');
+    }
   };
 
   if (!versionId) {
@@ -659,6 +684,11 @@ export const TranscriptPane = memo(function TranscriptPane({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {captionNote && (
+        <p className="text-sm text-amber-600 dark:text-amber-500" role="status">
+          {captionNote}
+        </p>
+      )}
 
       {loading && !transcript ? (
         <p className="text-sm text-muted-foreground">Loading transcript…</p>
@@ -692,7 +722,17 @@ export const TranscriptPane = memo(function TranscriptPane({
           if (!open && !savingSegment) setEditing(null);
         }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent
+          className="sm:max-w-lg"
+          // Cmd/Ctrl+Enter saves from anywhere in the dialog. A bare Enter has
+          // to stay a newline in the textarea, which is why it is not bound here.
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              if (canSaveSegment) void handleSaveSegment();
+            }
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Edit transcript line</DialogTitle>
           </DialogHeader>
@@ -704,6 +744,7 @@ export const TranscriptPane = memo(function TranscriptPane({
                 id="transcript-line-text"
                 value={editText}
                 onChange={(event) => setEditText(event.target.value)}
+                maxLength={MAX_SEGMENT_TEXT}
                 rows={4}
               />
               {editError && <p className="text-sm text-destructive">{editError}</p>}
@@ -714,7 +755,15 @@ export const TranscriptPane = memo(function TranscriptPane({
                 id="transcript-line-speaker"
                 value={editSpeaker}
                 onChange={(event) => setEditSpeaker(event.target.value)}
+                maxLength={MAX_SPEAKER_LABEL}
                 placeholder="Optional"
+                // A one-line field: Enter means "done", as it would in a form.
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey) {
+                    event.preventDefault();
+                    if (canSaveSegment) void handleSaveSegment();
+                  }
+                }}
               />
             </div>
           </div>
@@ -723,10 +772,7 @@ export const TranscriptPane = memo(function TranscriptPane({
             <Button variant="outline" onClick={() => setEditing(null)} disabled={savingSegment}>
               Cancel
             </Button>
-            <Button
-              onClick={() => void handleSaveSegment()}
-              disabled={savingSegment || !editText.trim()}
-            >
+            <Button onClick={() => void handleSaveSegment()} disabled={!canSaveSegment}>
               {savingSegment && <Loader2 className="h-4 w-4 animate-spin" />}
               <span className={savingSegment ? 'ml-1' : ''}>Save</span>
             </Button>

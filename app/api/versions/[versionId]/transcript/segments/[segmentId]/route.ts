@@ -5,7 +5,7 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
-import { syncCaptionTrackFromTranscript } from '@/lib/transcript-caption';
+import { type CaptionTrack, syncCaptionTrackFromTranscript } from '@/lib/transcript-caption';
 import { parseSegmentPatch, retimeSegmentWords } from '@/lib/transcript-edit';
 
 type RouteParams = { params: Promise<{ versionId: string; segmentId: string }> };
@@ -93,15 +93,19 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     });
 
     let captions: 'updated' | 'skipped' | 'empty' | 'failed' = 'failed';
+    let subtitle: CaptionTrack | null = null;
     try {
-      captions = await syncCaptionTrackFromTranscript({
+      const synced = await syncCaptionTrackFromTranscript({
         transcriptId: segment.transcript.id,
         billedUserId: version.video.project.workspace.ownerId,
         uploadedByUserId: userId,
       });
+      captions = synced.status;
+      subtitle = synced.subtitle;
     } catch (captionError) {
       // The edit is saved either way: a caption track we could not rebuild is
-      // worth reporting, not worth losing the correction over.
+      // worth reporting, not worth losing the correction over. The client shows
+      // the `captions` value so the operator knows the subtitles are behind.
       logError('Failed to rebuild caption track after a transcript edit:', captionError);
     }
 
@@ -117,6 +121,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
           position: updated.position,
         },
         captions,
+        subtitle: subtitle && {
+          id: subtitle.id,
+          language: subtitle.language,
+          url: subtitle.url,
+        },
       }),
       'private, no-store'
     );

@@ -16,12 +16,53 @@ describe('retimeSegmentWords', () => {
     ]);
   });
 
-  it('spreads the words across the segment when the count changes', () => {
-    expect(retimeSegmentWords(words, 'we help all founders', 1, 3)).toEqual([
-      { start: 1, end: 1.5, text: 'we' },
-      { start: 1.5, end: 2, text: 'help' },
-      { start: 2, end: 2.5, text: 'all' },
-      { start: 2.5, end: 3, text: 'founders' },
+  it('keeps the untouched neighbours when a word is inserted', () => {
+    // Only 'all' is new, so only 'all' is guessed at: it lands in the silence
+    // between 'help' and 'founders' and the three real timings survive.
+    expect(retimeSegmentWords(words, 'we held all founders', 1, 3)).toEqual([
+      { start: 1, end: 1.4, text: 'we' },
+      { start: 1.5, end: 1.9, text: 'held' },
+      { start: 1.9, end: 2, text: 'all' },
+      { start: 2, end: 2.6, text: 'founders' },
+    ]);
+  });
+
+  it('keeps the untouched neighbours when a word is deleted', () => {
+    expect(retimeSegmentWords(words, 'we founders', 1, 3)).toEqual([
+      { start: 1, end: 1.4, text: 'we' },
+      { start: 2, end: 2.6, text: 'founders' },
+    ]);
+  });
+
+  it('respreads only the changed middle', () => {
+    expect(retimeSegmentWords(words, 'we really love founders', 1, 3)).toEqual([
+      { start: 1, end: 1.4, text: 'we' },
+      { start: 1.4, end: 1.7, text: 'really' },
+      { start: 1.7, end: 2, text: 'love' },
+      { start: 2, end: 2.6, text: 'founders' },
+    ]);
+  });
+
+  it('spreads across the whole segment when nothing is in common', () => {
+    expect(retimeSegmentWords(words, 'entirely different line here', 1, 3)).toEqual([
+      { start: 1, end: 1.5, text: 'entirely' },
+      { start: 1.5, end: 2, text: 'different' },
+      { start: 2, end: 2.5, text: 'line' },
+      { start: 2.5, end: 3, text: 'here' },
+    ]);
+  });
+
+  it('falls back to a full spread when the kept words leave no room', () => {
+    // 'we' ends exactly where 'founders' begins, so the inserted word has no
+    // gap to sit in. Guessing every timing beats dropping the word.
+    const touching = [
+      { start: 1, end: 2, text: 'we' },
+      { start: 2, end: 3, text: 'founders' },
+    ];
+    expect(retimeSegmentWords(touching, 'we help founders', 1, 3)).toEqual([
+      { start: 1, end: 1 + 2 / 3, text: 'we' },
+      { start: 1 + 2 / 3, end: 1 + 4 / 3, text: 'help' },
+      { start: 1 + 4 / 3, end: 3, text: 'founders' },
     ]);
   });
 
@@ -36,11 +77,15 @@ describe('retimeSegmentWords', () => {
 
 describe('parseSegmentPatch', () => {
   it('accepts text and an optional speaker and refuses blanks and oversize', () => {
-    expect(parseSegmentPatch({ text: '  Hello  ' })).toEqual({
+    // zod 4 omits an absent optional key rather than setting it to undefined,
+    // and the PATCH route depends on that: `'speaker' in value` is what tells
+    // "the patch did not mention the speaker" from "clear the speaker".
+    // toStrictEqual is what pins the difference; toEqual would accept either.
+    expect(parseSegmentPatch({ text: '  Hello  ' })).toStrictEqual({
       ok: true,
-      value: { text: 'Hello', speaker: undefined },
+      value: { text: 'Hello' },
     });
-    expect(parseSegmentPatch({ text: 'Hi', speaker: null })).toEqual({
+    expect(parseSegmentPatch({ text: 'Hi', speaker: null })).toStrictEqual({
       ok: true,
       value: { text: 'Hi', speaker: null },
     });

@@ -5,7 +5,8 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
-import { syncCaptionTrackFromTranscript } from '@/lib/transcript-caption';
+import { normalizeSubtitleLanguage } from '@/lib/subtitle-validation';
+import { StorageQuotaError, syncCaptionTrackFromTranscript } from '@/lib/transcript-caption';
 
 type RouteParams = { params: Promise<{ versionId: string }> };
 
@@ -13,6 +14,10 @@ type RouteParams = { params: Promise<{ versionId: string }> };
  * Build the caption track from the transcript this version already has. The
  * audio is never sent off to be transcribed again: a version with a READY
  * transcript already holds every word and every timing a subtitle file needs.
+ *
+ * An explicit `language` picks the transcript to caption. Without one the
+ * newest READY transcript wins, which is the same one the pane's GET shows, so
+ * the button captions what the reader is looking at.
  */
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
@@ -47,14 +52,34 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const access = await checkProjectAccess(version.video.project, userId);
     if (!access.hasAccess || !access.canEdit) return apiErrors.forbidden('Access denied');
 
-    const transcript = await db.transcript.findFirst({
-      where: { versionId, status: TranscriptStatus.READY },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, language: true },
-    });
-    if (!transcript) return apiErrors.badRequest('This version has no transcript yet');
+    const body = await request.json().catch(() => null);
+    const requested = body?.language;
+    let language: string | null = null;
+    if (requested !== undefined && requested !== null && requested !== '') {
+      language = normalizeSubtitleLanguage(requested);
+      if (!language) {
+        return apiErrors.badRequest('language must be a BCP-47 tag such as "tr" or "en-US"');
+      }
+    }
 
-    let result: 'updated' | 'skipped' | 'empty';
+    const transcript = language
+      ? await db.transcript.findUnique({
+          where: { versionId_language: { versionId, language } },
+          select: { id: true, status: true },
+        })
+      : await db.transcript.findFirst({
+          where: { versionId, status: TranscriptStatus.READY },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true, status: true },
+        });
+
+    if (!transcript || transcript.status !== TranscriptStatus.READY) {
+      return apiErrors.badRequest(
+        language ? 'No ready transcript in that language' : 'This version has no transcript yet'
+      );
+    }
+
+    let result;
     try {
       result = await syncCaptionTrackFromTranscript({
         transcriptId: transcript.id,
@@ -62,38 +87,23 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         uploadedByUserId: userId,
       });
     } catch (error) {
-      if (error instanceof Error && error.message === 'storage-quota') {
+      if (error instanceof StorageQuotaError) {
         return apiErrors.badRequest('Storage quota exceeded');
       }
       throw error;
     }
 
-    if (result === 'empty') {
+    if (result.status === 'empty') {
       return apiErrors.badRequest('The transcript has no timed lines to caption');
     }
-    if (result === 'skipped') {
+    if (result.status === 'skipped') {
       return apiErrors.badRequest(
         'This version already holds the maximum number of subtitle tracks'
       );
     }
 
-    const subtitle = await db.videoSubtitle.findUniqueOrThrow({
-      where: { versionId_language: { versionId, language: transcript.language } },
-      select: { id: true, language: true, label: true, sourceUrl: true },
-    });
-
     return withCacheControl(
-      successResponse(
-        {
-          subtitle: {
-            id: subtitle.id,
-            language: subtitle.language,
-            label: subtitle.label,
-            url: subtitle.sourceUrl,
-          },
-        },
-        201
-      ),
+      successResponse({ subtitle: result.subtitle }, result.created ? 201 : 200),
       'private, no-store'
     );
   } catch (error) {

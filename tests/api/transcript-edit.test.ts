@@ -53,9 +53,28 @@ vi.mock('@/lib/r2', async (importOriginal) => {
   };
 });
 
+// Everything in this module stays real except when a test arms `failNext`, so
+// the 'failed' branch is reachable without stubbing the caption pipeline for the
+// whole file.
+const captionSync = vi.hoisted(() => ({ failNext: false }));
+
+vi.mock('@/lib/transcript-caption', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/transcript-caption')>();
+  return {
+    ...actual,
+    syncCaptionTrackFromTranscript: async (
+      input: Parameters<typeof actual.syncCaptionTrackFromTranscript>[0]
+    ) => {
+      if (captionSync.failNext) throw new Error('R2 is unreachable');
+      return actual.syncCaptionTrackFromTranscript(input);
+    },
+  };
+});
+
 beforeEach(() => {
   r2.puts.length = 0;
   r2.deletedKeys.length = 0;
+  captionSync.failNext = false;
 });
 
 const MISHEARD_WORDS = [
@@ -234,6 +253,65 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
     expect(subtitle.billedUserId).toBe(scenario.workspace.ownerId);
   });
 
+  it('saves the line and reports captions: failed when the rebuild throws', async () => {
+    const scenario = await seedVersion();
+    const { segment } = await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+    captionSync.failNext = true;
+
+    const response = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+
+    // The correction is not lost because the subtitles could not be rewritten.
+    expect(response.status).toBe(200);
+    const body = await readData<{ captions: string; subtitle: unknown }>(response);
+    expect(body.captions).toBe('failed');
+    expect(body.subtitle).toBeNull();
+    const row = await db.transcriptSegment.findUniqueOrThrow({ where: { id: segment.id } });
+    expect(row.text).toBe('we help founders');
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
+  });
+
+  it('rebuilds the same track row on a second edit and deletes the stale object', async () => {
+    const scenario = await seedVersion();
+    const { segment } = await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+
+    const first = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+    expect(first.status).toBe(200);
+    const firstBody = await readData<{ subtitle: { id: string; url: string } }>(first);
+    const firstKey = r2.puts[0]?.key;
+    expect(firstKey).toBeTruthy();
+
+    const second = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help many founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+    expect(second.status).toBe(200);
+    const secondBody = await readData<{ subtitle: { id: string; url: string } }>(second);
+
+    // Replaced, not appended: one row, keeping its id, pointing at the new
+    // object, and the object it used to point at is gone from storage.
+    const tracks = await db.videoSubtitle.findMany({
+      where: { versionId: scenario.version.id },
+    });
+    expect(tracks).toHaveLength(1);
+    expect(secondBody.subtitle.id).toBe(firstBody.subtitle.id);
+    expect(tracks[0]?.id).toBe(firstBody.subtitle.id);
+    expect(secondBody.subtitle.url).not.toBe(firstBody.subtitle.url);
+    expect(tracks[0]?.sourceUrl).toBe(secondBody.subtitle.url);
+    expect(r2.puts).toHaveLength(2);
+    expect(r2.deletedKeys).toEqual([firstKey]);
+  });
+
   it('leaves the speaker alone when the patch does not name it', async () => {
     const scenario = await seedVersion();
     const { segment } = await seedMisheardLine(scenario.version.id, 'Ada');
@@ -363,6 +441,135 @@ describe('POST /api/versions/[versionId]/transcript/captions', () => {
     expect(
       await db.mediaJob.count({ where: { versionId: scenario.version.id, kind: 'TRANSCRIBE' } })
     ).toBe(0);
+  });
+
+  it('captions the transcript in the language the caller asked for', async () => {
+    const scenario = await seedVersion();
+    await seedMisheardLine(scenario.version.id);
+    await createReadyTranscript({
+      versionId: scenario.version.id,
+      language: 'tr',
+      segments: [
+        {
+          startSec: 1,
+          endSec: 2,
+          text: 'kurucularla',
+          words: [{ start: 1, end: 2, text: 'kurucularla' }],
+        },
+      ],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: { language: 'TR' } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    const body = await readData<{ subtitle: { language: string } }>(response);
+    expect(body.subtitle.language).toBe('tr');
+    expect(r2.puts).toHaveLength(1);
+    expect(r2.puts[0]?.body).toContain('kurucularla');
+    // The English transcript was not touched.
+    expect(
+      await db.videoSubtitle.count({ where: { versionId: scenario.version.id, language: 'en' } })
+    ).toBe(0);
+  });
+
+  it('returns 400 for a language with no ready transcript', async () => {
+    const scenario = await seedVersion();
+    await seedMisheardLine(scenario.version.id);
+    await createReadyTranscript({
+      versionId: scenario.version.id,
+      language: 'tr',
+      status: TranscriptStatus.PENDING,
+      segments: [{ startSec: 1, endSec: 2, text: 'kurucularla', words: [] }],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: { language: 'tr' } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toBe('No ready transcript in that language');
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
+    expect(r2.puts).toHaveLength(0);
+  });
+
+  it('captions the newest transcript when no language is given', async () => {
+    const scenario = await seedVersion();
+    await seedMisheardLine(scenario.version.id);
+    // Created second, so this is the one the pane's GET (createdAt desc) shows.
+    await createReadyTranscript({
+      versionId: scenario.version.id,
+      language: 'tr',
+      segments: [
+        {
+          startSec: 1,
+          endSec: 2,
+          text: 'kurucularla',
+          words: [{ start: 1, end: 2, text: 'kurucularla' }],
+        },
+      ],
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: {} }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(201);
+    const body = await readData<{ subtitle: { language: string } }>(response);
+    expect(body.subtitle.language).toBe('tr');
+    expect(r2.puts[0]?.body).toContain('kurucularla');
+  });
+
+  it('answers 200 and keeps the row id when the track already exists', async () => {
+    const scenario = await seedVersion();
+    await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+
+    const first = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: {} }),
+      { versionId: scenario.version.id }
+    );
+    expect(first.status).toBe(201);
+    const firstBody = await readData<{ subtitle: { id: string } }>(first);
+
+    const second = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: {} }),
+      { versionId: scenario.version.id }
+    );
+
+    // A rebuild of a track that already exists is not a creation.
+    expect(second.status).toBe(200);
+    const secondBody = await readData<{ subtitle: { id: string } }>(second);
+    expect(secondBody.subtitle.id).toBe(firstBody.subtitle.id);
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(1);
+  });
+
+  it('returns 400 for a language that is not a BCP-47 tag', async () => {
+    const scenario = await seedVersion();
+    await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      buildCaptions,
+      apiRequest(captionsUrl(scenario.version.id), { method: 'POST', body: { language: 'nope!' } }),
+      { versionId: scenario.version.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toContain('language must be a BCP-47 tag');
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
   it('returns 400 when the transcript has no timed line', async () => {

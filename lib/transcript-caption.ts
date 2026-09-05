@@ -27,6 +27,34 @@ const MAX_SUBTITLES_PER_VERSION = 20;
 
 export type CaptionSegment = { startSec: number; endSec: number; text: string };
 
+/** The rebuilt track, as the API hands it to the player. */
+export type CaptionTrack = {
+  id: string;
+  language: string;
+  label: string;
+  url: string;
+};
+
+export type CaptionSyncResult =
+  /** `created` separates a brand new track from one rebuilt in place. */
+  | { status: 'updated'; created: boolean; subtitle: CaptionTrack }
+  | { status: 'skipped'; created: false; subtitle: null };
+
+export type TranscriptCaptionSyncResult =
+  | CaptionSyncResult
+  | { status: 'empty'; created: false; subtitle: null };
+
+/**
+ * The account is out of room. Its own class so a route can tell it from a
+ * genuine failure without matching on a message string.
+ */
+export class StorageQuotaError extends Error {
+  constructor() {
+    super('storage-quota');
+    this.name = 'StorageQuotaError';
+  }
+}
+
 /**
  * Rebuild the caption track of a version's language from transcript segments.
  * Returns 'skipped' when the version already holds the maximum number of tracks
@@ -38,7 +66,7 @@ export async function syncCaptionTrackFromSegments(input: {
   segments: CaptionSegment[];
   billedUserId: string;
   uploadedByUserId: string | null;
-}): Promise<'updated' | 'skipped'> {
+}): Promise<CaptionSyncResult> {
   const vtt = serializeWebVtt(
     input.segments.map((segment) => ({
       start: segment.startSec,
@@ -57,7 +85,7 @@ export async function syncCaptionTrackFromSegments(input: {
   if (!existing) {
     const trackCount = await db.videoSubtitle.count({ where: { versionId: input.versionId } });
     if (trackCount >= MAX_SUBTITLES_PER_VERSION) {
-      return 'skipped';
+      return { status: 'skipped', created: false, subtitle: null };
     }
   }
 
@@ -67,7 +95,7 @@ export async function syncCaptionTrackFromSegments(input: {
     UPLOAD_RESERVATION_PURPOSES.SUBTITLE
   );
   if ('error' in reserveResult) {
-    throw new Error('storage-quota');
+    throw new StorageQuotaError();
   }
 
   const fileName = `${randomUUID()}.vtt`;
@@ -84,22 +112,34 @@ export async function syncCaptionTrackFromSegments(input: {
     );
     stored = true;
 
-    await db.$transaction(async (tx) => {
-      if (existing) {
-        await tx.videoSubtitle.delete({ where: { id: existing.id } });
-      }
-      await tx.videoSubtitle.create({
-        data: {
-          versionId: input.versionId,
-          language: input.language,
-          label: `Transcript (${input.language})`,
-          sourceUrl: subtitleFileNameToProxyUrl(fileName),
-          sizeBytes,
-          billedUserId: input.billedUserId,
-          uploadedByUserId: input.uploadedByUserId,
-        },
-      });
-    });
+    // Updated in place, not deleted and re-created: the row id is what the
+    // player's track list and every delete button already hold, and two edits
+    // landing together must not race over a row one of them has removed.
+    const label = `Transcript (${input.language})`;
+    const sourceUrl = subtitleFileNameToProxyUrl(fileName);
+    const row = existing
+      ? await db.videoSubtitle.update({
+          where: { id: existing.id },
+          data: {
+            label,
+            sourceUrl,
+            sizeBytes,
+            uploadedByUserId: input.uploadedByUserId,
+          },
+          select: { id: true, language: true, label: true, sourceUrl: true },
+        })
+      : await db.videoSubtitle.create({
+          data: {
+            versionId: input.versionId,
+            language: input.language,
+            label,
+            sourceUrl,
+            sizeBytes,
+            billedUserId: input.billedUserId,
+            uploadedByUserId: input.uploadedByUserId,
+          },
+          select: { id: true, language: true, label: true, sourceUrl: true },
+        });
 
     await releaseStorageReservation(
       reserveResult.reservationId,
@@ -118,7 +158,16 @@ export async function syncCaptionTrackFromSegments(input: {
       }
     }
 
-    return 'updated';
+    return {
+      status: 'updated',
+      created: existing === null,
+      subtitle: {
+        id: row.id,
+        language: row.language,
+        label: row.label,
+        url: row.sourceUrl,
+      },
+    };
   } catch (error) {
     if (stored) {
       try {
@@ -138,13 +187,14 @@ export async function syncCaptionTrackFromSegments(input: {
 
 /**
  * The same, from the transcript rows themselves. Returns 'empty' when the
- * transcript has no timed segment.
+ * transcript has no timed segment. The rebuilt track comes back with the
+ * result so a caller does not have to look it up again.
  */
 export async function syncCaptionTrackFromTranscript(input: {
   transcriptId: string;
   billedUserId: string;
   uploadedByUserId: string | null;
-}): Promise<'updated' | 'skipped' | 'empty'> {
+}): Promise<TranscriptCaptionSyncResult> {
   const transcript = await db.transcript.findUnique({
     where: { id: input.transcriptId },
     select: {
@@ -156,10 +206,11 @@ export async function syncCaptionTrackFromTranscript(input: {
       },
     },
   });
-  if (!transcript) return 'empty';
+  const empty = { status: 'empty', created: false, subtitle: null } as const;
+  if (!transcript) return empty;
 
   const segments = transcript.segments.filter(isTranscriptSegmentTimed);
-  if (segments.length === 0) return 'empty';
+  if (segments.length === 0) return empty;
 
   return syncCaptionTrackFromSegments({
     versionId: transcript.versionId,
