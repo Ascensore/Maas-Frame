@@ -43,6 +43,14 @@ credentials. In-product review agents need a second long-running process,
 `bun run agent-worker`, on that same host. Docker Compose starts it as
 `agent-worker`.
 
+Production Vercel builds run committed Prisma migrations before building the
+application (`vercel.json` -> `bun run vercel-build`). A migration failure stops
+the deployment before Vercel can route traffic to code generated from a newer
+schema. Preview builds skip this step and must not point at the production
+database. Keep production migrations backward-compatible with the currently
+serving release: add/expand first, deploy readers and writers, and only remove
+old columns or values in a later release.
+
 `OPENFRAME_ENABLE_AGENTS` defaults to **false**. A non-`mock`
 `OPENFRAME_AGENT_MODEL` (`openai/…`, `anthropic/…`, `google/…`) sends
 transcript and comment text to that provider. Leave the model at `mock` unless
