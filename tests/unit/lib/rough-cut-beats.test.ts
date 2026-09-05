@@ -331,7 +331,7 @@ describe('cutWordsFromBeat', () => {
     expect(result.beat?.end).toBe(3.8);
     // The kept run ends with the last kept word, not where the removed span starts.
     expect(result.beat?.runs).toEqual([{ start: 0, end: 3.8 }]);
-    expect(result.removed).toEqual([{ start: 4, end: 5.8, text: 'five six' }]);
+    expect(result.removed).toEqual([{ span: 0, start: 4, end: 5.8, text: 'five six' }]);
   });
 
   it('splits a run around a middle span and returns null when nothing is left', () => {
@@ -356,5 +356,21 @@ describe('cutWordsFromBeat', () => {
     expect(result.removed).toEqual([]);
     expect(result.beat?.words).toHaveLength(6);
     expect(result.beat?.runs).toEqual([{ start: 0, end: 5.8 }]);
+  });
+
+  it('names the span each removed range came from, skipped spans and all', () => {
+    const beat = beatOf('one two three four five six');
+    // The first span removes nothing, so the caller cannot pair the ranges it
+    // gets back with the spans it gave by position.
+    const result = cutWordsFromBeat(beat, [
+      { wordStart: 3, wordEnd: 3 },
+      { wordStart: 4, wordEnd: 6 },
+      { wordStart: 0, wordEnd: 1 },
+    ]);
+    expect(result.removed.map((removed) => [removed.span, removed.text])).toEqual([
+      [1, 'five six'],
+      [2, 'one'],
+    ]);
+    expect(result.beat?.words.map((word) => word.text)).toEqual(['two', 'three', 'four']);
   });
 });

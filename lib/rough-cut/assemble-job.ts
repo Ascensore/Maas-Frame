@@ -50,10 +50,10 @@ import {
 } from './script';
 import { computeTimecodeOffsets } from './sync';
 import {
+  groupTakes,
   rejectedTakeCut,
   replacedTakeCut,
   resolveTakes,
-  selectTakes,
   TAKE_WINDOW_SECONDS,
   type TakeCandidate,
 } from './takes';
@@ -572,7 +572,7 @@ async function editorialPass(
     // Loudness costs a wav download and a python call per beat, so it is
     // measured only for beats that are actually in a group.
     if (ranking.includes('energy')) {
-      const grouped = new Set(selectTakes(candidates, options_).flatMap((entry) => entry.group));
+      const grouped = new Set(groupTakes(candidates, options_).flat());
       for (const index of grouped) {
         const candidate = candidates[index]!;
         const wav = await options.wavFor(candidate.beat.versionId);
@@ -596,11 +596,11 @@ async function editorialPass(
         if (entry.cuts.length === 0) continue;
         const candidate = candidates[entry.index]!;
         const result = cutWordsFromBeat(candidate.beat, entry.cuts);
-        result.removed.forEach((removed, position) => {
+        for (const removed of result.removed) {
           cuts.push(
-            replacedTakeCut(candidates, entry.index, entry.cuts[position]!.coveredBy, removed)
+            replacedTakeCut(candidates, entry.index, entry.cuts[removed.span]!.coveredBy, removed)
           );
-        });
+        }
         replacements.set(candidate.beat, result.beat);
       }
       duplicatesKept += resolution.duplicatesKept;
@@ -616,17 +616,30 @@ async function editorialPass(
       );
     }
     if (duplicatesKept > 0) {
+      const one = duplicatesKept === 1;
       warnings.push({
         code: 'take-overlap-kept',
-        message: `${duplicatesKept} line${duplicatesKept === 1 ? ' is' : 's are'} said twice in the cut because the takes overlap in the middle; review them`,
+        message: `${duplicatesKept} take${one ? '' : 's'} overlap${one ? 's' : ''} material already in the cut and could not be trimmed; review ${one ? 'it' : 'them'}`,
       });
     }
-    if (useScript) {
-      const kept = candidates.flatMap((candidate, index) =>
-        replacements.get(candidate.beat) === null
-          ? []
-          : [{ alignment: alignments[index]!, text: beatText(candidate.beat) }]
-      );
+    if (useScript && script) {
+      // A spliced beat no longer reads the line it gave up, so the surviving
+      // beat is re-aligned: the warnings are about what is in the cut.
+      const kept = candidates.flatMap((candidate, index) => {
+        const survivor = replacements.has(candidate.beat)
+          ? replacements.get(candidate.beat)
+          : candidate.beat;
+        if (!survivor) return [];
+        return [
+          {
+            alignment:
+              survivor === candidate.beat
+                ? alignments[index]!
+                : alignBeatToScript(survivor, script, fillers),
+            text: beatText(survivor),
+          },
+        ];
+      });
       warnings.push(...scriptCoverageWarnings(scriptLines, kept));
     }
   }

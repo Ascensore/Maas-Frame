@@ -1161,6 +1161,41 @@ describe('assembleRoughCut editorial pass', () => {
     expect(firstOut).toBeLessThanOrEqual(1 + 6 * 0.4);
   });
 
+  it('judges the script by what survived the trim, not by what was recorded', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script:
+        'We help founders raise faster.\nOur product does the heavy lifting today and it always has.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'we help um founders raise faster our product does the heavy lifting today and it always has'
+          ),
+          spokenSegment(30, 'lifting today and it always has'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The long take gives its tail to the cleaner pickup, and neither half now
+    // reads the second line: the warning has to be about the cut, not the tape.
+    expect(
+      result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE')
+    ).toHaveLength(1);
+    expect(
+      result?.warnings.find((warning) => warning.code === 'script-lines-missing')?.message
+    ).toContain('Our product does the heavy lifting today and it always has.');
+  });
+
   it('warns when two takes overlap in the middle and both stay in the cut', async () => {
     const h = harness({
       layout: 'LINEAR',
@@ -1196,7 +1231,7 @@ describe('assembleRoughCut editorial pass', () => {
     );
     expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([1, 40]);
     expect(result?.warnings.find((warning) => warning.code === 'take-overlap-kept')?.message).toBe(
-      '1 line is said twice in the cut because the takes overlap in the middle; review them'
+      '1 take overlaps material already in the cut and could not be trimmed; review it'
     );
   });
 

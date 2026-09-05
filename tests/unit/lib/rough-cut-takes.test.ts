@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyseSpeech, cutWordsFromBeat, type Beat } from '@/lib/rough-cut/beats';
-import { SILENCE_AGGRESSIVENESS } from '@/lib/rough-cut/brief';
+import { SILENCE_AGGRESSIVENESS, type BriefRankingCriterion } from '@/lib/rough-cut/brief';
 import {
   alignBeatToScript,
   parseScript,
@@ -14,7 +14,6 @@ import {
   rejectedTakeCut,
   replacedTakeCut,
   resolveTakes,
-  selectTakes,
   type TakeCandidate,
 } from '@/lib/rough-cut/takes';
 import {
@@ -176,7 +175,17 @@ describe('groupTakes', () => {
     expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[0, 1]] })).toEqual([[0, 1]]);
     // An index with no candidate drops out; the members around it still union.
     expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[9, 0, 1]] })).toEqual([[0, 1]]);
-    expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[0, 9]] })).toEqual([]);
+    // Two groups that share only the missing index are not one group: taking
+    // the phantom for a real member would union everything it appears in.
+    expect(
+      groupTakes([a, b], {
+        fillers: EN,
+        alsoGroup: [
+          [9, 0],
+          [9, 1],
+        ],
+      })
+    ).toEqual([]);
   });
 
   it('will not call a stock phrase a take of a beat several times its length', () => {
@@ -234,54 +243,64 @@ describe('cleanlinessScore', () => {
   });
 });
 
-describe('selectTakes', () => {
+describe('take ranking', () => {
   const line = 'our revenue this year doubled to four million dollars';
+  const rank = (candidates: TakeCandidate[], ranking: BriefRankingCriterion[]) =>
+    resolveTakes(candidates, { fillers: EN, ranking, longPauseSeconds: 0.8 });
 
   it('keeps the cleanest take, then the most energetic, then the most recent', () => {
-    const byCleanliness = selectTakes(
+    // Same line three times over: whichever take ranks first anchors the group
+    // and the others are rejected against it.
+    const byCleanliness = rank(
       [candidate(0, `um ${line}`), candidate(30, line), candidate(60, `${line} um`)],
-      { fillers: EN, ranking: ['cleanliness', 'energy'], longPauseSeconds: 0.8 }
+      ['cleanliness', 'energy']
     );
-    expect(byCleanliness.map((decision) => decision.keptIndex)).toEqual([1]);
+    expect(byCleanliness[0]?.kept).toEqual([{ index: 1, cuts: [] }]);
+    // Order-insensitive: the two rejected takes are equally clean, and which
+    // of them is weighed first is float noise in the per-minute rate.
+    expect([...(byCleanliness[0]?.rejected ?? [])].sort((a, b) => a.index - b.index)).toEqual([
+      { index: 0, coveredBy: 1 },
+      { index: 2, coveredBy: 1 },
+    ]);
 
-    const byEnergy = selectTakes(
+    const byEnergy = rank(
       [
         candidate(0, line, { energy: 0.2 }),
         candidate(30, line, { energy: 0.9 }),
         candidate(60, line, { energy: 0.5 }),
       ],
-      { fillers: EN, ranking: ['cleanliness', 'energy'], longPauseSeconds: 0.8 }
+      ['cleanliness', 'energy']
     );
-    expect(byEnergy.map((decision) => decision.keptIndex)).toEqual([1]);
+    expect(byEnergy[0]?.kept).toEqual([{ index: 1, cuts: [] }]);
 
-    const byRecency = selectTakes([candidate(0, line), candidate(30, line), candidate(60, line)], {
-      fillers: EN,
-      ranking: ['cleanliness', 'energy'],
-      longPauseSeconds: 0.8,
-    });
-    expect(byRecency.map((decision) => decision.keptIndex)).toEqual([2]);
+    const byRecency = rank(
+      [candidate(0, line), candidate(30, line), candidate(60, line)],
+      ['cleanliness', 'energy']
+    );
+    expect(byRecency[0]?.kept).toEqual([{ index: 2, cuts: [] }]);
   });
 
-  it('follows the ranking order and ignores script_match', () => {
-    const decisions = selectTakes(
+  it('follows the ranking order and ignores script_match nobody scored', () => {
+    const resolutions = rank(
       [candidate(0, `um ${line}`, { energy: 0.9 }), candidate(30, line, { energy: 0.1 })],
-      { fillers: EN, ranking: ['script_match', 'energy', 'cleanliness'], longPauseSeconds: 0.8 }
+      ['script_match', 'energy', 'cleanliness']
     );
-    expect(decisions.map((decision) => decision.keptIndex)).toEqual([0]);
+    expect(resolutions[0]?.kept).toEqual([{ index: 0, cuts: [] }]);
   });
 
   it('ranks by script match first when asked, then falls through to cleanliness', () => {
     // Cleanliness alone would keep the first take; only the script says otherwise.
     const offScript = { ...candidate(0, 'we help founders raise faster'), scriptMatch: 0.4 };
     const onScript = { ...candidate(10, 'we help um founders raise faster'), scriptMatch: 1 };
-    const decisions = selectTakes([offScript, onScript], {
+    const resolutions = resolveTakes([offScript, onScript], {
       fillers: EN,
       ranking: rankingWithScript(['cleanliness', 'energy']),
       longPauseSeconds: MEDIUM.maxKeptGapInsideBeatSeconds,
     });
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0]!.keptIndex).toBe(1);
-    expect(decisions[0]!.scores.get(1)?.scriptMatch).toBe(1);
+    expect(resolutions).toHaveLength(1);
+    expect(resolutions[0]?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolutions[0]?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+    expect(resolutions[0]?.scores.get(1)?.scriptMatch).toBe(1);
   });
 });
 
@@ -532,6 +551,255 @@ describe('resolveTakes', () => {
       { index: 0, cuts: [] },
       { index: 2, cuts: [] },
     ]);
+    expect(resolution?.duplicatesKept).toBe(1);
+  });
+
+  it('refuses the second splice when the first already spent the anchor', () => {
+    // A head take and a tail take, each cleaner than the take between them and
+    // each survivable on its own: together they would leave the anchor with
+    // nothing at all.
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo foxtrot'),
+      candidate(20, 'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+      candidate(60, 'golf hotel india juliet kilo'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2]],
+    });
+
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [{ wordStart: 0, wordEnd: 7, coveredBy: 0 }] },
+    ]);
+    expect(resolution?.rejected).toEqual([{ index: 2, coveredBy: 1 }]);
+    // What the assembler will be left with: the anchor still says something.
+    const survivor = cutWordsFromBeat(takes[1]!.beat, resolution!.kept[1]!.cuts).beat;
+    expect(survivor?.words.map((word) => word.text)).toEqual([
+      'golf',
+      'hotel',
+      'india',
+      'juliet',
+      'kilo',
+    ]);
+  });
+
+  it('refuses a splice that would leave fewer content tokens than a take needs', () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo'),
+      candidate(20, 'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima'),
+      candidate(60, 'hotel india juliet kilo lima'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2]],
+    });
+
+    // The later pickup splices the tail first; the head pickup would then leave
+    // "foxtrot golf" behind, two tokens and 0.7 s, so it is rejected instead.
+    expect(resolution?.kept).toEqual([
+      { index: 1, cuts: [{ wordStart: 8, wordEnd: 13, coveredBy: 2 }] },
+      { index: 2, cuts: [] },
+    ]);
+    expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+
+  it('refuses a splice that would leave too few content tokens however long they last', () => {
+    // Words a second apart, so the three tokens left over still run 2.3 s: it
+    // is the content floor, not the shot length, that refuses this one.
+    const slow = { gap: 0.7 };
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo', slow),
+      candidate(
+        20,
+        'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima',
+        slow
+      ),
+      candidate(60, 'india juliet kilo lima', slow),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2]],
+    });
+
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [{ wordStart: 0, wordEnd: 6, coveredBy: 0 }] },
+    ]);
+    expect(resolution?.rejected).toEqual([{ index: 2, coveredBy: 1 }]);
+    const survivor = cutWordsFromBeat(takes[1]!.beat, resolution!.kept[1]!.cuts).beat;
+    expect(survivor?.words.map((word) => word.text)).toEqual([
+      'foxtrot',
+      'golf',
+      'hotel',
+      'india',
+      'juliet',
+      'kilo',
+      'lima',
+    ]);
+  });
+
+  it('refuses a splice that would leave a shot shorter than the assembler keeps', () => {
+    // Words back to back, so four tokens last 1.2 s: enough content tokens to
+    // pass that floor, and still under TAKE_MIN_SURVIVING_SECONDS.
+    const tight = { gap: 0 };
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo', tight),
+      candidate(
+        20,
+        'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike',
+        tight
+      ),
+      candidate(60, 'juliet kilo lima mike', tight),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2]],
+    });
+
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [{ wordStart: 0, wordEnd: 6, coveredBy: 0 }] },
+    ]);
+    expect(resolution?.rejected).toEqual([{ index: 2, coveredBy: 1 }]);
+    const survivor = cutWordsFromBeat(takes[1]!.beat, resolution!.kept[1]!.cuts).beat;
+    expect(survivor?.words.map((word) => word.text)).toEqual([
+      'foxtrot',
+      'golf',
+      'hotel',
+      'india',
+      'juliet',
+      'kilo',
+      'lima',
+      'mike',
+    ]);
+  });
+
+  it('refuses a second splice that would cover words the first already took', () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo foxtrot'),
+      candidate(5, 'alpha bravo charlie delta'),
+      candidate(20, 'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2]],
+    });
+
+    // The shorter head take asks for words the longer one already took; two
+    // cuts over the same words would report the same removal twice.
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 2, cuts: [{ wordStart: 0, wordEnd: 7, coveredBy: 0 }] },
+    ]);
+    expect(resolution?.rejected).toEqual([{ index: 1, coveredBy: 2 }]);
+  });
+
+  it('refuses a splice that leaves the anchor under the minimum content tokens', () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta'),
+      candidate(20, 'um alpha bravo charlie delta echo foxtrot golf'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+
+    // Handing the head over would leave the anchor three tokens, under the
+    // floor a take has to clear, so the pickup goes instead.
+    expect(resolution?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+
+  it('rejects a pickup that would replace the tail of a take recorded after it', () => {
+    const takes = [
+      candidate(5, 'golf hotel india juliet kilo'),
+      candidate(50, 'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+
+    // The pickup is cleaner, but it was said before the take it would replace
+    // the end of; splicing it in would play the line before its run-up.
+    expect(resolution?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+
+  it('names the take each pickup actually overlaps, not the first one kept', () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo foxtrot golf hotel'),
+      candidate(30, 'mike november oscar papa quebec romeo sierra tango'),
+      candidate(60, 'alpha bravo charlie delta echo'),
+      candidate(90, 'mike november oscar papa quebec'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1, 2, 3]],
+    });
+
+    // Two lines in one group: each pickup is rejected against the long take it
+    // repeats, and the second long take is kept although it shares nothing.
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [] },
+    ]);
+    expect(resolution?.rejected).toEqual([
+      { index: 3, coveredBy: 1 },
+      { index: 2, coveredBy: 0 },
+    ]);
+  });
+
+  it('keeps a grouped take that shares nothing with the takes already kept', () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo foxtrot'),
+      candidate(30, 'mike november oscar papa quebec romeo'),
+    ];
+    const [resolution] = resolveTakes(takes, {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [] },
+    ]);
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.duplicatesKept).toBe(0);
+  });
+
+  it('trims neither take when two cameras start at the same moment', () => {
+    const clean = candidate(0, 'we help founders raise faster our product does the heavy lifting');
+    const messy = candidate(
+      0,
+      'our um product does um the heavy lifting thanks for watching everyone today',
+      {
+        versionId: 'cam-b',
+      }
+    );
+    const [resolution] = resolveTakes([clean, messy], {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+
+    // Neither take is before the other, so neither edge faces the take that
+    // covers it and the duplicate is reported instead.
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [] },
+    ]);
+    expect(resolution?.rejected).toEqual([]);
     expect(resolution?.duplicatesKept).toBe(1);
   });
 

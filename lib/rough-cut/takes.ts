@@ -1,5 +1,12 @@
 import type { BriefRankingCriterion } from './brief';
-import { beatDuration, beatText, type Beat, type SourceCut, type WordSpan } from './beats';
+import {
+  beatDuration,
+  beatText,
+  cutWordsFromBeat,
+  type Beat,
+  type SourceCut,
+  type WordSpan,
+} from './beats';
 import type { ScriptAlignment, ScriptLine } from './script';
 import {
   containment,
@@ -53,13 +60,6 @@ export type TakeScores = {
   energy: number | null;
   recency: number;
   scriptMatch: number | null;
-};
-
-export type TakeDecision = {
-  /** Indices into the candidate array, in timeline order. */
-  group: number[];
-  keptIndex: number;
-  scores: Map<number, TakeScores>;
 };
 
 function find(parent: number[], index: number): number {
@@ -183,34 +183,6 @@ function compareBy(
   };
 }
 
-export function selectTakes(
-  candidates: TakeCandidate[],
-  options: {
-    fillers: ReadonlySet<string>;
-    ranking: BriefRankingCriterion[];
-    longPauseSeconds: number;
-    similarity?: number;
-    windowSeconds?: number;
-    alsoGroup?: number[][];
-  }
-): TakeDecision[] {
-  const groups = groupTakes(candidates, options);
-  return groups.map((group) => {
-    const scores = new Map<number, TakeScores>();
-    for (const index of group) {
-      const candidate = candidates[index]!;
-      scores.set(index, {
-        cleanliness: cleanlinessScore(candidate.beat, options.fillers, options.longPauseSeconds),
-        energy: candidate.energy,
-        recency: candidate.timelineStart,
-        scriptMatch: candidate.scriptMatch ?? null,
-      });
-    }
-    const ordered = [...group].sort(compareBy(options.ranking, scores));
-    return { group, keptIndex: ordered[0]!, scores };
-  });
-}
-
 /**
  * A beat's content tokens with the word each came from (one token per word;
  * fillers and punctuation-only words skipped).
@@ -250,6 +222,12 @@ export function coverageOf(tokens: string[], reference: ReadonlySet<string>): Co
 export const TAKE_COVERED_WHOLE = 0.8;
 /** Below this share of a beat, an overlap is noise, not a shared line. */
 export const TAKE_COVERED_NONE = 0.2;
+/**
+ * What a spliced take has to be left with. The assembler drops a shot shorter
+ * than its `minShotSeconds` (1.5 by default) without saying so, so a splice
+ * that would leave a fragment that short is refused instead.
+ */
+export const TAKE_MIN_SURVIVING_SECONDS = 1.5;
 
 export type SpliceCut = WordSpan & { coveredBy: number };
 export type TakeResolution = {
@@ -386,13 +364,34 @@ export function resolveTakes(
         coveredBy,
       };
       const existing = kept.find((entry) => entry.index === target)?.cuts ?? [];
-      const overlaps = existing.some(
-        (cut) => cut.wordStart < span.wordEnd && span.wordStart < cut.wordEnd
+      // Two cuts over the same words would report the same removal twice.
+      if (existing.some((cut) => cut.wordStart < span.wordEnd && span.wordStart < cut.wordEnd)) {
+        return null;
+      }
+      // Every earlier splice counts: a head cut and a tail cut are each
+      // survivable on their own and can still leave nothing between them.
+      const survivor = cutWordsFromBeat(beat, [...existing, span]).beat;
+      if (!survivor) return null;
+      if (beatTokens(survivor, options.fillers).length < TAKE_MIN_CONTENT_TOKENS) return null;
+      // Per run, because that is the shot the assembler measures.
+      const longestRun = survivor.runs.reduce(
+        (longest, run) => Math.max(longest, run.end - run.start),
+        0
       );
-      return overlaps ? null : span;
+      if (longestRun < TAKE_MIN_SURVIVING_SECONDS) return null;
+      return span;
     };
     const spliceInto = (target: number, span: SpliceCut) => {
       kept.find((entry) => entry.index === target)?.cuts.push(span);
+    };
+    /**
+     * The kept take this member overlaps, and the span that take can hand back
+     * when the member outranks it. A null span leaves the decision to the
+     * caller: reject the member, or trim the member instead.
+     */
+    const anchorFor = (member: number, shingles: ReadonlySet<string>) => {
+      const anchor = closestKept(shingles);
+      return { anchor, span: rank(member, anchor) < 0 ? spliceOf(anchor, member) : null };
     };
 
     for (const member of order) {
@@ -408,14 +407,16 @@ export function resolveTakes(
       const coverage = coverageOf(tokens, reference);
       const uncovered = uncoveredCount(coverage, tokens.length);
 
+      // Nothing in common: a new line, kept whole.
       if (coverage.fraction < TAKE_COVERED_NONE) {
         kept.push({ index: member, cuts: [] });
         continue;
       }
 
+      // Already said: this take adds nothing of its own, so either it replaces
+      // an edge of the take that says it, or it goes.
       if (coverage.fraction >= TAKE_COVERED_WHOLE || uncovered < TAKE_MIN_CONTENT_TOKENS) {
-        const anchor = closestKept(trigrams(tokens));
-        const span = rank(member, anchor) < 0 ? spliceOf(anchor, member) : null;
+        const { anchor, span } = anchorFor(member, trigrams(tokens));
         if (span) {
           spliceInto(anchor, span);
           kept.push({ index: member, cuts: [] });
@@ -425,15 +426,17 @@ export function resolveTakes(
         continue;
       }
 
-      const first = coverage.first ?? 0;
-      const last = coverage.last ?? tokens.length - 1;
+      const first = coverage.first!;
+      const last = coverage.last!;
       const atStart = first === 0;
       const atEnd = last === tokens.length - 1;
-      if (atStart || atEnd) {
-        const anchor = closestKept(trigrams(tokens.slice(first, last + 1)));
-        // The lower-ranked beat gives the shared span up; when that is the
-        // kept one, it is spliced instead and this member stays whole.
-        const span = rank(member, anchor) < 0 ? spliceOf(anchor, member) : null;
+      // Shared at one edge: the lower-ranked take gives that edge up. Shared at
+      // both edges is not a trim at all — the whole beat is a duplicate, and
+      // the branch above has already taken it, since nothing would be left.
+      if (atStart !== atEnd) {
+        // The kept take is spliced when this member outranks it; otherwise
+        // this member trims its own overlapping edge.
+        const { anchor, span } = anchorFor(member, trigrams(tokens.slice(first, last + 1)));
         if (span) {
           spliceInto(anchor, span);
           kept.push({ index: member, cuts: [] });
@@ -461,6 +464,7 @@ export function resolveTakes(
         continue;
       }
 
+      // Shared in the middle of this take: nothing can be trimmed at an edge.
       const anchor = closestKept(trigrams(tokens));
       const back = coverageOf(tokensOf(anchor), trigrams(tokens));
       // Un-keeping an anchor another member already gave a span up to, or was

@@ -251,6 +251,9 @@ export function detectFalseStarts(
 
 export type WordSpan = { wordStart: number; wordEnd: number };
 
+/** A range `cutWordsFromBeat` took out, and which of the given spans asked for it. */
+export type RemovedSpan = { span: number; start: number; end: number; text: string };
+
 /**
  * Remove word spans (index ranges, end exclusive) from a beat: the words go,
  * the kept runs are cut around the removed time ranges, and the beat's
@@ -262,21 +265,22 @@ export type WordSpan = { wordStart: number; wordEnd: number };
 export function cutWordsFromBeat(
   beat: Beat,
   spans: WordSpan[]
-): { beat: Beat | null; removed: Array<{ start: number; end: number; text: string }> } {
+): { beat: Beat | null; removed: RemovedSpan[] } {
   const drop = new Set<number>();
-  const removed: Array<{ start: number; end: number; text: string }> = [];
-  for (const span of spans) {
+  const removed: RemovedSpan[] = [];
+  spans.forEach((span, position) => {
     const first = Math.max(0, span.wordStart);
     const last = Math.min(beat.words.length, span.wordEnd);
-    if (last <= first) continue;
+    if (last <= first) return;
     for (let index = first; index < last; index += 1) drop.add(index);
     const words = beat.words.slice(first, last);
     removed.push({
+      span: position,
       start: words[0]!.start,
       end: words[words.length - 1]!.end,
       text: words.map((word) => word.text.trim()).join(' '),
     });
-  }
+  });
   const words = beat.words.filter((_, index) => !drop.has(index));
   if (words.length === 0) return { beat: null, removed };
   let runs = beat.runs.map((run) => ({ ...run }));
