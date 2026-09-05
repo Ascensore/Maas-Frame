@@ -123,6 +123,7 @@ import * as assetsR2InitRoute from '@/app/api/videos/[videoId]/assets/r2-init/ro
 import * as assetsRoute from '@/app/api/videos/[videoId]/assets/route';
 import * as subtitleRoute from '@/app/api/videos/[videoId]/subtitles/[subtitleId]/route';
 import * as subtitlesRoute from '@/app/api/videos/[videoId]/subtitles/route';
+import * as videoRoughCutRoute from '@/app/api/videos/[videoId]/rough-cut/route';
 import * as watchProgressRoute from '@/app/api/watch/[videoId]/progress/route';
 import * as watchRoute from '@/app/api/watch/[videoId]/route';
 import * as watchUploadTokenRoute from '@/app/api/watch/[videoId]/upload-token/route';
@@ -137,6 +138,8 @@ import * as workspaceEditorialBriefsRoute from '@/app/api/workspaces/[workspaceI
 import * as workspaceEditorialBriefRoute from '@/app/api/workspaces/[workspaceId]/editorial-briefs/[briefId]/route';
 import * as roughCutRoute from '@/app/api/rough-cuts/[roughCutId]/route';
 import * as roughCutDownloadRoute from '@/app/api/rough-cuts/[roughCutId]/download/route';
+import * as roughCutOverridesRoute from '@/app/api/rough-cuts/[roughCutId]/overrides/route';
+import * as roughCutRenderRoute from '@/app/api/rough-cuts/[roughCutId]/render/route';
 
 // ---------------------------------------------------------------------------
 // R2 boundary
@@ -182,7 +185,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 97;
+const EXPECTED_ROUTE_MODULE_COUNT = 100;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -969,6 +972,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     },
   },
   {
+    file: 'videos/[videoId]/rough-cut/route.ts',
+    module: videoRoughCutRoute,
+    url: (f) => `/api/videos/${f.videoId}/rough-cut`,
+    params: (f) => ({ videoId: f.videoId }),
+  },
+  {
     file: 'watch/[videoId]/progress/route.ts',
     module: watchProgressRoute,
     url: (f) => `/api/watch/${f.videoId}/progress`,
@@ -1033,6 +1042,19 @@ const ROUTE_CASES: readonly RouteCase[] = [
     file: 'rough-cuts/[roughCutId]/download/route.ts',
     module: roughCutDownloadRoute,
     url: (f) => `/api/rough-cuts/${f.roughCutId}/download?format=otio`,
+    params: (f) => ({ roughCutId: f.roughCutId }),
+  },
+  {
+    file: 'rough-cuts/[roughCutId]/overrides/route.ts',
+    module: roughCutOverridesRoute,
+    url: (f) => `/api/rough-cuts/${f.roughCutId}/overrides`,
+    params: (f) => ({ roughCutId: f.roughCutId }),
+    body: { version: 1, cuts: {} },
+  },
+  {
+    file: 'rough-cuts/[roughCutId]/render/route.ts',
+    module: roughCutRenderRoute,
+    url: (f) => `/api/rough-cuts/${f.roughCutId}/render`,
     params: (f) => ({ roughCutId: f.roughCutId }),
   },
   {

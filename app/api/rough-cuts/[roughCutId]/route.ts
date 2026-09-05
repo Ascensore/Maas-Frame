@@ -4,6 +4,7 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
+import { loadRoughCutReview } from '@/lib/rough-cut/review';
 import { shapeRoughCut } from '@/lib/rough-cut/serialize';
 
 type RouteParams = { params: Promise<{ roughCutId: string }> };
@@ -38,8 +39,15 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!loaded) return apiErrors.notFound('Rough cut');
     if (!loaded.access.hasAccess) return apiErrors.forbidden('Access denied');
 
+    // The review payload is several joins wider than the row, so the pane asks
+    // for it and every other caller keeps the cheap answer.
+    const includeReview = request.nextUrl.searchParams.get('include') === 'review';
+
     return withCacheControl(
-      successResponse({ roughCut: shapeRoughCut(loaded.row, { includeScript: true }) }),
+      successResponse({
+        roughCut: shapeRoughCut(loaded.row, { includeScript: true }),
+        ...(includeReview ? { review: await loadRoughCutReview(loaded.row) } : {}),
+      }),
       'private, no-store'
     );
   } catch (error) {

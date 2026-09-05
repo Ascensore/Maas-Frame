@@ -7,6 +7,7 @@ import { canDownloadProjectMedia } from '@/lib/project-download';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import { buildFcp7Xml } from '@/lib/rough-cut/fcp7-xml';
 import { buildOtioFile } from '@/lib/rough-cut/otio';
+import { applyOverrides, parseRoughCutOverrides } from '@/lib/rough-cut/overrides';
 import { profileFromSnapshot } from '@/lib/rough-cut/profile';
 import { rateLimit } from '@/lib/rate-limit';
 import type { CameraClip } from '@/lib/rough-cut/types';
@@ -65,10 +66,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return apiErrors.badRequest('Rough cut is not ready to download');
     }
 
-    const decisions = parseRoughCutDecisionList(row.decisions);
-    if (!decisions) {
+    const stored = parseRoughCutDecisionList(row.decisions);
+    if (!stored) {
       return apiErrors.internalError('Rough cut decisions are missing or invalid');
     }
+
+    // What the editor opens is what the reviewer approved: the same program the
+    // render produces, rather than the one assembly first proposed.
+    const decisions = applyOverrides(stored, parseRoughCutOverrides(row.overrides));
 
     const clips: CameraClip[] = decisions.clips.map((clip) => ({
       videoId: clip.videoId,

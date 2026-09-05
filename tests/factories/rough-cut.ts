@@ -61,6 +61,10 @@ export interface CreateRoughCutInput {
   layout?: RoughCutLayout;
   decisions?: object | null;
   script?: string | null;
+  /** The video the materialized cut is delivered on, which the review pane is opened from. */
+  outputVideoId?: string | null;
+  /** The reviewer's stored decisions, as the overrides route would have written them. */
+  overrides?: object | null;
 }
 
 export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughCut> {
@@ -75,6 +79,8 @@ export async function createRoughCut(input: CreateRoughCutInput): Promise<RoughC
       profileSnapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
       decisions: input.decisions ?? undefined,
       script: input.script ?? null,
+      outputVideoId: input.outputVideoId ?? null,
+      overrides: input.overrides ?? undefined,
     },
   });
 }
