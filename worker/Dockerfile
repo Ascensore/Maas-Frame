@@ -2,8 +2,12 @@ FROM docker.io/oven/bun:1
 
 WORKDIR /worker
 
+# The font packages are what the burn-in job draws with: libass finds a family
+# by name through fontconfig, and a missing one is silently replaced rather than
+# reported, so the families offered in the style picker have to be installed.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg python3 python3-pip python3-venv \
+       fonts-dejavu-core fonts-liberation2 fonts-roboto fonts-open-sans fontconfig \
   && rm -rf /var/lib/apt/lists/* \
   && pip3 install --break-system-packages --no-cache-dir \
        --index-url https://download.pytorch.org/whl/cpu \

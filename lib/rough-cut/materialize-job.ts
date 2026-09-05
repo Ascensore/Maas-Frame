@@ -11,6 +11,7 @@ import {
   type SourceTranscript,
 } from './derived-transcript';
 import { materializeFfmpegArgs } from './materialize';
+import { addOutputVersion, createOutputVideo } from './output-version';
 import { effectiveDecisions, parseRoughCutOverrides } from './overrides';
 import type { RoughCutDecisionList } from './types';
 
@@ -161,17 +162,6 @@ export async function materializeRoughCut(
   }
 }
 
-/** The name a first render gives the output video, from the folder it came out of. */
-async function outputTitle(deps: MaterializeDeps, folderId: string | null): Promise<string> {
-  if (!folderId) return 'Rough cut';
-  const folderRes = await deps.pool.query(`SELECT name FROM folders WHERE id = $1`, [folderId]);
-  const folderName = folderRes.rows[0]?.name;
-  if (typeof folderName === 'string' && folderName.trim()) {
-    return `Rough cut — ${folderName.trim()}`;
-  }
-  return 'Rough cut';
-}
-
 /**
  * Where the rendered file goes: a new version of the run's output video when
  * it already has one, so the re-render is a version the reviewer can compare
@@ -191,98 +181,35 @@ async function createOutputVersion(
   options: OutputOptions
 ): Promise<{ videoId: string; versionId: string }> {
   if (options.existingVideoId) {
-    const added = await addOutputVersion(deps, options, options.existingVideoId);
+    // One transaction around the lock, the version number and the flip; a
+    // video that has been deleted since the last render answers null, and the
+    // render makes a new one instead.
+    const client = await deps.pool.connect();
+    let added: { videoId: string; versionId: string } | null = null;
+    try {
+      await client.query('BEGIN');
+      added = await addOutputVersion(client, {
+        videoId: options.existingVideoId,
+        objectKey: options.objectKey,
+        originalUrl: options.originalUrl,
+        sizeBytes: options.sizeBytes,
+      });
+      await client.query(added ? 'COMMIT' : 'ROLLBACK');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
     if (added) return added;
   }
-  return createOutputVideo(deps, options);
-}
-
-/**
- * Another version of the video the last render delivered. Reading the highest
- * version number, deactivating the versions that are there and inserting the
- * new one is one transaction behind a row lock on the video: two renders that
- * overlap would otherwise pick the same number and fail the unique index, or
- * both mark themselves active. Answers null when the video is gone, so the
- * render falls back to making a new one.
- */
-async function addOutputVersion(
-  deps: MaterializeDeps,
-  options: OutputOptions,
-  existingVideoId: string
-): Promise<{ videoId: string; versionId: string } | null> {
-  const versionRowId = randomUUID();
-  const client = await deps.pool.connect();
-  try {
-    await client.query('BEGIN');
-    const locked = await client.query(`SELECT id FROM videos WHERE id = $1 FOR UPDATE`, [
-      existingVideoId,
-    ]);
-    if (!locked.rows[0]) {
-      await client.query('ROLLBACK');
-      return null;
-    }
-    const videoId = String(locked.rows[0].id);
-    const max = await client.query(
-      `SELECT COALESCE(MAX("versionNumber"), 0) AS max FROM video_versions WHERE "videoParentId" = $1`,
-      [videoId]
-    );
-    const next = Number(max.rows[0]?.max ?? 0) + 1;
-    await client.query(`UPDATE video_versions SET "isActive" = false WHERE "videoParentId" = $1`, [
-      videoId,
-    ]);
-    await client.query(
-      `INSERT INTO video_versions (
-         id, "versionNumber", "versionLabel", "providerId", "videoId", "originalUrl", title,
-         "thumbnailUrl", size_bytes, "isActive", "videoParentId", "createdAt", proxy_status
-       ) VALUES ($1, $2, $3, 'r2', $4, $5, $6, '/placeholder-video-thumbnail.png', $7, true, $8, NOW(), 'SKIPPED')`,
-      [
-        versionRowId,
-        next,
-        `Re-render ${next - 1}`,
-        options.objectKey,
-        options.originalUrl,
-        `Rough cut v${next}`,
-        options.sizeBytes,
-        videoId,
-      ]
-    );
-    await client.query('COMMIT');
-    return { videoId, versionId: versionRowId };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-/** The first render: a video of its own, at the end of the project. */
-async function createOutputVideo(
-  deps: MaterializeDeps,
-  options: OutputOptions
-): Promise<{ videoId: string; versionId: string }> {
-  const versionRowId = randomUUID();
-  const title = await outputTitle(deps, options.folderId);
-  const last = await deps.pool.query(
-    `SELECT position FROM videos WHERE "projectId" = $1 ORDER BY position DESC LIMIT 1`,
-    [options.projectId]
-  );
-  const nextPosition =
-    (typeof last.rows[0]?.position === 'number' ? last.rows[0].position : -1) + 1;
-  const videoId = randomUUID();
-  await deps.pool.query(
-    `INSERT INTO videos (id, title, position, folder_id, kind, metadata, "projectId", "createdAt", "updatedAt")
-     VALUES ($1, $2, $3, $4, 'VIDEO', '{}'::jsonb, $5, NOW(), NOW())`,
-    [videoId, title, nextPosition, options.folderId, options.projectId]
-  );
-  await deps.pool.query(
-    `INSERT INTO video_versions (
-       id, "versionNumber", "providerId", "videoId", "originalUrl", title, "thumbnailUrl",
-       size_bytes, "isActive", "videoParentId", "createdAt", proxy_status
-     ) VALUES ($1, 1, 'r2', $2, $3, $4, '/placeholder-video-thumbnail.png', $5, true, $6, NOW(), 'SKIPPED')`,
-    [versionRowId, options.objectKey, options.originalUrl, title, options.sizeBytes, videoId]
-  );
-  return { videoId, versionId: versionRowId };
+  return createOutputVideo(deps, {
+    projectId: options.projectId,
+    folderId: options.folderId,
+    objectKey: options.objectKey,
+    originalUrl: options.originalUrl,
+    sizeBytes: options.sizeBytes,
+  });
 }
 
 /**

@@ -8,6 +8,7 @@ import PgBoss from 'pg-boss';
 import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
+import { burnInSubtitles, parseBurnInPayload } from './burn-in';
 import { claimDueMediaJobs } from '../lib/media-job-queue';
 import { upsertCaptionTrack } from '../lib/rough-cut/caption-track';
 import { serializeWebVtt } from '../lib/subtitle-validation';
@@ -653,6 +654,7 @@ const QUEUE = {
   ASSEMBLE_ROUGH_CUT: 'assemble-rough-cut',
   IMPORT_DRIVE: 'import-drive',
   MATERIALIZE_ROUGH_CUT: 'materialize-rough-cut',
+  BURN_SUBTITLES: 'burn-subtitles',
 } as const;
 
 type MediaJobData = {
@@ -670,6 +672,7 @@ function queueForKind(kind: string): string {
   if (kind === 'ASSEMBLE_ROUGH_CUT') return QUEUE.ASSEMBLE_ROUGH_CUT;
   if (kind === 'IMPORT_DRIVE') return QUEUE.IMPORT_DRIVE;
   if (kind === 'MATERIALIZE_ROUGH_CUT') return QUEUE.MATERIALIZE_ROUGH_CUT;
+  if (kind === 'BURN_SUBTITLES') return QUEUE.BURN_SUBTITLES;
   throw new Error(`Unknown job kind ${kind}`);
 }
 
@@ -752,6 +755,14 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
           objectKeyFromProvider,
         },
         roughCutId
+      );
+    } else if (kind === 'BURN_SUBTITLES') {
+      const payload = parseBurnInPayload(data.payload);
+      if (!payload) throw new Error('BURN_SUBTITLES payload is invalid');
+      await burnInSubtitles(
+        { pool, run, downloadObject, uploadObject, downloadVersionMedia: downloadVersionFile },
+        data.versionId,
+        payload
       );
     } else {
       throw new Error(`Unknown job kind ${kind}`);
@@ -857,6 +868,11 @@ async function start(): Promise<void> {
   await boss.work(QUEUE.MATERIALIZE_ROUGH_CUT, async (jobs) => {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'MATERIALIZE_ROUGH_CUT');
+    }
+  });
+  await boss.work(QUEUE.BURN_SUBTITLES, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'BURN_SUBTITLES');
     }
   });
 
