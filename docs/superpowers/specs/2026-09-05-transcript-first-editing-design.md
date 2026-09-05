@@ -195,10 +195,12 @@ the deploy.
 | `POST /api/versions/[versionId]/transcript/captions`              | Builds the caption track from the version's own transcript, without transcribing again                     |
 | `PATCH /api/versions/[versionId]/transcript/segments/[segmentId]` | Edits one transcript line (text ≤ 2000, speaker ≤ 80) and rebuilds the caption track                       |
 
-Burn-in source resolution, shared by the route and the job so they cannot pick different words:
-an explicit `subtitleId` wins; otherwise the READY transcript in the requested `language` (and an
-explicit language never falls back to a caption track); otherwise the oldest READY transcript;
-otherwise the oldest caption track.
+Burn-in source resolution: an explicit `subtitleId` wins; otherwise the READY transcript in the
+requested `language` (and an explicit language never falls back to a caption track); otherwise the
+oldest READY transcript; otherwise the oldest caption track. The rule is the same on both sides
+rather than shared code: the route resolves it eagerly and writes the chosen id into the job
+payload, and the job resolves a null `transcriptId` to the oldest READY transcript itself. Two
+implementations of one rule, so a change to either has to be made twice.
 
 ## UI
 
