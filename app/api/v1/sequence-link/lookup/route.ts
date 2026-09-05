@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { isAuthError, withApiAuth } from '@/lib/v1-auth';
-import { checkProjectAccess } from '@/lib/auth';
+import { computeProjectAccess, projectAccessInclude } from '@/lib/auth';
 import { startTimecodeToSeconds } from '@/lib/timecode';
 import { logError } from '@/lib/logger';
 
@@ -34,37 +34,39 @@ export async function GET(request: NextRequest) {
 
     const rows = await db.sequenceLink.findMany({
       where: { userId: authContext.userId, nle, sequenceId },
-      orderBy: { updatedAt: 'desc' },
+      // updatedAt alone is not a total order: two rows written in the same
+      // millisecond would come back in an arbitrary order on each call.
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       take: 10,
     });
+    if (rows.length === 0) {
+      return withCacheControl(successResponse({ link: null }), 'private, no-store');
+    }
 
-    for (const row of rows) {
-      const version = await db.videoVersion.findUnique({
-        where: { id: row.versionId },
-        select: {
-          id: true,
-          versionNumber: true,
-          video: {
-            select: {
-              title: true,
-              project: {
-                select: {
-                  id: true,
-                  ownerId: true,
-                  workspaceId: true,
-                  visibility: true,
-                  name: true,
-                },
-              },
-            },
+    // One query for the versions rather than one per row, with the access
+    // relations included so the check below is in-memory.
+    const versions = await db.videoVersion.findMany({
+      where: { id: { in: rows.map((row) => row.versionId) } },
+      select: {
+        id: true,
+        versionNumber: true,
+        video: {
+          select: {
+            title: true,
+            project: { include: projectAccessInclude(authContext.userId) },
           },
         },
-      });
-      // A link outlives the access that created it. Re-check on every lookup so
-      // a removed collaborator's stale row cannot name a version back to them.
+      },
+    });
+    const byId = new Map(versions.map((version) => [version.id, version]));
+
+    for (const row of rows) {
+      const version = byId.get(row.versionId);
+      // A link outlives the access that created it, and the row is written by
+      // the caller. Re-check on every read so a stale row cannot name a version
+      // back to somebody who can no longer reach it.
       if (!version) continue;
-      const access = await checkProjectAccess(version.video.project, authContext.userId);
-      if (!access.hasAccess) continue;
+      if (!computeProjectAccess(version.video.project, authContext.userId).hasAccess) continue;
 
       return withCacheControl(
         successResponse({

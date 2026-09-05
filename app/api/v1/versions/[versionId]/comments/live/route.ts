@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { apiErrors } from '@/lib/api-response';
+import { rateLimit } from '@/lib/rate-limit';
 import { isAuthError, loadVersionForUser, withApiAuth } from '@/lib/v1-auth';
 import { logError } from '@/lib/logger';
 import {
@@ -28,6 +29,12 @@ export const maxDuration = 25;
  */
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
+    // Every other v1 route rate-limits, and this one is worth more: on a
+    // self-hosted deployment each accepted connection pins a dedicated Postgres
+    // session for its lifetime, so an unbounded open loop exhausts max_connections.
+    const limited = await rateLimit(request, 'api-v1');
+    if (limited) return limited;
+
     const authContext = await withApiAuth(request);
     if (isAuthError(authContext)) return authContext;
 

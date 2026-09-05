@@ -82,18 +82,22 @@ function secondsFromTick(tick) {
 /**
  * The host's own id for this sequence. Duplicating a sequence copies its name
  * and its markers but gets a fresh guid, so this is the only thing that tells an
- * original from a stale duplicate. Returns null when the host will not say,
- * which falls the binding check back to the marker heuristic.
+ * original from a stale duplicate.
+ *
+ * Validated against an allowlist, not a denylist of known junk. A value that is
+ * bogus but *the same for every sequence* -- '[object Promise]' from a
+ * promise-valued guid, a stringified accessor, 'true' -- is worse than no id at
+ * all: two different sequences would compare equal and the identity check would
+ * declare them bound, overriding the marker heuristic that would have refused.
+ * Anything not obviously an opaque id returns null and falls back to markers.
+ *
+ * Only `guid` is read. An ordinal like `sequence.id` would collide across
+ * projects, and a collision here is a wrong-sequence write.
  */
 function hostSequenceId(sequence) {
-  const raw = sequence?.guid ?? sequence?.sequenceID ?? sequence?.id ?? null;
-  if (!raw) return null;
-  const value = typeof raw === 'string' ? raw : String(raw);
-  const trimmed = value.trim();
-  // A Guid object without a useful toString stringifies to [object Object],
-  // which would otherwise match every sequence against every other.
-  if (!trimmed || trimmed === '[object Object]' || trimmed === 'undefined') return null;
-  return trimmed.slice(0, 200);
+  // Only `guid`. An ordinal like `sequence.id` would collide across projects,
+  // and a collision here is a wrong-sequence write.
+  return nle().normalizeSequenceId(sequence?.guid ?? null);
 }
 
 async function sequenceMeta(sequence) {
@@ -135,20 +139,26 @@ async function sequenceMeta(sequence) {
 
 /** Which version, if any, this sequence was last synced to. */
 async function lookupVersionForSequence(baseUrl, token, sequenceId) {
-  if (!sequenceId) return null;
+  if (!sequenceId) return { ok: false, link: null };
   try {
     const { link } = await api(
       baseUrl,
       token,
       `/api/v1/sequence-link/lookup?nle=premiere&sequenceId=${encodeURIComponent(sequenceId)}`
     );
-    return link;
+    return { ok: true, link };
   } catch {
-    return null;
+    return { ok: false, link: null };
   }
 }
 
-/** What the server has stored for the version we are syncing. */
+/**
+ * What the server has stored for the version we are syncing.
+ *
+ * Returns `{ ok: false }` on a failed read. Collapsing that into "no id stored"
+ * would silently downgrade the exact identity check to the marker heuristic for
+ * that tick -- reinstating the duplicate-sequence bug on any transient blip.
+ */
 async function storedSequenceId(baseUrl, token, versionId) {
   try {
     const { sequenceLink } = await api(
@@ -156,9 +166,9 @@ async function storedSequenceId(baseUrl, token, versionId) {
       token,
       `/api/v1/versions/${versionId}/sequence-link?nle=premiere`
     );
-    return sequenceLink ? sequenceLink.sequenceId : null;
+    return { ok: true, sequenceId: sequenceLink ? sequenceLink.sequenceId : null };
   } catch {
-    return null;
+    return { ok: false, sequenceId: null };
   }
 }
 
@@ -242,13 +252,17 @@ async function syncMarkers({ auto = false } = {}) {
   // server, and the record of which comments have markers. None of it may happen
   // unattended against a sequence that is not this version's, so the check comes
   // before the first network call rather than in the middle of the writes.
-  const identity = {
-    hostSequenceId: meta.sequenceId,
-    linkedSequenceId: await storedSequenceId(baseUrl, token, versionId),
-  };
-  if (auto && !core.sequenceIsBound(local, previousIds, identity)) {
+  const stored = await storedSequenceId(baseUrl, token, versionId);
+  if (auto && !stored.ok) {
+    // Treating a failed read as "no id stored" would drop us back to the marker
+    // heuristic, which cannot tell a duplicate from the original.
+    setStatus('Auto-sync paused: could not confirm which sequence this version is synced to.');
+    return false;
+  }
+  const identity = { hostSequenceId: meta.sequenceId, linkedSequenceId: stored.sequenceId };
+  if (auto && !core.autoSyncMayWrite(local, previousIds, identity)) {
     setStatus(
-      'Auto-sync paused: the open sequence is not the one this version is synced to. Switch back, or press Sync markers to sync this sequence.'
+      'Auto-sync paused: this sequence is not the one this version is synced to. Press Sync markers to bind the sequence you are on.'
     );
     return false;
   }
@@ -358,20 +372,28 @@ async function rebindToActiveSequence() {
   const sequence = project ? await project.getActiveSequence() : null;
   const sequenceId = sequence ? hostSequenceId(sequence) : null;
   if (!sequenceId || sequenceId === lastBoundSequenceId) return;
+
+  const result = await lookupVersionForSequence(baseUrl, token, sequenceId);
+  // Latch only once the server has actually answered. Latching first turns a
+  // network blip into "not linked yet" for as long as this sequence stays open.
+  if (!result.ok) return;
   lastBoundSequenceId = sequenceId;
 
-  const link = await lookupVersionForSequence(baseUrl, token, sequenceId);
+  const link = result.link;
   if (!link) {
     setStatus('This sequence is not linked to a version yet. Pick one and press Sync markers.');
     return;
   }
   const select = el('version');
+  const previousVersionId = select.value;
   const known = Array.from(select.options).some((option) => option.value === link.versionId);
   if (!known) {
     select.innerHTML += `<option value="${link.versionId}">${link.videoTitle} v${link.versionNumber}</option>`;
   }
   select.value = link.versionId;
   setStatus(`Following ${link.videoTitle} v${link.versionNumber} for this sequence.`);
+  // The live stream subscribes to one version, so a rebind has to move it.
+  if (previousVersionId !== link.versionId) restartLiveStream();
 }
 
 /**
@@ -380,24 +402,39 @@ async function rebindToActiveSequence() {
  *
  * Read with `fetch` rather than `EventSource` because the endpoint authenticates
  * a Bearer header and EventSource cannot send one; the alternative would put the
- * token in the query string, where it lands in server and proxy logs. A host
- * whose fetch cannot stream simply keeps polling — the poll is the delivery
- * mechanism, this only removes latency.
+ * token in the query string, where it lands in server and proxy logs.
+ *
+ * EventSource also reconnects for free, and this does not: the route closes
+ * every stream at its maxDuration, so a single read loop buys ~25 seconds of
+ * acceleration and then goes quiet for the rest of the session. Hence the
+ * reconnect loop below.
+ *
+ * A generation counter, not the AbortController, is what stops it. When the host
+ * has no AbortController the controller is null, and `while (liveAbort === controller)`
+ * would then be `null === null` -- true forever, with every toggle stacking
+ * another live reader.
  */
+let liveGeneration = 0;
 let liveAbort = null;
 
 function closeLiveStream() {
-  if (liveAbort) liveAbort.abort();
+  liveGeneration += 1;
+  if (liveAbort) {
+    try {
+      liveAbort.abort();
+    } catch {
+      // Already aborted, or the host has no working AbortController.
+    }
+  }
   liveAbort = null;
 }
 
-async function openLiveStream() {
-  closeLiveStream();
-  const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
-  const versionId = el('version').value;
-  const token = el('token').value.trim();
-  if (!versionId || !token) return;
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+/** One connection. Returns 'ok', 'error', or 'not-listening'. */
+async function readLiveStreamOnce(generation, baseUrl, versionId, token) {
   const controller = typeof AbortController === 'undefined' ? null : new AbortController();
   liveAbort = controller;
   try {
@@ -406,27 +443,67 @@ async function openLiveStream() {
       signal: controller ? controller.signal : undefined,
     });
     const reader = response.ok && response.body ? response.body.getReader() : null;
-    if (!reader) return;
+    if (!reader) return 'error';
 
     const decoder = new TextDecoder();
     let buffer = '';
-    while (liveAbort === controller) {
+    while (generation === liveGeneration) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) return 'ok';
       buffer += decoder.decode(value, { stream: true });
       const parsed = nle().parseSseFrames(buffer);
       buffer = parsed.rest;
       for (const event of parsed.events) {
+        if (event.event === 'ready') {
+          // The deployment says it cannot push. Reconnecting would burn a
+          // request every 25s to receive nothing; the poll is the delivery
+          // mechanism there.
+          try {
+            if (JSON.parse(event.data).listening === false) {
+              await reader.cancel().catch(() => undefined);
+              return 'not-listening';
+            }
+          } catch {
+            // Unreadable ready payload: treat the stream as usable.
+          }
+          continue;
+        }
         if (event.event !== 'comments') continue;
         if (!autoSyncEnabled() || syncInFlight) continue;
         scheduleAutoSync(0);
       }
     }
+    await reader.cancel().catch(() => undefined);
+    return 'ok';
   } catch {
-    // The stream is optional. The poll keeps delivering either way.
+    return 'error';
   } finally {
     if (liveAbort === controller) liveAbort = null;
   }
+}
+
+async function openLiveStream() {
+  closeLiveStream();
+  const generation = liveGeneration;
+  const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
+  const versionId = el('version').value;
+  const token = el('token').value.trim();
+  if (!versionId || !token) return;
+
+  let failures = 0;
+  while (generation === liveGeneration && autoSyncEnabled()) {
+    const outcome = await readLiveStreamOnce(generation, baseUrl, versionId, token);
+    if (generation !== liveGeneration) return;
+    if (outcome === 'not-listening') return;
+    failures = outcome === 'ok' ? 0 : failures + 1;
+    if (failures > 0) await delay(nle().nextPollDelayMs(failures));
+  }
+}
+
+/** The stream is per version, so a rebind has to move it. */
+function restartLiveStream() {
+  if (!autoSyncEnabled()) return;
+  void openLiveStream();
 }
 
 let autoTimer = null;
@@ -508,6 +585,9 @@ for (const id of ['baseUrl', 'token']) {
 el('load').addEventListener('click', () => {
   saveSettings();
   loadProjects().catch((error) => setStatus(error.message));
+});
+el('version').addEventListener('change', () => {
+  restartLiveStream();
 });
 el('project').addEventListener('change', (event) => {
   loadVersions(event.target.value).catch((error) => setStatus(error.message));

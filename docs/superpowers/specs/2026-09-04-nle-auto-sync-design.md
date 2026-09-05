@@ -262,6 +262,30 @@ that created it, and the row is written by the caller — without the re-check, 
 row naming a version the caller can no longer reach would keep handing back its
 id.
 
+### What identity is not
+
+An id is only useful if it differs between sequences. A value that is bogus but
+**constant** — `'[object Promise]'` from a promise-valued guid, a stringified
+accessor, `'true'` — is worse than no id at all: two different sequences compare
+equal, `sequenceIsBound` reports bound, and by its own contract that "settles
+it", so the marker heuristic is never consulted. The identity check would then be
+_weaker_ than the heuristic it replaced. `normalizeSequenceId()` is therefore an
+allowlist (`/^[A-Za-z0-9._:{}-]{8,200}$/`), not a denylist of known junk, and it
+lives in the tested core rather than in either panel. Only `guid` is read on the
+Premiere side: an ordinal like `sequence.id` would collide across projects, and a
+collision here is a wrong-sequence write.
+
+### Auto-sync needs a positive binding, not the absence of a negative
+
+`sequenceIsBound` falls back to the marker heuristic whenever either side cannot
+name the sequence, and the heuristic answers "bound" for _any_ sequence when
+nothing has been synced on this machine yet. That combination let an unattended
+pass write to a sequence nobody had ever bound. `autoSyncMayWrite()` is the
+stricter rule the loop uses: when the host can name the sequence, the server has
+to agree by name. First bind is a deliberate press of Sync markers, not something
+a poll decides. A failed read of the stored id pauses too — collapsing it into
+"no id stored" would silently drop back to the heuristic on any transient blip.
+
 ## Phase 3: the push accelerator
 
 `GET /api/v1/versions/[versionId]/comments/live` is the existing SSE route with
@@ -271,13 +295,34 @@ endpoint authenticates a Bearer header, `EventSource` cannot send one, and the
 alternative is a token in the query string where it lands in server and proxy
 logs. `parseSseFrames()` pulls whole frames out of the growing buffer and holds
 back the partial one, since a frame split across reads would otherwise be
-dropped or misread.
+dropped or misread. It accepts CRLF and bare-CR framing as well as LF: the spec
+permits all three, and splitting on `\n\n` alone turns a CRLF stream into zero
+events and a buffer that grows for the life of the connection.
+
+`EventSource` also reconnects for free and a hand-rolled reader does not. The
+route closes every stream at `maxDuration = 25` **by design**, so a single read
+loop buys 25 seconds of acceleration and then goes quiet for the rest of the
+session — the phase's entire user-visible benefit, absent. The panels wrap the
+read in a reconnect loop that runs while auto-sync is on, backing off through
+`nextPollDelayMs` on failure. What stops it is a generation counter, not the
+`AbortController`: where the host has no `AbortController` the controller is
+`null`, and `while (liveAbort === controller)` would be `null === null`, true
+forever, with every toggle stacking another live reader.
+
+The stream is per version, so a rebind or a manual version change reopens it;
+otherwise it stays subscribed to the version that was selected when auto-sync
+was switched on.
 
 The stream is an accelerator and never the delivery mechanism. Its `ready` event
 carries `listening`, which is false where `shouldListenForCommentLive()` is —
 Vercel, where holding a LISTEN per stream exhausted the session pooler. A panel
-that sees `listening: false` keeps polling rather than trusting a stream that
-will stay silent. The poll runs regardless; the stream only removes latency.
+that reads `listening: false` stops reconnecting and leaves delivery to the poll,
+rather than burning a request every 25 seconds to receive nothing.
+
+The route rate-limits like every other v1 route. On a self-hosted deployment each
+accepted connection pins a dedicated Postgres session for its lifetime, so an
+unbounded open loop is a way to exhaust `max_connections` — the failure the
+original route's own comment describes.
 
 ## Server-side changes this implies
 
@@ -305,12 +350,24 @@ Phases 0 and 1 need **no server changes at all**.
 
 ## What is still not covered
 
-- **Neither host's id has been exercised against a real application.** The
-  accessors are written defensively (Premiere's guid is read through several
-  property names and rejects an `[object Object]` stringification; Resolve's
-  `GetUniqueId` is optional-called), and a host that returns nothing falls back
-  to the marker heuristic rather than breaking. But "falls back correctly" is the
-  tested claim, not "reads the right id" — that needs a session in front of the
-  real applications.
+- **Neither host's id has been exercised against a real application.**
+  `normalizeSequenceId` rejects everything that is not plainly an opaque id, and
+  anything rejected falls back to the marker heuristic rather than breaking. But
+  "falls back correctly" is the tested claim, not "reads the right id" — that
+  needs a session in front of the real applications. If Premiere's `guid` turns
+  out to be promise-valued or a method, identity simply never engages and
+  auto-sync will refuse to write unattended until someone fixes the accessor.
+  That is the intended direction to fail in, but it means Phase 2 could be inert
+  in practice and the tests would not say so.
+- **The reconnect loop is not covered by a test.** Both panels are plain scripts
+  that reference `document` and `require('premierepro')`, so nothing in the suite
+  loads them; only the pure pieces they call are tested. The 25-second reconnect,
+  the generation counter and the version-change restart were all reasoned about
+  and none is pinned.
 - The `listening: false` path is tested by forcing the flag, not by running on
   Vercel.
+- Identity is not scoped to a project. `(userId, nle, sequenceId)` is the lookup
+  key, so a host that returned a per-project ordinal rather than a globally
+  unique id could match another project's link. The allowlist's length floor
+  makes an ordinal unlikely to survive validation, but nothing structurally
+  prevents it.

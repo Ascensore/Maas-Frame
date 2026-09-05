@@ -181,6 +181,13 @@ describe('GET /api/v1/sequence-link/lookup', () => {
     const theirs = await seedVersion({ visibility: 'PRIVATE' });
     const token = await mintApiToken(mine.owner.id);
 
+    // Bind the reachable row FIRST so the unreachable one is newer and sorts
+    // ahead of it. Written the other way round the reachable row comes first,
+    // the skip branch never executes, and this test passes with the skip
+    // replaced by a break.
+    signedInAs(mine.owner);
+    await bind(mine.version.id, { sequenceId: 'seq-shared' });
+
     await db.sequenceLink.create({
       data: {
         userId: mine.owner.id,
@@ -192,14 +199,119 @@ describe('GET /api/v1/sequence-link/lookup', () => {
         frameRateNum: 24,
         frameRateDen: 1,
         dropFrame: false,
+        updatedAt: new Date(Date.now() + 60_000),
       },
     });
-    signedInAs(mine.owner);
-    await bind(mine.version.id, { sequenceId: 'seq-shared' });
+
+    const rows = await db.sequenceLink.findMany({
+      where: { userId: mine.owner.id, sequenceId: 'seq-shared' },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+    });
+    // Guard the guard: if the unreachable row stops sorting first, this test
+    // silently stops testing the skip.
+    expect(rows[0]?.versionId).toBe(theirs.version.id);
 
     const response = await callRoute(
       lookupSequenceLink,
       apiRequest(lookupUrl({ nle: 'premiere', sequenceId: 'seq-shared' }), {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      {}
+    );
+    expect(response.status).toBe(200);
+    expect((await readData<LookupBody>(response)).link?.versionId).toBe(mine.version.id);
+  });
+
+  it('clears a stored sequence id when a sync sends null', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    signedInAs(scenario.owner);
+    await bind(scenario.version.id);
+
+    const response = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${scenario.version.id}/sequence-link`, {
+        method: 'PUT',
+        body: { ...PUT_BODY, sequenceId: null },
+      }),
+      { versionId: scenario.version.id }
+    );
+    expect(response.status).toBe(200);
+    expect(
+      (await db.sequenceLink.findFirst({ where: { versionId: scenario.version.id } }))?.sequenceId
+    ).toBeNull();
+  });
+
+  it('clears a stored sequence id when a sync sends an empty string', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    signedInAs(scenario.owner);
+    await bind(scenario.version.id);
+
+    const response = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${scenario.version.id}/sequence-link`, {
+        method: 'PUT',
+        body: { ...PUT_BODY, sequenceId: '   ' },
+      }),
+      { versionId: scenario.version.id }
+    );
+    expect(response.status).toBe(200);
+    expect(
+      (await db.sequenceLink.findFirst({ where: { versionId: scenario.version.id } }))?.sequenceId
+    ).toBeNull();
+  });
+
+  it('rejects a non-string sequence id instead of quietly keeping the old one', async () => {
+    const scenario = await seedVersion({ visibility: 'PRIVATE' });
+    signedInAs(scenario.owner);
+    await bind(scenario.version.id);
+
+    const response = await callRoute(
+      putSequenceLink,
+      apiRequest(`/api/v1/versions/${scenario.version.id}/sequence-link`, {
+        method: 'PUT',
+        body: { ...PUT_BODY, sequenceId: 123 },
+      }),
+      { versionId: scenario.version.id }
+    );
+    expect(response.status).toBe(400);
+    expect(
+      (await db.sequenceLink.findFirst({ where: { versionId: scenario.version.id } }))?.sequenceId
+    ).toBe('seq-original');
+  });
+
+  it('skips a link whose version no longer exists and finds the live one behind it', async () => {
+    // SequenceLink has no FK to VideoVersion, so a deleted version leaves the
+    // row behind. Without the skip, the loop stops at the dangling row and the
+    // reachable version behind it is never returned.
+    const mine = await seedVersion({ visibility: 'PRIVATE' });
+    const token = await mintApiToken(mine.owner.id);
+    signedInAs(mine.owner);
+    await bind(mine.version.id, { sequenceId: 'seq-dangling' });
+
+    await db.sequenceLink.create({
+      data: {
+        userId: mine.owner.id,
+        versionId: 'version-that-was-deleted',
+        nle: 'premiere',
+        sequenceId: 'seq-dangling',
+        sequenceName: 'Reel 1',
+        startTimecode: '01:00:00:00',
+        frameRateNum: 24,
+        frameRateDen: 1,
+        dropFrame: false,
+        updatedAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const rows = await db.sequenceLink.findMany({
+      where: { userId: mine.owner.id, sequenceId: 'seq-dangling' },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+    });
+    expect(rows[0]?.versionId).toBe('version-that-was-deleted');
+
+    const response = await callRoute(
+      lookupSequenceLink,
+      apiRequest(lookupUrl({ nle: 'premiere', sequenceId: 'seq-dangling' }), {
         headers: { authorization: `Bearer ${token}` },
       }),
       {}

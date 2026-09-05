@@ -4,7 +4,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  autoSyncMayWrite,
   collectSyncedMarkerIds,
+  normalizeSequenceId,
   commentSentinel,
   commentsRemovedFromTimeline,
   describeResolveRefusal,
@@ -528,6 +530,89 @@ describe('sequenceIsBound', () => {
   });
 });
 
+describe('normalizeSequenceId', () => {
+  it('accepts a guid, with or without braces', () => {
+    expect(normalizeSequenceId('a1b2c3d4-e5f6-7890-abcd-ef1234567890')).toBe(
+      'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+    );
+    expect(normalizeSequenceId('{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}')).toBe(
+      '{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}'
+    );
+    expect(normalizeSequenceId('  a1b2c3d4e5f6  ')).toBe('a1b2c3d4e5f6');
+  });
+
+  it('rejects values that stringify the same for every sequence', () => {
+    // The danger is not a junk id, it is a junk id that is IDENTICAL across
+    // sequences: two different sequences then compare equal and the identity
+    // check declares them bound, overriding the heuristic that would refuse.
+    expect(normalizeSequenceId(Promise.resolve('x'))).toBeNull();
+    expect(normalizeSequenceId(new (class Guid {})())).toBeNull();
+    expect(normalizeSequenceId(function getGuid() {})).toBeNull();
+    expect(normalizeSequenceId(true)).toBeNull();
+    expect(normalizeSequenceId({})).toBeNull();
+  });
+
+  it('rejects a value too short to be an opaque id', () => {
+    expect(normalizeSequenceId('42')).toBeNull();
+    expect(normalizeSequenceId(42)).toBeNull();
+    expect(normalizeSequenceId('short')).toBeNull();
+  });
+
+  it('does not throw on an object with no toString', () => {
+    // Premiere's guid is read inside sequenceMeta, which has no try/catch here;
+    // a throw would escape the whole sync.
+    expect(() => normalizeSequenceId(Object.create(null))).not.toThrow();
+    expect(normalizeSequenceId(Object.create(null))).toBeNull();
+  });
+
+  it('rejects nothing at all', () => {
+    expect(normalizeSequenceId(null)).toBeNull();
+    expect(normalizeSequenceId(undefined)).toBeNull();
+    expect(normalizeSequenceId('')).toBeNull();
+  });
+
+  it('accepts an object whose toString is a real id', () => {
+    const guid = { toString: () => 'a1b2c3d4-e5f6-7890' };
+    expect(normalizeSequenceId(guid)).toBe('a1b2c3d4-e5f6-7890');
+  });
+});
+
+describe('autoSyncMayWrite', () => {
+  it('writes only when the server agrees which sequence this is', () => {
+    expect(autoSyncMayWrite([], [], { hostSequenceId: 'seq-1', linkedSequenceId: 'seq-1' })).toBe(
+      true
+    );
+  });
+
+  it('refuses a sequence the server has no link for, however clean the timeline', () => {
+    // sequenceIsBound would fall through to the marker heuristic here, and the
+    // heuristic says "bound" for any sequence at all when nothing has been
+    // synced on this machine. First bind is a deliberate press of Sync.
+    expect(sequenceIsBound([], [], { hostSequenceId: 'seq-new', linkedSequenceId: null })).toBe(
+      true
+    );
+    expect(autoSyncMayWrite([], [], { hostSequenceId: 'seq-new', linkedSequenceId: null })).toBe(
+      false
+    );
+  });
+
+  it('refuses when the server names a different sequence', () => {
+    expect(
+      autoSyncMayWrite([marker('c1')], ['c1'], {
+        hostSequenceId: 'seq-duplicate',
+        linkedSequenceId: 'seq-original',
+      })
+    ).toBe(false);
+  });
+
+  it('keeps the marker heuristic when the host cannot name its sequences', () => {
+    expect(autoSyncMayWrite([marker('c1')], ['c1'], { linkedSequenceId: 'seq-1' })).toBe(true);
+    expect(autoSyncMayWrite([], ['c1'], { linkedSequenceId: 'seq-1' })).toBe(false);
+    expect(autoSyncMayWrite([], [])).toBe(true);
+    expect(autoSyncMayWrite([], ['c1'])).toBe(false);
+  });
+});
+
 describe('describeResolveRefusal', () => {
   it('says nothing when the decision was allowed', () => {
     expect(describeResolveRefusal({ ok: true, ids: ['c1'] })).toBeNull();
@@ -541,7 +626,7 @@ describe('describeResolveRefusal', () => {
       cap: 5,
     });
     expect(message).toContain('2 comment(s)');
-    expect(message).toContain('no review markers');
+    expect(message).toContain('not the one this version is synced to');
   });
 
   it('names the cap when too many resolves were requested', () => {
@@ -574,6 +659,21 @@ describe('parseSseFrames', () => {
     const second = parseSseFrames(`${first.rest}ents\ndata: {"b":2}\n\n`);
     expect(second.events).toEqual([{ event: 'comments', data: '{"b":2}' }]);
     expect(second.rest).toBe('');
+  });
+
+  it('reads CRLF framing, which the spec allows and proxies produce', () => {
+    // Splitting on '\n\n' alone yields zero events here and a buffer that grows
+    // for the life of the connection.
+    expect(parseSseFrames('event: comments\r\ndata: {"v":1}\r\n\r\n')).toEqual({
+      events: [{ event: 'comments', data: '{"v":1}' }],
+      rest: '',
+    });
+  });
+
+  it('reads bare-CR framing', () => {
+    expect(parseSseFrames('event: comments\rdata: {"v":1}\r\r').events).toEqual([
+      { event: 'comments', data: '{"v":1}' },
+    ]);
   });
 
   it('ignores keep-alive comments', () => {
@@ -696,6 +796,8 @@ describe('nle-core.cjs UMD', () => {
       parseSseFrames: typeof parseSseFrames;
       timelineLooksBound: typeof timelineLooksBound;
       sequenceIsBound: typeof sequenceIsBound;
+      autoSyncMayWrite: typeof autoSyncMayWrite;
+      normalizeSequenceId: typeof normalizeSequenceId;
       resolvableIds: typeof resolvableIds;
       commentsRemovedFromTimeline: typeof commentsRemovedFromTimeline;
       DEFAULT_AUTO_RESOLVE_CAP: number;
@@ -736,14 +838,6 @@ describe('nle-core.cjs UMD', () => {
         ['c1']
       )
     ).toBe(false);
-
-    expect(umd.sequenceIsBound([], ['c1'], { hostSequenceId: 's', linkedSequenceId: 's' })).toBe(
-      true
-    );
-    expect(
-      umd.sequenceIsBound([anyMarker], ['c1'], { hostSequenceId: 'dup', linkedSequenceId: 'orig' })
-    ).toBe(false);
-    expect(umd.sequenceIsBound([anyMarker], ['c1'], {})).toBe(true);
 
     expect(umd.resolvableIds({ ok: true, ids: ['c1'] })).toEqual(['c1']);
     expect(
@@ -801,6 +895,53 @@ describe('nle-core.cjs UMD', () => {
       ids: ['c1'],
     });
 
+    // The twin is what the panels load, so every combination the source
+    // distinguishes has to be pinned here too. Byte-equality only proves the
+    // three .cjs copies match each other, not that they match index.ts.
+    const foreignMarker = {
+      ...anyMarker,
+      commentId: 'x9',
+      comments: commentSentinel('x9'),
+    };
+    expect(umd.sequenceIsBound([], ['c1'], { hostSequenceId: 's', linkedSequenceId: 's' })).toBe(
+      true
+    );
+    expect(
+      umd.sequenceIsBound([anyMarker], ['c1'], { hostSequenceId: 'dup', linkedSequenceId: 'orig' })
+    ).toBe(false);
+    // host-only, linked-only and neither must all fall back to the heuristic.
+    expect(umd.sequenceIsBound([anyMarker], ['c1'], { hostSequenceId: 'only' })).toBe(true);
+    expect(umd.sequenceIsBound([foreignMarker], ['c1'], { hostSequenceId: 'only' })).toBe(false);
+    expect(umd.sequenceIsBound([anyMarker], ['c1'], { linkedSequenceId: 'only' })).toBe(true);
+    expect(umd.sequenceIsBound([foreignMarker], ['c1'], { linkedSequenceId: 'only' })).toBe(false);
+    expect(umd.sequenceIsBound([anyMarker], ['c1'], {})).toBe(true);
+
+    // The flagship fix of the identity work, pinned in the copy that runs it:
+    // planTimelineResolves must honour the identity it is handed.
+    expect(
+      umd.planTimelineResolves(two, [stillThere], ['c1', 'c2'], {
+        identity: { hostSequenceId: 'dup', linkedSequenceId: 'orig' },
+      })
+    ).toEqual({
+      ok: false,
+      reason: 'timeline-not-bound',
+      refusedIds: ['c1'],
+      cap: 5,
+    });
+
+    expect(umd.autoSyncMayWrite([], [], { hostSequenceId: 's', linkedSequenceId: 's' })).toBe(true);
+    expect(umd.autoSyncMayWrite([], [], { hostSequenceId: 's', linkedSequenceId: null })).toBe(
+      false
+    );
+    expect(umd.autoSyncMayWrite([anyMarker], ['c1'], {})).toBe(true);
+
+    expect(umd.normalizeSequenceId('a1b2c3d4-e5f6-7890')).toBe('a1b2c3d4-e5f6-7890');
+    expect(umd.normalizeSequenceId(Promise.resolve('x'))).toBeNull();
+    expect(umd.normalizeSequenceId(true)).toBeNull();
+    expect(umd.normalizeSequenceId('42')).toBeNull();
+    expect(umd.normalizeSequenceId(Object.create(null))).toBeNull();
+    expect(umd.autoSyncMayWrite([], ['c1'], {})).toBe(false);
+
     expect(umd.describeResolveRefusal({ ok: true, ids: [] })).toBeNull();
     expect(
       umd.describeResolveRefusal({
@@ -816,6 +957,11 @@ describe('nle-core.cjs UMD', () => {
       rest: 'event: par',
     });
     expect(umd.parseSseFrames(': ping\n\n').events).toEqual([]);
+    // CRLF too: the twin is what the panels run, and a proxy may rewrite framing.
+    expect(umd.parseSseFrames('event: comments\r\ndata: {"v":1}\r\n\r\n')).toEqual({
+      events: [{ event: 'comments', data: '{"v":1}' }],
+      rest: '',
+    });
 
     expect(umd.nextPollDelayMs(0)).toBe(10000);
     expect(umd.nextPollDelayMs(2)).toBe(40000);

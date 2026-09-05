@@ -29,8 +29,12 @@ resolves a comment on the web.
 It follows you between timelines: bring a different timeline forward and the
 plugin asks the app which version it belongs to and fills in the version id, so
 you only enter one on the first bind. Resolve has no way to tell the plugin you
-switched, so this is checked on each poll. A timeline the app does not recognise
-pauses auto-sync rather than being synced to whatever was entered last.
+switched, so this is checked on each poll.
+
+**The first bind is always a manual Sync.** Auto-sync writes only to a timeline
+the app already has a link for, so an unrecognised timeline pauses it rather than
+being synced to whatever was entered last. Enter the version id and press Sync
+markers once; from then on that timeline is followed automatically.
 
 Timelines are matched on Resolve's own timeline id, not on the name. Duplicating
 a timeline copies its markers but gets a fresh id, so a stale duplicate is
@@ -52,9 +56,13 @@ Two refusals protect that gesture, and are reported in the status line:
 ## Latency
 
 The panel holds the review app's comment stream open, so a new comment normally
-lands within a second rather than on the next poll. The stream is only an
-accelerator: where the deployment cannot push (it says so when it opens), the
-10-second poll is what delivers, and nothing is lost.
+lands within a second rather than on the next poll. The server closes each stream
+after about 25 seconds and the panel reconnects, backing off if the server is
+unreachable.
+
+The stream is only an accelerator: where the deployment cannot push it says so
+when the stream opens, the panel stops reconnecting, and the 10-second poll is
+what delivers. Nothing is lost either way.
 
 If the timeline start timecode cannot be parsed, auto-sync pauses rather than
 placing every marker an hour from its comment; a manual sync still proceeds and

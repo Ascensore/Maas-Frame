@@ -15,10 +15,12 @@ const SEQUENCE_ID_MAX = 200;
  * The host's own id for the sequence. Optional: a panel on an older host may not
  * be able to report one, and links written before the column existed have none.
  */
-function parseSequenceId(value: unknown): string | null | undefined {
+function parseSequenceId(value: unknown): string | null | undefined | 'invalid' {
   if (value === undefined) return undefined;
   if (value === null) return null;
-  if (typeof value !== 'string') return undefined;
+  // Anything else is a caller bug. Silently keeping the stored id would hide a
+  // panel sending the wrong shape and leave a stale identity in place.
+  if (typeof value !== 'string') return 'invalid';
   const trimmed = value.trim();
   if (!trimmed) return null;
   return trimmed.slice(0, SEQUENCE_ID_MAX);
@@ -119,6 +121,9 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const sequenceId = parseSequenceId(body?.sequenceId);
 
     if (!nle) return apiErrors.badRequest('nle is required');
+    if (sequenceId === 'invalid') {
+      return apiErrors.badRequest('sequenceId must be a string or null');
+    }
     if (!sequenceName || sequenceName.length > 200) {
       return apiErrors.badRequest('sequenceName is required and must be at most 200 characters');
     }

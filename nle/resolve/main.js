@@ -18,24 +18,26 @@ function parseCustomData(raw) {
  * heuristic.
  */
 function hostSequenceId(timeline) {
-  const raw = timeline.GetUniqueId?.();
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  return trimmed ? trimmed.slice(0, 200) : null;
+  return nleCore.normalizeSequenceId(timeline.GetUniqueId?.());
 }
 
-/** What the server has stored for the version we are syncing. */
+/**
+ * What the server has stored for the version we are syncing. Returns
+ * `{ ok: false }` on a failed read: collapsing that into "no id stored" would
+ * downgrade the identity check to the marker heuristic on any transient blip,
+ * which is what lets a duplicate timeline through.
+ */
 async function storedSequenceId(baseUrl, token, versionId) {
   try {
     const response = await fetch(
       `${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/sequence-link?nle=resolve`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!response.ok) return null;
+    if (!response.ok) return { ok: false, sequenceId: null };
     const payload = await response.json();
-    return payload.data?.sequenceLink?.sequenceId ?? null;
+    return { ok: true, sequenceId: payload.data?.sequenceLink?.sequenceId ?? null };
   } catch {
-    return null;
+    return { ok: false, sequenceId: null };
   }
 }
 
@@ -127,14 +129,18 @@ async function createWindow() {
     // the server, and the record of which comments have markers. Resolve cannot
     // tell us the editor switched timelines, so this check is what stops an
     // unattended pass from acting on somebody else's timeline.
-    const identity = {
-      hostSequenceId: sequenceId,
-      linkedSequenceId: await storedSequenceId(baseUrl, token, versionId),
-    };
-    if (auto && !nleCore.sequenceIsBound(local, previousIds || [], identity)) {
+    const stored = await storedSequenceId(baseUrl, token, versionId);
+    if (auto && !stored.ok) {
+      return {
+        message: 'Auto-sync paused: could not confirm which timeline this version is synced to.',
+        syncedIds: previousIds || [],
+      };
+    }
+    const identity = { hostSequenceId: sequenceId, linkedSequenceId: stored.sequenceId };
+    if (auto && !nleCore.autoSyncMayWrite(local, previousIds || [], identity)) {
       return {
         message:
-          'Auto-sync paused: the open timeline is not the one this version is synced to. Switch back, or press Sync markers to sync this timeline.',
+          'Auto-sync paused: this timeline is not the one this version is synced to. Press Sync markers to bind the timeline you are on.',
         syncedIds: previousIds || [],
       };
     }

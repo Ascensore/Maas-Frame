@@ -25,9 +25,12 @@ resolving one on the review record is not.
 
 It follows you between sequences: bring a different sequence forward and the
 panel asks the app which version that sequence belongs to and selects it, so you
-never touch the dropdown again after the first bind. A sequence the app does not
-recognise selects nothing and auto-sync pauses, rather than syncing an unknown
-sequence to whatever was picked last.
+never touch the dropdown again after the first bind.
+
+**The first bind is always a manual Sync.** Auto-sync writes only to a sequence
+the app already has a link for, so an unrecognised sequence pauses it rather than
+being synced to whatever was picked last. Pick the version and press Sync markers
+once; from then on that sequence is followed automatically.
 
 Sequences are matched on Premiere's own sequence guid, not on the name.
 Duplicating a sequence copies its name and its markers but gets a fresh guid, so
@@ -52,9 +55,13 @@ than performed silently:
 ## Latency
 
 The panel holds the review app's comment stream open, so a new comment normally
-lands within a second rather than on the next poll. The stream is only an
-accelerator: where the deployment cannot push (it says so when it opens), the
-10-second poll is what delivers, and nothing is lost.
+lands within a second rather than on the next poll. The server closes each stream
+after about 25 seconds and the panel reconnects, backing off if the server is
+unreachable.
+
+The stream is only an accelerator: where the deployment cannot push it says so
+when the stream opens, the panel stops reconnecting, and the 10-second poll is
+what delivers. Nothing is lost either way.
 
 Sequence start timecode (often `01:00:00:00`) is read once per sync and added to
 comment times. Review files are treated as starting at `00:00:00:00`. If the

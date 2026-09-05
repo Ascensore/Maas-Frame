@@ -118,6 +118,35 @@ export function commentsRemovedFromTimeline(
  * editor right now (Premiere sequence GUID, Resolve timeline unique id).
  * `linkedSequenceId` is what an earlier sync stored for this version.
  */
+/**
+ * Validates a host-reported sequence id against an allowlist.
+ *
+ * An allowlist, not a denylist of known junk. A value that is bogus but *the
+ * same for every sequence* -- '[object Promise]' from a promise-valued guid, a
+ * stringified accessor, 'true' -- is worse than no id at all: two different
+ * sequences compare equal, and the identity check then declares them bound and
+ * overrides the marker heuristic that would have refused. Anything not
+ * obviously an opaque id returns null, which falls back to markers.
+ */
+const SEQUENCE_ID_RE = /^[A-Za-z0-9._:{}-]{8,200}$/;
+
+export function normalizeSequenceId(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  let value: unknown = raw;
+  if (typeof value !== 'string') {
+    // A null-prototype object has no toString at all; calling it would throw.
+    if (typeof (value as { toString?: unknown })?.toString !== 'function') return null;
+    try {
+      value = String(value);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return SEQUENCE_ID_RE.test(trimmed) ? trimmed : null;
+}
+
 export type SequenceIdentity = {
   hostSequenceId?: string | null;
   linkedSequenceId?: string | null;
@@ -139,6 +168,28 @@ export function sequenceIsBound(
   const host = identity.hostSequenceId ?? null;
   const linked = identity.linkedSequenceId ?? null;
   if (host && linked) return host === linked;
+  return timelineLooksBound(local, previouslySyncedIds);
+}
+
+/**
+ * Whether an *unattended* pass may write to the sequence in front of us.
+ *
+ * Stricter than `sequenceIsBound`. When the host can name the sequence, the
+ * server has to agree by name: a link the server has never recorded means this
+ * sequence was never deliberately bound, and `sequenceIsBound` would otherwise
+ * fall through to the marker heuristic, which says "bound" for any sequence at
+ * all when nothing has been synced on this machine yet. First bind is a
+ * deliberate press of Sync markers, not something a poll decides.
+ *
+ * A host that cannot name its sequences keeps the old heuristic.
+ */
+export function autoSyncMayWrite(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  identity: SequenceIdentity = {}
+): boolean {
+  const host = identity.hostSequenceId ?? null;
+  if (host) return Boolean(identity.linkedSequenceId) && identity.linkedSequenceId === host;
   return timelineLooksBound(local, previouslySyncedIds);
 }
 
@@ -210,7 +261,7 @@ export function describeResolveRefusal(decision: TimelineResolveDecision): strin
   if (decision.ok) return null;
   const count = decision.refusedIds.length;
   if (decision.reason === 'timeline-not-bound') {
-    return `Did not resolve ${count} comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.`;
+    return `Did not resolve ${count} comment(s): the open sequence is not the one this version is synced to. Resolve them in the web app if that was intended.`;
   }
   return `Did not resolve ${count} comment(s): more than the ${decision.cap} allowed in one sync. Resolve them in the web app if that was intended.`;
 }
@@ -227,13 +278,16 @@ export type SseEvent = { event: string; data: string };
  * proxy logs.
  */
 export function parseSseFrames(buffer: string): { events: SseEvent[]; rest: string } {
-  const parts = buffer.split('\n\n');
+  // CRLF is as valid as LF in the SSE spec, and a proxy may rewrite one to the
+  // other. Splitting on '\n\n' alone turns a CRLF stream into zero events and a
+  // buffer that grows for the life of the connection.
+  const parts = buffer.split(/\r\n\r\n|\n\n|\r\r/);
   const rest = parts.pop() ?? '';
   const events: SseEvent[] = [];
   for (const frame of parts) {
     let event = 'message';
     const data: string[] = [];
-    for (const line of frame.split('\n')) {
+    for (const line of frame.split(/\r\n|\n|\r/)) {
       if (line.startsWith(':')) continue; // keep-alive comment
       if (line.startsWith('event:')) event = line.slice('event:'.length).trim();
       else if (line.startsWith('data:')) data.push(line.slice('data:'.length).trim());

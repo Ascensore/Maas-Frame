@@ -219,6 +219,37 @@
     return timelineLooksBound(local, previouslySyncedIds);
   }
 
+  /* Allowlist for host-reported sequence ids. A bogus-but-constant value is
+     worse than none: two sequences would compare equal and the identity check
+     would declare them bound. See normalizeSequenceId in ../core/src/index.ts. */
+  var SEQUENCE_ID_RE = /^[A-Za-z0-9._:{}-]{8,200}$/;
+
+  function normalizeSequenceId(raw) {
+    if (raw === null || raw === undefined) return null;
+    var value = raw;
+    if (typeof value !== 'string') {
+      if (!value || typeof value.toString !== 'function') return null;
+      try {
+        value = String(value);
+      } catch (error) {
+        return null;
+      }
+    }
+    if (typeof value !== 'string') return null;
+    var trimmed = value.trim();
+    return SEQUENCE_ID_RE.test(trimmed) ? trimmed : null;
+  }
+
+  /* Stricter than sequenceIsBound: an unattended pass may only write to a
+     sequence the server has actually recorded a link for. See autoSyncMayWrite
+     in ../core/src/index.ts. */
+  function autoSyncMayWrite(local, previouslySyncedIds, identity) {
+    var host = (identity && identity.hostSequenceId) || null;
+    var linked = (identity && identity.linkedSequenceId) || null;
+    if (host) return Boolean(linked) && linked === host;
+    return timelineLooksBound(local, previouslySyncedIds);
+  }
+
   /* At least one marker this version placed is still on the timeline. See
      timelineLooksBound in ../core/src/index.ts. */
   function timelineLooksBound(local, previouslySyncedIds) {
@@ -256,18 +287,20 @@
     if (decision.ok) return null;
     var count = decision.refusedIds.length;
     if (decision.reason === 'timeline-not-bound') {
-      return 'Did not resolve ' + count + ' comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.';
+      return 'Did not resolve ' + count + ' comment(s): the open sequence is not the one this version is synced to. Resolve them in the web app if that was intended.';
     }
     return 'Did not resolve ' + count + ' comment(s): more than the ' + decision.cap + ' allowed in one sync. Resolve them in the web app if that was intended.';
   }
 
   /* See parseSseFrames in ../core/src/index.ts. */
   function parseSseFrames(buffer) {
-    var parts = String(buffer || '').split('\n\n');
+    /* CRLF is as valid as LF in the SSE spec; splitting on '\n\n' alone turns a
+       CRLF stream into zero events and an ever-growing buffer. */
+    var parts = String(buffer || '').split(/\r\n\r\n|\n\n|\r\r/);
     var rest = parts.pop() || '';
     var events = [];
     for (var i = 0; i < parts.length; i += 1) {
-      var lines = parts[i].split('\n');
+      var lines = parts[i].split(/\r\n|\n|\r/);
       var event = 'message';
       var data = [];
       for (var j = 0; j < lines.length; j += 1) {
@@ -303,6 +336,8 @@
     planIsEmpty: planIsEmpty,
     timelineLooksBound: timelineLooksBound,
     sequenceIsBound: sequenceIsBound,
+    autoSyncMayWrite: autoSyncMayWrite,
+    normalizeSequenceId: normalizeSequenceId,
     resolvableIds: resolvableIds,
     planTimelineResolves: planTimelineResolves,
     describeResolveRefusal: describeResolveRefusal,

@@ -104,7 +104,6 @@
         const identity = await ipcRenderer.invoke('timeline-identity');
         const sequenceId = identity && identity.sequenceId;
         if (!sequenceId || sequenceId === lastBoundSequenceId) return;
-        lastBoundSequenceId = sequenceId;
 
         try {
           const response = await fetch(
@@ -112,14 +111,19 @@
             { headers: { Authorization: `Bearer ${token}` } }
           );
           if (!response.ok) return;
+          // Latch only once the server has answered. Latching first turns a
+          // network blip into "not linked yet" until the editor switches away.
+          lastBoundSequenceId = sequenceId;
           const link = (await response.json()).data?.link;
           if (!link) {
             setStatus('This timeline is not linked to a version yet. Enter one and press Sync markers.');
             return;
           }
+          const previousVersionId = el('versionId').value.trim();
           el('versionId').value = link.versionId;
           saveSettings();
           setStatus(`Following ${link.videoTitle} v${link.versionNumber} for this timeline.`);
+          if (previousVersionId !== link.versionId) restartLiveStream();
         } catch {
           // Leave the current selection alone; the binding gate still protects writes.
         }
@@ -128,48 +132,97 @@
       // Phase 3 accelerator: sync the moment a comment changes rather than
       // waiting out the poll. Read with fetch, not EventSource, because the
       // endpoint authenticates a Bearer header and EventSource cannot send one.
+      //
+      // EventSource also reconnects for free and this does not: the route closes
+      // every stream at its maxDuration, so one read loop buys ~25s and then
+      // goes quiet. Hence the reconnect loop. A generation counter stops it, not
+      // the AbortController, so a host without one cannot strand a live reader.
+      let liveGeneration = 0;
       let liveAbort = null;
 
       const closeLiveStream = () => {
-        if (liveAbort) liveAbort.abort();
+        liveGeneration += 1;
+        if (liveAbort) {
+          try {
+            liveAbort.abort();
+          } catch {
+            // Already aborted.
+          }
+        }
         liveAbort = null;
       };
 
-      const openLiveStream = async () => {
-        closeLiveStream();
-        const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
-        const versionId = el('versionId').value.trim();
-        const token = el('token').value.trim();
-        if (!versionId || !token) return;
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-        const controller = new AbortController();
+      /* One connection. Returns 'ok', 'error', or 'not-listening'. */
+      const readLiveStreamOnce = async (generation, baseUrl, versionId, token) => {
+        const controller = typeof AbortController === 'undefined' ? null : new AbortController();
         liveAbort = controller;
         try {
           const response = await fetch(`${baseUrl}/api/v1/versions/${versionId}/comments/live`, {
             headers: { Authorization: `Bearer ${token}` },
-            signal: controller.signal,
+            signal: controller ? controller.signal : undefined,
           });
           const reader = response.ok && response.body ? response.body.getReader() : null;
-          if (!reader) return;
+          if (!reader) return 'error';
           const decoder = new TextDecoder();
           let buffer = '';
-          while (liveAbort === controller) {
+          while (generation === liveGeneration) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) return 'ok';
             buffer += decoder.decode(value, { stream: true });
             const parsed = core.parseSseFrames(buffer);
             buffer = parsed.rest;
             for (const event of parsed.events) {
+              if (event.event === 'ready') {
+                // This deployment cannot push; reconnecting would burn a request
+                // every 25s to receive nothing. The poll delivers there.
+                try {
+                  if (JSON.parse(event.data).listening === false) {
+                    await reader.cancel().catch(() => undefined);
+                    return 'not-listening';
+                  }
+                } catch {
+                  // Unreadable ready payload: treat the stream as usable.
+                }
+                continue;
+              }
               if (event.event !== 'comments') continue;
               if (!autoOn() || syncInFlight) continue;
               scheduleAuto(0);
             }
           }
+          await reader.cancel().catch(() => undefined);
+          return 'ok';
         } catch {
-          // The stream is optional. The poll keeps delivering either way.
+          return 'error';
         } finally {
           if (liveAbort === controller) liveAbort = null;
         }
+      };
+
+      const openLiveStream = async () => {
+        closeLiveStream();
+        const generation = liveGeneration;
+        const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
+        const versionId = el('versionId').value.trim();
+        const token = el('token').value.trim();
+        if (!versionId || !token) return;
+
+        let failures = 0;
+        while (generation === liveGeneration && autoOn()) {
+          const outcome = await readLiveStreamOnce(generation, baseUrl, versionId, token);
+          if (generation !== liveGeneration) return;
+          if (outcome === 'not-listening') return;
+          failures = outcome === 'ok' ? 0 : failures + 1;
+          if (failures > 0) await delay(core.nextPollDelayMs(failures));
+        }
+      };
+
+      /* The stream is per version, so a rebind has to move it. */
+      const restartLiveStream = () => {
+        if (!autoOn()) return;
+        void openLiveStream();
       };
 
       let autoTimer = null;
@@ -214,6 +267,7 @@
       for (const id of ['baseUrl', 'token', 'versionId']) {
         el(id).addEventListener('change', saveSettings);
       }
+      el('versionId').addEventListener('change', restartLiveStream);
       el('sync').addEventListener('click', async () => {
         if (syncInFlight) return;
         syncInFlight = true;
