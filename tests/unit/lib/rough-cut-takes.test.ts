@@ -11,6 +11,7 @@ import {
   cleanlinessScore,
   coverageOf,
   groupTakes,
+  orderedTokenCoverage,
   rejectedTakeCut,
   replacedTakeCut,
   resolveTakes,
@@ -27,6 +28,7 @@ import {
   trigrams,
 } from '@/lib/rough-cut/text';
 import type { TranscriptSegmentRow } from '@/lib/rough-cut/transcript-source';
+import { acceptedSemanticTakePairs } from '@/lib/rough-cut/semantic-takes';
 
 const EN = fillerWordsFor('en');
 const IT = fillerWordsFor('it');
@@ -113,6 +115,42 @@ describe('text helpers', () => {
 });
 
 describe('groupTakes', () => {
+  it('only accepts semantic removals at confidence 0.85 or higher', () => {
+    const result = acceptedSemanticTakePairs(
+      [
+        { left: 0, right: 1 },
+        { left: 2, right: 3 },
+      ],
+      [
+        { proposal: 0, sameIntent: true, confidence: 0.849, preferred: 1 },
+        { proposal: 1, sameIntent: true, confidence: 0.85, preferred: 0 },
+      ]
+    );
+    expect(result.groups).toEqual([[2, 3]]);
+    expect([...result.preferred]).toEqual([2]);
+    expect(result.reviewWarnings).toBe(1);
+  });
+  it('uses ordered local alignment for paraphrased retakes in tight mode', () => {
+    const first = candidate(0, 'the fastest way to publish your weekly company report today');
+    const second = candidate(
+      12,
+      'the fastest simple way to publish the weekly company report today'
+    );
+
+    expect(
+      orderedTokenCoverage(
+        contentTokens(
+          first.beat.words.map((word) => word.text),
+          EN
+        ),
+        contentTokens(
+          second.beat.words.map((word) => word.text),
+          EN
+        )
+      )
+    ).toBeGreaterThanOrEqual(0.8);
+    expect(groupTakes([first, second], { fillers: EN, orderedAlignment: true })).toEqual([[0, 1]]);
+  });
   it('groups similar beats within the window, transitively, and leaves short lines alone', () => {
     // 0 and 2 share only three trigrams (well under the threshold); both are
     // similar to 1, so the group exists through 1 alone.
@@ -279,6 +317,20 @@ describe('take ranking', () => {
       ['cleanliness', 'energy']
     );
     expect(byRecency[0]?.kept).toEqual([{ index: 2, cuts: [] }]);
+  });
+
+  it('prefers completeness and provider confidence before brief criteria and recency', () => {
+    const incomplete = { ...candidate(30, line), transcriptConfidence: 0.99 };
+    const complete = { ...candidate(0, `${line}.`), transcriptConfidence: 0.7 };
+    expect(rank([complete, incomplete], ['energy', 'cleanliness'])[0]?.kept).toEqual([
+      { index: 0, cuts: [] },
+    ]);
+
+    const lower = { ...candidate(30, line), transcriptConfidence: 0.7 };
+    const higher = { ...candidate(0, line), transcriptConfidence: 0.95 };
+    expect(rank([higher, lower], ['energy', 'cleanliness'])[0]?.kept).toEqual([
+      { index: 0, cuts: [] },
+    ]);
   });
 
   it('follows the ranking order and ignores script_match nobody scored', () => {

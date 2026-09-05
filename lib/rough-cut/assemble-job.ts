@@ -9,6 +9,7 @@ import {
   beatText,
   cutWordsFromBeat,
   detectFalseStarts,
+  takeUnitsFromBeats,
   type Beat,
   type SourceCut,
   type SpeechAnalysis,
@@ -49,6 +50,7 @@ import {
   scriptTakeGroups,
 } from './script';
 import { computeTimecodeOffsets } from './sync';
+import { semanticTakeGroups } from './semantic-takes';
 import {
   groupTakes,
   rejectedTakeCut,
@@ -406,10 +408,10 @@ async function resolveTranscriptSlot(
 async function vadTurnsForClip(
   deps: AssembleDeps,
   wav: string
-): Promise<Array<{ start: number; end: number }>> {
+): Promise<Array<{ start: number; end: number }> | null> {
   const script = join(deps.scriptDir, 'diarize.py');
   const ran = await deps.run('python3', [script, '--vad-only', wav]);
-  if (ran.code !== 0) return [];
+  if (ran.code !== 0) return null;
   const parsed = parseJson(ran.stdout) as { turns?: Array<{ start: number; end: number }> };
   return parsed.turns ?? [];
 }
@@ -441,10 +443,30 @@ async function materialFor(
   const { clip, slot, editorial, warnings } = options;
   let fallbackReason: TranscriptFallbackReason = 'missing';
   if (slot.kind === 'use') {
+    let voiceActivity: Array<{ start: number; end: number }> | undefined;
+    if (editorial.policy.detectNestedTakes) {
+      try {
+        const wav = await options.wavFor(clip.versionId);
+        const detected = await vadTurnsForClip(deps, wav);
+        if (detected) voiceActivity = detected;
+        else {
+          warnings.push({
+            code: 'vad-unavailable',
+            message: `Audio speech detection failed for ${options.label ?? 'a clip'}; pause cuts use transcript timings`,
+          });
+        }
+      } catch {
+        warnings.push({
+          code: 'vad-unavailable',
+          message: `Audio speech detection was unavailable for ${options.label ?? 'a clip'}; pause cuts use transcript timings`,
+        });
+      }
+    }
     const analysis = analyseSpeech(slot.segments, {
       versionId: clip.versionId,
       durationSeconds: clip.durationSeconds,
       policy: editorial.policy,
+      voiceActivity,
     });
     if (analysis.runs.length > 0) {
       const quality = assessTranscriptQuality(slot.segments);
@@ -465,7 +487,7 @@ async function materialFor(
   }
   warnings.push(transcriptFallbackWarning(fallbackReason, options.label, options.waitLimitSeconds));
   const wav = await options.wavFor(clip.versionId);
-  const islands = await vadTurnsForClip(deps, wav);
+  const islands = (await vadTurnsForClip(deps, wav)) ?? [];
   return {
     kind: 'vad',
     clip,
@@ -531,7 +553,9 @@ async function editorialPass(
 
   for (const material of transcripts) {
     cuts.push(...material.analysis.cuts);
-    let beats = material.analysis.beats;
+    let beats = editorial.policy.detectNestedTakes
+      ? takeUnitsFromBeats(material.analysis.beats, fillers)
+      : material.analysis.beats;
     if (editorial.policy.detectFalseStarts) {
       const result = detectFalseStarts(beats, fillers);
       beats = result.beats;
@@ -553,7 +577,18 @@ async function editorialPass(
     for (const material of transcripts) {
       const offset = options.timelineOffsetOf(material.clip);
       for (const beat of beatsByVersion.get(material.clip.versionId) ?? []) {
-        candidates.push({ beat, timelineStart: offset + beat.start, energy: null });
+        const confidences = beat.words.flatMap((word) =>
+          typeof word.confidence === 'number' ? [word.confidence] : []
+        );
+        candidates.push({
+          beat,
+          timelineStart: offset + beat.start,
+          energy: null,
+          transcriptConfidence:
+            confidences.length > 0
+              ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
+              : null,
+        });
       }
     }
     // With a script, a beat is a take of the line it reads however it is
@@ -569,8 +604,42 @@ async function editorialPass(
     const alsoGroup = useScript
       ? scriptTakeGroups(candidates, alignments, TAKE_WINDOW_SECONDS)
       : [];
+    let semanticPreferred = new Set<number>();
+    const agentsEnabled = ['1', 'true', 'yes', 'on'].includes(
+      (process.env.OPENFRAME_ENABLE_AGENTS ?? '').trim().toLowerCase()
+    );
+    const semanticModel = (process.env.OPENFRAME_AGENT_MODEL ?? '').trim();
+    if (
+      editorial.policy.detectNestedTakes &&
+      agentsEnabled &&
+      semanticModel &&
+      semanticModel !== 'mock'
+    ) {
+      try {
+        const semantic = await semanticTakeGroups({ candidates, fillers, model: semanticModel });
+        alsoGroup.push(...semantic.groups);
+        semanticPreferred = semantic.preferred;
+        if (semantic.reviewWarnings > 0) {
+          warnings.push({
+            code: 'semantic-take-review',
+            message: `${semantic.reviewWarnings} possible paraphrased retake${semantic.reviewWarnings === 1 ? '' : 's'} stayed in the program because AI confidence was below 0.85`,
+          });
+        }
+      } catch {
+        warnings.push({
+          code: 'semantic-take-fallback',
+          message: 'AI take comparison failed; lexical take selection was used',
+        });
+      }
+    }
     const longPauseSeconds = editorial.policy.maxKeptGapInsideBeatSeconds;
-    const options_ = { fillers, ranking, longPauseSeconds, alsoGroup };
+    const options_ = {
+      fillers,
+      ranking,
+      longPauseSeconds,
+      alsoGroup,
+      orderedAlignment: editorial.policy.detectNestedTakes,
+    };
     // Loudness costs a wav download and a python call per beat, so it is
     // measured only for beats that are actually in a group.
     if (ranking.includes('energy')) {
@@ -590,6 +659,7 @@ async function editorialPass(
       scriptLines: useScript ? scriptLines : undefined,
       alignments: useScript ? alignments : undefined,
       minShotSeconds: options.minShotSeconds,
+      preferredIndices: semanticPreferred,
     })) {
       for (const entry of resolution.rejected) {
         cuts.push(rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution));

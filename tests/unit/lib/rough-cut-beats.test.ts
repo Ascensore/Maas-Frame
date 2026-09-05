@@ -4,6 +4,7 @@ import {
   beatText,
   cutWordsFromBeat,
   detectFalseStarts,
+  takeUnitsFromBeats,
   wordsFromSegments,
   type Beat,
 } from '@/lib/rough-cut/beats';
@@ -164,12 +165,116 @@ describe('analyseSpeech', () => {
     expect(ranges(high.cuts)).toEqual([[0.7, 1.3]]);
   });
 
+  it('tight compresses eligible pauses to explicit retained durations', () => {
+    const analysis = analyseSpeech(
+      [spoken(0, 'we launched'), spoken(1.7, 'today.'), spoken(3, 'New thought.')],
+      { versionId: 'v', durationSeconds: 4, policy: SILENCE_AGGRESSIVENESS.tight }
+    );
+
+    expect(ranges(analysis.cuts).slice(0, 2)).toEqual([
+      [0.76, 1.64],
+      [2.11, 2.89],
+    ]);
+    expect(analysis.cuts[0]!.summary).toContain('mid-sentence');
+    expect(analysis.cuts[1]!.summary).toContain('between thoughts');
+  });
+
+  it('pins tight detection boundaries and removes all leading and trailing dead air', () => {
+    const midBelow = analyseSpeech([spoken(0, 'hello'), spoken(0.549, 'there')], {
+      versionId: 'v',
+      durationSeconds: 1,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+    });
+    const midAbove = analyseSpeech([spoken(0, 'hello'), spoken(0.551, 'there')], {
+      versionId: 'v',
+      durationSeconds: 1,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+    });
+    expect(midBelow.cuts).toEqual([]);
+    expect(ranges(midAbove.cuts)).toEqual([[0.36, 0.491]]);
+
+    const thoughtBelow = analyseSpeech([spoken(0, 'hello.'), spoken(0.749, 'there')], {
+      versionId: 'v',
+      durationSeconds: 1.1,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+    });
+    const thoughtAbove = analyseSpeech([spoken(0, 'hello.'), spoken(0.751, 'there')], {
+      versionId: 'v',
+      durationSeconds: 1.1,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+    });
+    expect(thoughtBelow.cuts).toEqual([]);
+    expect(ranges(thoughtAbove.cuts)).toEqual([[0.41, 0.641]]);
+
+    const edges = analyseSpeech([spoken(0.46, 'hello')], {
+      versionId: 'v',
+      durationSeconds: 1.22,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+    });
+    expect(ranges(edges.cuts)).toEqual([
+      [0, 0.46],
+      [0.76, 1.22],
+    ]);
+  });
+
+  it('cuts only the part of a transcript gap that local VAD confirms is silent', () => {
+    const segments = [spoken(0, 'we launched'), spoken(1.7, 'the product')];
+    const analysis = analyseSpeech(segments, {
+      versionId: 'v',
+      durationSeconds: 3,
+      policy: SILENCE_AGGRESSIVENESS.tight,
+      voiceActivity: [{ start: 1, end: 1.3 }],
+    });
+
+    expect(ranges(analysis.cuts).slice(0, 2)).toEqual([
+      [0.76, 1],
+      [1.3, 1.64],
+    ]);
+    expect(analysis.cuts.every((cut) => cut.end <= 1 || cut.start >= 1.3)).toBe(true);
+    expect(ranges(analysis.runs)).toEqual([
+      [0, 0.76],
+      [1, 1.3],
+      [1.64, 2.4],
+    ]);
+  });
+
   it('returns nothing for a transcript with no words', () => {
     expect(analyseSpeech([], { versionId: 'v', durationSeconds: 10, policy: MEDIUM })).toEqual({
       beats: [],
       cuts: [],
       runs: [],
     });
+  });
+});
+
+describe('takeUnitsFromBeats', () => {
+  it('finds punctuation-free repeated lines nested in one long beat', () => {
+    const { beats } = analyseSpeech(
+      [
+        spoken(
+          0,
+          'our product makes every weekly report simple our product makes every weekly report simple'
+        ),
+      ],
+      { versionId: 'v', durationSeconds: 8, policy: SILENCE_AGGRESSIVENESS.tight }
+    );
+
+    expect(takeUnitsFromBeats(beats, EN).map(beatText)).toEqual([
+      'our product makes every weekly report simple',
+      'our product makes every weekly report simple',
+    ]);
+  });
+
+  it('splits on an explicit spoken restart even when token openings differ', () => {
+    const { beats } = analyseSpeech(
+      [spoken(0, 'the launch is scheduled for monday sorry we now launch on thursday')],
+      { versionId: 'v', durationSeconds: 8, policy: SILENCE_AGGRESSIVENESS.tight }
+    );
+
+    expect(takeUnitsFromBeats(beats, EN).map(beatText)).toEqual([
+      'the launch is scheduled for monday',
+      'sorry we now launch on thursday',
+    ]);
   });
 });
 

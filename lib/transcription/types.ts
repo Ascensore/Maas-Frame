@@ -2,6 +2,8 @@ export type TranscriptWord = {
   start: number;
   end: number;
   text: string;
+  /** Provider probability when available; preserved in segment JSON. */
+  confidence?: number;
 };
 
 export type TranscriptCue = {

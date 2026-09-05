@@ -26,7 +26,7 @@ import {
 export const EDITORIAL_PROJECT_TYPES = ['ASCENSORE', 'TALKING_HEAD', 'INTERVIEW'] as const;
 export type EditorialProjectType = (typeof EDITORIAL_PROJECT_TYPES)[number];
 
-export const SILENCE_AGGRESSIVENESS_LEVELS = ['low', 'medium', 'high'] as const;
+export const SILENCE_AGGRESSIVENESS_LEVELS = ['low', 'medium', 'high', 'tight'] as const;
 export type SilenceAggressiveness = (typeof SILENCE_AGGRESSIVENESS_LEVELS)[number];
 
 export const BRIEF_RANKING_CRITERIA = ['cleanliness', 'energy', 'script_match'] as const;
@@ -36,11 +36,17 @@ export const TAKE_GROUPING = ['semantic_beat', 'none'] as const;
 export type TakeGrouping = (typeof TAKE_GROUPING)[number];
 
 export type SilencePolicy = {
-  /** Pauses up to this long inside a beat stay in the program. */
+  /** A larger pause is eligible for compression. */
   maxKeptGapInsideBeatSeconds: number;
-  /** Pauses up to this long between beats stay in the program. */
+  /** A larger pause between complete thoughts is eligible for compression. */
   maxKeptGapBetweenBeatsSeconds: number;
+  /** Amount of an eligible mid-sentence pause left in the program. */
+  retainedGapInsideBeatSeconds: number;
+  /** Amount of an eligible between-thought pause left in the program. */
+  retainedGapBetweenBeatsSeconds: number;
   detectFalseStarts: boolean;
+  /** Enables sentence/restart units and ordered local alignment for take selection. */
+  detectNestedTakes: boolean;
 };
 
 /** The numbers behind each aggressiveness level. Without them the templates are not testable. */
@@ -48,17 +54,34 @@ export const SILENCE_AGGRESSIVENESS: Record<SilenceAggressiveness, SilencePolicy
   low: {
     maxKeptGapInsideBeatSeconds: 1.5,
     maxKeptGapBetweenBeatsSeconds: 2.5,
+    retainedGapInsideBeatSeconds: 0,
+    retainedGapBetweenBeatsSeconds: 0,
     detectFalseStarts: false,
+    detectNestedTakes: false,
   },
   medium: {
     maxKeptGapInsideBeatSeconds: 0.8,
     maxKeptGapBetweenBeatsSeconds: 1.5,
+    retainedGapInsideBeatSeconds: 0,
+    retainedGapBetweenBeatsSeconds: 0,
     detectFalseStarts: true,
+    detectNestedTakes: false,
   },
   high: {
     maxKeptGapInsideBeatSeconds: 0.4,
     maxKeptGapBetweenBeatsSeconds: 0.8,
+    retainedGapInsideBeatSeconds: 0,
+    retainedGapBetweenBeatsSeconds: 0,
     detectFalseStarts: true,
+    detectNestedTakes: false,
+  },
+  tight: {
+    maxKeptGapInsideBeatSeconds: 0.25,
+    maxKeptGapBetweenBeatsSeconds: 0.45,
+    retainedGapInsideBeatSeconds: 0.12,
+    retainedGapBetweenBeatsSeconds: 0.22,
+    detectFalseStarts: true,
+    detectNestedTakes: true,
   },
 };
 
@@ -115,7 +138,7 @@ export const BUILTIN_BRIEF_TEMPLATES: Record<EditorialProjectType, EditorialBrie
       'Single-speaker content, often recorded in several takes; keep light intentional pauses.',
     ranking: ['cleanliness', 'energy'],
     layoutBias: null,
-    pacing: { silenceAggressiveness: 'medium' },
+    pacing: { silenceAggressiveness: 'tight' },
     cameraGrammar: { followSpeaker: false, holdWideOnChaos: false },
     markers: { infographicOnJargon: false, brollOnIllustration: true },
     takeSelection: { enabled: true, groupBy: 'semantic_beat' },
@@ -332,7 +355,16 @@ export function briefConfigFromStored(
   value: unknown,
   projectType: EditorialProjectType
 ): EditorialBrief {
-  const template = BUILTIN_BRIEF_TEMPLATES[projectType];
+  // Old rows may be sparse because their missing values were filled from the
+  // built-in template at read time. Preserve the pre-tight talking-head
+  // default for those rows; only newly created/built-in briefs adopt tight.
+  const template =
+    projectType === 'TALKING_HEAD'
+      ? {
+          ...BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD,
+          pacing: { silenceAggressiveness: 'medium' as const },
+        }
+      : BUILTIN_BRIEF_TEMPLATES[projectType];
   const parsed = editorialBriefConfigPatchSchema.safeParse(value);
   if (!parsed.success) return template;
   return mergeBriefConfig(template, { ...parsed.data, projectType });

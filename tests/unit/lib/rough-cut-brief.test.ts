@@ -40,17 +40,34 @@ describe('SILENCE_AGGRESSIVENESS', () => {
       low: {
         maxKeptGapInsideBeatSeconds: 1.5,
         maxKeptGapBetweenBeatsSeconds: 2.5,
+        retainedGapInsideBeatSeconds: 0,
+        retainedGapBetweenBeatsSeconds: 0,
         detectFalseStarts: false,
+        detectNestedTakes: false,
       },
       medium: {
         maxKeptGapInsideBeatSeconds: 0.8,
         maxKeptGapBetweenBeatsSeconds: 1.5,
+        retainedGapInsideBeatSeconds: 0,
+        retainedGapBetweenBeatsSeconds: 0,
         detectFalseStarts: true,
+        detectNestedTakes: false,
       },
       high: {
         maxKeptGapInsideBeatSeconds: 0.4,
         maxKeptGapBetweenBeatsSeconds: 0.8,
+        retainedGapInsideBeatSeconds: 0,
+        retainedGapBetweenBeatsSeconds: 0,
         detectFalseStarts: true,
+        detectNestedTakes: false,
+      },
+      tight: {
+        maxKeptGapInsideBeatSeconds: 0.25,
+        maxKeptGapBetweenBeatsSeconds: 0.45,
+        retainedGapInsideBeatSeconds: 0.12,
+        retainedGapBetweenBeatsSeconds: 0.22,
+        detectFalseStarts: true,
+        detectNestedTakes: true,
       },
     });
   });
@@ -68,7 +85,7 @@ describe('BUILTIN_BRIEF_TEMPLATES', () => {
     });
     expect(BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD).toMatchObject({
       layoutBias: null,
-      pacing: { silenceAggressiveness: 'medium' },
+      pacing: { silenceAggressiveness: 'tight' },
       cameraGrammar: { followSpeaker: false, holdWideOnChaos: false },
       markers: { infographicOnJargon: false, brollOnIllustration: true },
       takeSelection: { enabled: true, groupBy: 'semantic_beat' },
@@ -360,6 +377,15 @@ describe('briefConfigFromStored', () => {
     expect(briefConfigFromStored({ projectType: 'INTERVIEW' }, 'ASCENSORE')).toMatchObject({
       projectType: 'ASCENSORE',
       layoutBias: 'MULTICAM',
+    });
+  });
+
+  it('keeps the pre-tight medium default for sparse saved talking-head briefs', () => {
+    expect(briefConfigFromStored({}, 'TALKING_HEAD').pacing).toEqual({
+      silenceAggressiveness: 'medium',
+    });
+    expect(briefFromSnapshot({ brief: { projectType: 'TALKING_HEAD' } })?.brief.pacing).toEqual({
+      silenceAggressiveness: 'medium',
     });
   });
 });

@@ -30,6 +30,11 @@ export type CreateOutputVideoOptions = {
   objectKey: string;
   originalUrl: string;
   sizeBytes: number;
+  title?: string;
+  duration?: number | null;
+  metadata?: Record<string, unknown>;
+  /** Optional caller-owned row update committed atomically with the new video/version. */
+  onCreated?: (client: PoolClient, output: { videoId: string; versionId: string }) => Promise<void>;
 };
 
 /**
@@ -100,7 +105,7 @@ export async function createOutputVideo(
   options: CreateOutputVideoOptions
 ): Promise<{ videoId: string; versionId: string }> {
   const versionRowId = randomUUID();
-  const title = await outputTitle(deps, options.folderId);
+  const title = options.title ?? (await outputTitle(deps, options.folderId));
   const last = await deps.pool.query(
     `SELECT position FROM videos WHERE "projectId" = $1 ORDER BY position DESC LIMIT 1`,
     [options.projectId]
@@ -113,16 +118,42 @@ export async function createOutputVideo(
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO videos (id, title, position, folder_id, kind, metadata, "projectId", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, 'VIDEO', '{}'::jsonb, $5, NOW(), NOW())`,
-      [videoId, title, nextPosition, options.folderId, options.projectId]
+       VALUES ($1, $2, $3, $4, 'VIDEO', $6::jsonb, $5, NOW(), NOW())`,
+      [
+        videoId,
+        title,
+        nextPosition,
+        options.folderId,
+        options.projectId,
+        JSON.stringify(options.metadata ?? {}),
+      ]
     );
-    await client.query(
-      `INSERT INTO video_versions (
-         id, "versionNumber", "providerId", "videoId", "originalUrl", title, "thumbnailUrl",
-         size_bytes, "isActive", "videoParentId", "createdAt", proxy_status
-       ) VALUES ($1, 1, 'r2', $2, $3, $4, '/placeholder-video-thumbnail.png', $5, true, $6, NOW(), 'SKIPPED')`,
-      [versionRowId, options.objectKey, options.originalUrl, title, options.sizeBytes, videoId]
-    );
+    if (options.duration === undefined) {
+      await client.query(
+        `INSERT INTO video_versions (
+           id, "versionNumber", "providerId", "videoId", "originalUrl", title, "thumbnailUrl",
+           size_bytes, "isActive", "videoParentId", "createdAt", proxy_status
+         ) VALUES ($1, 1, 'r2', $2, $3, $4, '/placeholder-video-thumbnail.png', $5, true, $6, NOW(), 'SKIPPED')`,
+        [versionRowId, options.objectKey, options.originalUrl, title, options.sizeBytes, videoId]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO video_versions (
+           id, "versionNumber", "providerId", "videoId", "originalUrl", title, "thumbnailUrl",
+           size_bytes, "isActive", "videoParentId", "createdAt", proxy_status, duration
+         ) VALUES ($1, 1, 'r2', $2, $3, $4, '/placeholder-video-thumbnail.png', $5, true, $6, NOW(), 'SKIPPED', $7)`,
+        [
+          versionRowId,
+          options.objectKey,
+          options.originalUrl,
+          title,
+          options.sizeBytes,
+          videoId,
+          options.duration,
+        ]
+      );
+    }
+    await options.onCreated?.(client, { videoId, versionId: versionRowId });
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);

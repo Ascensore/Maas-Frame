@@ -34,8 +34,15 @@ export function materializeFfmpegArgs(
     );
   }
 
-  const pairs = segments.map((_segment, index) => `[${index}:v:0][${index}:a:0]`).join('');
-  const filter = `${pairs}concat=n=${segments.length}:v=1:a=1[vout][aout]`;
+  const fades = segments.map((segment, index) => {
+    const duration = Math.max(0, segment.outSeconds - segment.inSeconds);
+    const fade = Math.min(0.005, duration / 2);
+    return `[${index}:a:0]afade=t=in:st=0:d=${formatSeconds(fade)},afade=t=out:st=${formatSeconds(
+      Math.max(0, duration - fade)
+    )}:d=${formatSeconds(fade)}[a${index}]`;
+  });
+  const pairs = segments.map((_segment, index) => `[${index}:v:0][a${index}]`).join('');
+  const filter = `${fades.join(';')};${pairs}concat=n=${segments.length}:v=1:a=1[vout][aout]`;
 
   args.push(
     '-filter_complex',

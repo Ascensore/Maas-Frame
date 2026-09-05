@@ -13,51 +13,52 @@ datasource db {
 // ============================================
 
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String?   @unique
-  emailVerified DateTime?
-  image         String?
-  password      String?   // Hashed password for email/password auth
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  onboardingCompletedAt DateTime?
-  trialEndsAt DateTime?
-  billingTrialConsumedAt DateTime?
-  stripeCustomerId String? @unique
-  stripeSubscriptionId String? @unique
-  stripePriceId String?
-  stripeCurrentPeriodEnd DateTime?
-  stripeCancelAtPeriodEnd Boolean @default(false)
-  stripeCancelAt DateTime?
-  billingAccessEndedAt DateTime?
-  subscriptionStatus BillingSubscriptionStatus @default(FREE)
+  id                      String                    @id @default(cuid())
+  name                    String?
+  email                   String?                   @unique
+  emailVerified           DateTime?
+  image                   String?
+  password                String? // Hashed password for email/password auth
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  onboardingCompletedAt   DateTime?
+  trialEndsAt             DateTime?
+  billingTrialConsumedAt  DateTime?
+  stripeCustomerId        String?                   @unique
+  stripeSubscriptionId    String?                   @unique
+  stripePriceId           String?
+  stripeCurrentPeriodEnd  DateTime?
+  stripeCancelAtPeriodEnd Boolean                   @default(false)
+  stripeCancelAt          DateTime?
+  billingAccessEndedAt    DateTime?
+  subscriptionStatus      BillingSubscriptionStatus @default(FREE)
 
   // Relations
-  accounts           Account[]
-  sessions           Session[]
-  ownedWorkspaces    Workspace[]
-  workspaceMemberships WorkspaceMember[]
-  projects           Project[]
-  comments           Comment[]
-  uploadedVideoAssets VideoAsset[] @relation("VideoAssetUploadedBy")
-  billedVideoAssets   VideoAsset[] @relation("VideoAssetBilledTo")
-  uploadedVideoSubtitles VideoSubtitle[] @relation("VideoSubtitleUploadedBy")
-  billedVideoSubtitles   VideoSubtitle[] @relation("VideoSubtitleBilledTo")
-  projectMemberships ProjectMember[]
-  notificationSetting NotificationSetting?
-  watchProgress      WatchProgress[]
-  feedbackEntries    UserFeedback[]
-  requestedApprovalRequests ApprovalRequest[] @relation("ApprovalRequestsRequestedBy")
-  canceledApprovalRequests  ApprovalRequest[] @relation("ApprovalRequestsCanceledBy")
+  accounts                  Account[]
+  sessions                  Session[]
+  ownedWorkspaces           Workspace[]
+  workspaceMemberships      WorkspaceMember[]
+  projects                  Project[]
+  comments                  Comment[]
+  uploadedVideoAssets       VideoAsset[]         @relation("VideoAssetUploadedBy")
+  billedVideoAssets         VideoAsset[]         @relation("VideoAssetBilledTo")
+  uploadedVideoSubtitles    VideoSubtitle[]      @relation("VideoSubtitleUploadedBy")
+  billedVideoSubtitles      VideoSubtitle[]      @relation("VideoSubtitleBilledTo")
+  projectMemberships        ProjectMember[]
+  notificationSetting       NotificationSetting?
+  watchProgress             WatchProgress[]
+  feedbackEntries           UserFeedback[]
+  requestedApprovalRequests ApprovalRequest[]    @relation("ApprovalRequestsRequestedBy")
+  canceledApprovalRequests  ApprovalRequest[]    @relation("ApprovalRequestsCanceledBy")
   approvalDecisions         ApprovalDecision[]
-  sentInvitations           Invitation[] @relation("InvitationsSentBy")
+  sentInvitations           Invitation[]         @relation("InvitationsSentBy")
   acquisition               UserAcquisition?
   analyticsEvents           AnalyticsEvent[]
   apiTokens                 ApiToken[]
   c2cConnections            C2cConnection[]
-  triggeredAgentRuns        AgentRun[]   @relation("AgentRunsTriggeredBy")
-  requestedRoughCuts        RoughCut[]   @relation("RoughCutsRequestedBy")
+  triggeredAgentRuns        AgentRun[]           @relation("AgentRunsTriggeredBy")
+  requestedRoughCuts        RoughCut[]           @relation("RoughCutsRequestedBy")
+  requestedShortFormBatches ShortFormBatch[]     @relation("ShortFormBatchesRequestedBy")
 
   @@map("users")
 }
@@ -157,7 +158,7 @@ model Session {
   expires      DateTime
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@map("sessions")
 }
 
@@ -177,64 +178,64 @@ model VerificationToken {
 // ---- Workspace ----
 
 model Workspace {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   name        String
-  slug        String   @unique
-  description String?  @db.Text
-  
+  slug        String  @unique
+  description String? @db.Text
+
   // Ownership
-  ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
   // Timestamps
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  members     WorkspaceMember[]
-  projects    Project[]
-  invitations Invitation[]
+  members          WorkspaceMember[]
+  projects         Project[]
+  invitations      Invitation[]
   roughCutProfiles RoughCutProfile[]
   editorialBriefs  EditorialBrief[]
-  
+
   @@index([ownerId])
   @@index([slug])
   @@map("workspaces")
 }
 
 model WorkspaceMember {
-  id          String              @id @default(cuid())
-  role        WorkspaceMemberRole @default(COMMENTATOR)
-  
+  id   String              @id @default(cuid())
+  role WorkspaceMemberRole @default(COMMENTATOR)
+
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  createdAt   DateTime  @default(now())
-  
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
   @@unique([workspaceId, userId])
   @@index([userId])
   @@map("workspace_members")
 }
 
 enum WorkspaceMemberRole {
-  ADMIN        // Full access: manage members, delete projects, etc.
-  COMMENTATOR  // Can view all projects and comment only
+  ADMIN // Full access: manage members, delete projects, etc.
+  COMMENTATOR // Can view all projects and comment only
 }
 
 // ---- Project ----
 
 model Project {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   name        String
-  description String?  @db.Text
-  editScript  String?  @db.Text @map("edit_script")
-  slug        String   @unique // URL-friendly identifier
-  
+  description String? @db.Text
+  editScript  String? @map("edit_script") @db.Text
+  slug        String  @unique // URL-friendly identifier
+
   // Visibility
-  visibility  ProjectVisibility @default(PRIVATE)
+  visibility ProjectVisibility @default(PRIVATE)
 
   // Whether non-admin viewers may download project media
   allowDownloads Boolean @default(false)
@@ -242,35 +243,37 @@ model Project {
   // Visible per-viewer overlay on the review player. This is a leak
   // deterrent, not a forensic encode-time watermark.
   watermarkReviews Boolean @default(false)
-  
+
   // Ownership
-  ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
   // Workspace (required - every project belongs to a workspace)
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Editorial brief for rough cuts at the project root; folders can bind their own
-  editorialBriefId String?
-  editorialBrief   EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
-  /** Free-text editorial guidelines for this project's rough cuts; recorded on each run's brief snapshot. */
-  editorialGuidelines String? @db.Text
-  
+  editorialBriefId    String?
+  editorialBrief      EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
+  /**
+   * Free-text editorial guidelines for this project's rough cuts; recorded on each run's brief snapshot.
+   */
+  editorialGuidelines String?         @db.Text
+
   // Timestamps
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  videos      Video[]
-  members     ProjectMember[]
-  shareLinks  ShareLink[]
-  commentTags CommentTag[]
-  invitations Invitation[]
-  folders     Folder[]
+  videos         Video[]
+  members        ProjectMember[]
+  shareLinks     ShareLink[]
+  commentTags    CommentTag[]
+  invitations    Invitation[]
+  folders        Folder[]
   c2cConnections C2cConnection[]
-  roughCuts   RoughCut[]
-  
+  roughCuts      RoughCut[]
+
   @@index([ownerId])
   @@index([slug])
   @@index([workspaceId])
@@ -280,31 +283,31 @@ model Project {
 }
 
 enum ProjectVisibility {
-  PRIVATE    // Only owner can access
-  INVITE     // Owner + specifically invited members
-  PUBLIC     // Anyone with the link can access
+  PRIVATE // Only owner can access
+  INVITE // Owner + specifically invited members
+  PUBLIC // Anyone with the link can access
 }
 
 model ProjectMember {
-  id        String            @id @default(cuid())
-  role      ProjectMemberRole @default(COMMENTATOR)
-  
+  id   String            @id @default(cuid())
+  role ProjectMemberRole @default(COMMENTATOR)
+
   projectId String
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
-  userId    String
-  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   createdAt DateTime @default(now())
-  
+
   @@unique([projectId, userId])
   @@index([userId])
   @@map("project_members")
 }
 
 enum ProjectMemberRole {
-  ADMIN        // Can manage members, settings, delete videos
-  COMMENTATOR  // Can view and comment only
+  ADMIN // Can manage members, settings, delete videos
+  COMMENTATOR // Can view and comment only
 }
 
 enum InvitationScope {
@@ -325,25 +328,25 @@ enum InvitationStatus {
 }
 
 model Invitation {
-  id          String           @id @default(cuid())
-  token       String           @unique
-  email       String
-  scope       InvitationScope
-  role        InvitationRole
-  status      InvitationStatus @default(PENDING)
+  id     String           @id @default(cuid())
+  token  String           @unique
+  email  String
+  scope  InvitationScope
+  role   InvitationRole
+  status InvitationStatus @default(PENDING)
 
   workspaceId String?
-  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   projectId   String?
-  project     Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   invitedById String
-  invitedBy   User             @relation("InvitationsSentBy", fields: [invitedById], references: [id], onDelete: Cascade)
+  invitedBy   User   @relation("InvitationsSentBy", fields: [invitedById], references: [id], onDelete: Cascade)
 
-  acceptedAt  DateTime?
-  expiresAt   DateTime
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  acceptedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([email, status, expiresAt])
   @@index([workspaceId, status, createdAt(sort: Desc)])
@@ -352,60 +355,61 @@ model Invitation {
 }
 
 model Video {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   title       String
-  description String?  @db.Text
-  
+  description String? @db.Text
+
   // Ordering within project
-  position    Int      @default(0)
+  position Int @default(0)
 
   // Optional folder inside the project. Null is the project root.
-  folderId    String?  @map("folder_id")
-  folder      Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  folderId String? @map("folder_id")
+  folder   Folder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
 
   // What the review page plays: a moving image, a still, a deck, or a mix.
-  kind        ReviewKind @default(VIDEO)
+  kind ReviewKind @default(VIDEO)
 
   // Freeform string fields (scene, take, camera, …). Validated in lib/video-metadata.ts.
-  metadata    Json       @default("{}")
+  metadata Json @default("{}")
 
   // Project relation
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
   // Timestamps
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
   versions         VideoVersion[]
   assets           VideoAsset[]
   shareLinks       ShareLink[]
-  roughCutOutputs  RoughCut[]     @relation("RoughCutOutput")
-  
+  roughCutOutputs  RoughCut[]           @relation("RoughCutOutput")
+  shortFormOutputs ShortFormCandidate[] @relation("ShortFormOutput")
+
   @@index([projectId])
   @@index([folderId])
   @@map("videos")
 }
 
 model Folder {
-  id        String   @id @default(cuid())
-  name      String
-  position  Int      @default(0)
-  projectId String   @map("project_id")
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parentId  String?  @map("parent_id")
-  parent    Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children  Folder[] @relation("FolderTree")
-  videos    Video[]
-  c2cConnections C2cConnection[]
-  roughCutProfileId String? @map("rough_cut_profile_id")
+  id                String           @id @default(cuid())
+  name              String
+  position          Int              @default(0)
+  projectId         String           @map("project_id")
+  project           Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parentId          String?          @map("parent_id")
+  parent            Folder?          @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children          Folder[]         @relation("FolderTree")
+  videos            Video[]
+  c2cConnections    C2cConnection[]
+  roughCutProfileId String?          @map("rough_cut_profile_id")
   roughCutProfile   RoughCutProfile? @relation(fields: [roughCutProfileId], references: [id], onDelete: SetNull)
-  editorialBriefId  String? @map("editorial_brief_id")
-  editorialBrief    EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
-  roughCuts RoughCut[]
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  editorialBriefId  String?          @map("editorial_brief_id")
+  editorialBrief    EditorialBrief?  @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
+  roughCuts         RoughCut[]
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
 
   @@index([projectId])
   @@index([parentId])
@@ -415,50 +419,51 @@ model Folder {
 }
 
 model VideoVersion {
-  id              String   @id @default(cuid())
-  versionNumber   Int      // 1, 2, 3...
-  versionLabel    String?  // Optional label like "Final Cut", "Review Draft"
-  
+  id            String  @id @default(cuid())
+  versionNumber Int // 1, 2, 3...
+  versionLabel  String? // Optional label like "Final Cut", "Review Draft"
+
   // Video source (future-proof for multiple providers)
-  providerId      String   // 'youtube', 'vimeo', 'direct'
-  videoId         String   // Provider-specific video ID
-  originalUrl     String   // Original URL submitted by user
-  
+  providerId  String // 'youtube', 'vimeo', 'direct'
+  videoId     String // Provider-specific video ID
+  originalUrl String // Original URL submitted by user
+
   // Cached metadata
-  title           String?
-  thumbnailUrl    String?
-  duration        Int?     // Duration in seconds
-  sizeBytes       BigInt   @default(0) @map("size_bytes") // R2-hosted video file size
+  title          String?
+  thumbnailUrl   String?
+  duration       Int? // Duration in seconds
+  sizeBytes      BigInt           @default(0) @map("size_bytes") // R2-hosted video file size
   // Rational frame rate as returned by ffprobe (e.g. 30000/1001). Null until probed.
-  frameRateNum    Int?     @map("frame_rate_num")
-  frameRateDen    Int?     @map("frame_rate_den")
-  dropFrame       Boolean  @default(false) @map("drop_frame")
-  startTimecode   String?  @map("start_timecode")
-  recordedAt      DateTime? @map("recorded_at")
-  durationFrames  Int?     @map("duration_frames")
+  frameRateNum   Int?             @map("frame_rate_num")
+  frameRateDen   Int?             @map("frame_rate_den")
+  dropFrame      Boolean          @default(false) @map("drop_frame")
+  startTimecode  String?          @map("start_timecode")
+  recordedAt     DateTime?        @map("recorded_at")
+  durationFrames Int?             @map("duration_frames")
   // H.264 AAC MP4 derived from a camera master so the browser player can play it.
-  proxyStatus     VideoProxyStatus @default(NONE) @map("proxy_status")
-  proxyUrl        String?  @map("proxy_url")
-  
+  proxyStatus    VideoProxyStatus @default(NONE) @map("proxy_status")
+  proxyUrl       String?          @map("proxy_url")
+
   // Status
-  isActive        Boolean  @default(true) // Currently displayed version
-  
+  isActive Boolean @default(true) // Currently displayed version
+
   // Parent video
-  videoParentId   String
-  video           Video    @relation(fields: [videoParentId], references: [id], onDelete: Cascade)
-  
+  videoParentId String
+  video         Video  @relation(fields: [videoParentId], references: [id], onDelete: Cascade)
+
   // Timestamps
-  createdAt       DateTime @default(now())
-  
+  createdAt DateTime @default(now())
+
   // Relations
-  comments        Comment[]
-  watchProgress   WatchProgress[]
+  comments         Comment[]
+  watchProgress    WatchProgress[]
   approvalRequests ApprovalRequest[]
-  subtitles       VideoSubtitle[]
-  transcripts     Transcript[]
-  mediaJobs       MediaJob[]
-  agentRuns       AgentRun[]
-  
+  subtitles        VideoSubtitle[]
+  transcripts      Transcript[]
+  mediaJobs        MediaJob[]
+  agentRuns        AgentRun[]
+  shortFormBatches ShortFormBatch[]  @relation("ShortFormSourceVersion")
+
   @@unique([videoParentId, versionNumber])
   @@index([videoParentId])
   @@index([videoParentId, isActive])
@@ -466,24 +471,24 @@ model VideoVersion {
 }
 
 model VideoAsset {
-  id                       String             @id @default(cuid())
-  videoId                  String
-  video                    Video              @relation(fields: [videoId], references: [id], onDelete: Cascade)
-  kind                     VideoAssetKind
-  provider                 VideoAssetProvider
-  displayName              String
-  sourceUrl                String
-  providerVideoId          String?
-  thumbnailUrl             String?
-  uploadedByUserId         String?
-  uploadedByUser           User?              @relation("VideoAssetUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  id                        String             @id @default(cuid())
+  videoId                   String
+  video                     Video              @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  kind                      VideoAssetKind
+  provider                  VideoAssetProvider
+  displayName               String
+  sourceUrl                 String
+  providerVideoId           String?
+  thumbnailUrl              String?
+  uploadedByUserId          String?
+  uploadedByUser            User?              @relation("VideoAssetUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
   uploadedByGuestIdentityId String?
-  uploadedByGuestName      String?
-  billedUserId             String
-  billedUser               User               @relation("VideoAssetBilledTo", fields: [billedUserId], references: [id], onDelete: Cascade)
-  sizeBytes                BigInt             @default(0) @map("size_bytes")
-  createdAt                DateTime           @default(now())
-  updatedAt                DateTime           @updatedAt
+  uploadedByGuestName       String?
+  billedUserId              String
+  billedUser                User               @relation("VideoAssetBilledTo", fields: [billedUserId], references: [id], onDelete: Cascade)
+  sizeBytes                 BigInt             @default(0) @map("size_bytes")
+  createdAt                 DateTime           @default(now())
+  updatedAt                 DateTime           @updatedAt
 
   @@index([videoId])
   @@index([billedUserId])
@@ -522,89 +527,89 @@ model VideoSubtitle {
 }
 
 model Comment {
-  id            String      @id @default(cuid())
-  
+  id String @id @default(cuid())
+
   // Comment content
-  content       String?     @db.Text  // Text content (null if voice-only)
-  
+  content String? @db.Text // Text content (null if voice-only)
+
   // Timestamp in video (in seconds, with decimal for precision)
-  timestamp     Float       // e.g., 65.5 = 1:05.5
-  timestampEnd  Float?      // Optional end timestamp for range comments
+  timestamp      Float // e.g., 65.5 = 1:05.5
+  timestampEnd   Float? // Optional end timestamp for range comments
   /// Frame index derived on write when the version has a known frame rate.
   timestampFrame Int?
-  
+
   // Voice recording (optional)
-  voiceUrl      String?     // URL to voice recording file
-  voiceDuration Float?      // Duration of voice recording in seconds
-  
+  voiceUrl      String? // URL to voice recording file
+  voiceDuration Float? // Duration of voice recording in seconds
+
   // Image attachment (optional). `imageUrl` is the first image and stays for
   // backwards compatibility; `images` is the full, ordered list.
-  imageUrl      String?     // URL to uploaded image file
-  images        CommentImage[]
-  
+  imageUrl String? // URL to uploaded image file
+  images   CommentImage[]
+
   // Annotation drawing data (JSON string of strokes)
-  annotationData String?    @db.Text
-  
+  annotationData String? @db.Text
+
   // Threading
-  parentId      String?
-  parent        Comment?    @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies       Comment[]   @relation("CommentReplies")
-  
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
   // Status
-  isResolved    Boolean     @default(false)
-  resolvedAt    DateTime?
-  
+  isResolved Boolean   @default(false)
+  resolvedAt DateTime?
+
   // Author (optional for guest comments)
-  authorId      String?
-  author        User?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
-  
+  authorId String?
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
   // Guest author info (when authorId is null)
-  guestName     String?
-  guestEmail    String?
+  guestName       String?
+  guestEmail      String?
   guestIdentityId String?
 
   // Agent authorship. HUMAN is the default so existing rows stay human.
   // Agents are not Users; they stamp source/agentSlug/agentRunId instead.
-  source            CommentSource @default(HUMAN)
-  agentRunId        String?
-  agentRun          AgentRun?     @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
-  agentSlug         String?
-  agentFingerprint  String?
-  
+  source           CommentSource @default(HUMAN)
+  agentRunId       String?
+  agentRun         AgentRun?     @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  agentSlug        String?
+  agentFingerprint String?
+
   // Video version relation
-  versionId     String
-  version       VideoVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  
+  versionId String
+  version   VideoVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
   // Comment tag (colored category)
-  tagId         String?
-  tag           CommentTag? @relation(fields: [tagId], references: [id], onDelete: SetNull)
-  
+  tagId String?
+  tag   CommentTag? @relation(fields: [tagId], references: [id], onDelete: SetNull)
+
   // Timestamps
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([imageUrl])
+  @@unique([voiceUrl])
+  @@unique([agentRunId, agentFingerprint])
   @@index([versionId])
   @@index([parentId])
   @@index([authorId])
   @@index([guestIdentityId])
   @@index([timestamp])
   @@index([tagId])
-  @@unique([imageUrl])
-  @@unique([voiceUrl])
   @@index([versionId, isResolved, timestamp])
   @@index([versionId, parentId, createdAt])
   @@index([agentRunId])
-  @@unique([agentRunId, agentFingerprint])
   @@map("comments")
 }
 
 model CommentImage {
-  id        String   @id @default(cuid())
-  url       String   @unique
-  position  Int      @default(0)
+  id       String @id @default(cuid())
+  url      String @unique
+  position Int    @default(0)
 
   commentId String
-  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  comment   Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -613,78 +618,78 @@ model CommentImage {
 }
 
 model CommentTag {
-  id        String   @id @default(cuid())
-  name      String   // e.g., "Feedback", "Technical", "Urgent"
-  color     String   // Hex color, e.g., "#3B82F6"
-  
+  id    String @id @default(cuid())
+  name  String // e.g., "Feedback", "Technical", "Urgent"
+  color String // Hex color, e.g., "#3B82F6"
+
   // Project relation (tags are per-project)
   projectId String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
   // Position for ordering in UI
-  position  Int      @default(0)
-  
+  position Int @default(0)
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   // Relations
-  comments  Comment[]
-  
+  comments Comment[]
+
   @@unique([projectId, name])
   @@index([projectId])
   @@map("comment_tags")
 }
 
 model ShareLink {
-  id          String          @id @default(cuid())
-  token       String          @unique // Random token for URL
-  
+  id    String @id @default(cuid())
+  token String @unique // Random token for URL
+
   // What is being shared
-  projectId   String
-  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  videoId     String?
-  video       Video?          @relation(fields: [videoId], references: [id], onDelete: Cascade)
-  
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  videoId   String?
+  video     Video?  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
   // Permissions
-  permission  SharePermission @default(VIEW)
-  
+  permission SharePermission @default(VIEW)
+
   // Optional restrictions
-  expiresAt   DateTime?       // Link expiration
-  passwordHash String?        // Bcrypt hash of optional password protection
-  
+  expiresAt    DateTime? // Link expiration
+  passwordHash String? // Bcrypt hash of optional password protection
+
   // Settings
-  allowGuests Boolean         @default(true) // Allow comments without account
-  allowDownloads Boolean      @default(false) // Allow downloading video via share link
-  
+  allowGuests    Boolean @default(true) // Allow comments without account
+  allowDownloads Boolean @default(false) // Allow downloading video via share link
+
   // Timestamps
-  createdAt   DateTime        @default(now())
-  
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, videoId, permission])
   @@index([projectId])
   @@index([videoId])
   @@index([projectId, videoId])
-  @@unique([projectId, videoId, permission])
   @@index([token])
   @@index([token, expiresAt])
   @@map("share_links")
 }
 
 model UserFeedback {
-  id             String            @id @default(cuid())
-  userId         String
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type           FeedbackEntryType
-  category       FeedbackCategory?
-  title          String
-  message        String            @db.Text
-  screenshotUrl  String?
-  screenshots    UserFeedbackScreenshot[]
-  rating         Int?
-  status         FeedbackStatus    @default(NEW)
-  allowShowcase  Boolean           @default(false)
-  showOnLanding  Boolean           @default(false)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id            String                   @id @default(cuid())
+  userId        String
+  user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          FeedbackEntryType
+  category      FeedbackCategory?
+  title         String
+  message       String                   @db.Text
+  screenshotUrl String?
+  screenshots   UserFeedbackScreenshot[]
+  rating        Int?
+  status        FeedbackStatus           @default(NEW)
+  allowShowcase Boolean                  @default(false)
+  showOnLanding Boolean                  @default(false)
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([type, createdAt(sort: Desc)])
@@ -694,19 +699,19 @@ model UserFeedback {
 }
 
 model UserFeedbackScreenshot {
-  id           String       @id @default(cuid())
-  feedbackId   String
-  feedback     UserFeedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
-  url          String
-  createdAt    DateTime     @default(now())
+  id         String       @id @default(cuid())
+  feedbackId String
+  feedback   UserFeedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  url        String
+  createdAt  DateTime     @default(now())
 
   @@index([feedbackId, createdAt(sort: Desc)])
   @@map("user_feedback_screenshots")
 }
 
 enum SharePermission {
-  VIEW       // Can only view
-  COMMENT    // Can view and comment
+  VIEW // Can only view
+  COMMENT // Can view and comment
 }
 
 enum ApprovalRequestStatus {
@@ -723,19 +728,19 @@ enum ApprovalDecisionStatus {
 }
 
 model ApprovalRequest {
-  id           String                @id @default(cuid())
-  versionId    String
-  version      VideoVersion          @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  id            String                @id @default(cuid())
+  versionId     String
+  version       VideoVersion          @relation(fields: [versionId], references: [id], onDelete: Cascade)
   requestedById String
-  requestedBy  User                  @relation("ApprovalRequestsRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
-  message      String?               @db.Text
-  status       ApprovalRequestStatus @default(PENDING)
-  resolvedAt   DateTime?
-  canceledAt   DateTime?
-  canceledById String?
-  canceledBy   User?                 @relation("ApprovalRequestsCanceledBy", fields: [canceledById], references: [id], onDelete: SetNull)
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
+  requestedBy   User                  @relation("ApprovalRequestsRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  message       String?               @db.Text
+  status        ApprovalRequestStatus @default(PENDING)
+  resolvedAt    DateTime?
+  canceledAt    DateTime?
+  canceledById  String?
+  canceledBy    User?                 @relation("ApprovalRequestsCanceledBy", fields: [canceledById], references: [id], onDelete: SetNull)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
 
   decisions ApprovalDecision[]
 
@@ -745,16 +750,16 @@ model ApprovalRequest {
 }
 
 model ApprovalDecision {
-  id         String                 @id @default(cuid())
-  requestId  String
-  request    ApprovalRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  approverId String
-  approver   User                   @relation(fields: [approverId], references: [id], onDelete: Cascade)
-  status     ApprovalDecisionStatus @default(PENDING)
-  note       String?                @db.Text
+  id          String                 @id @default(cuid())
+  requestId   String
+  request     ApprovalRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  approverId  String
+  approver    User                   @relation(fields: [approverId], references: [id], onDelete: Cascade)
+  status      ApprovalDecisionStatus @default(PENDING)
+  note        String?                @db.Text
   respondedAt DateTime?
-  createdAt  DateTime               @default(now())
-  updatedAt  DateTime               @updatedAt
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
 
   @@unique([requestId, approverId])
   @@index([approverId, status])
@@ -766,31 +771,31 @@ model ApprovalDecision {
 // ============================================
 
 model NotificationSetting {
-  id        String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // Telegram webhook
-  telegramChatId    String?   // Chat ID to send messages to (bot token is in TELEGRAM_BOT_TOKEN env var)
-  telegramEnabled   Boolean   @default(false)
+  telegramChatId  String? // Chat ID to send messages to (bot token is in TELEGRAM_BOT_TOKEN env var)
+  telegramEnabled Boolean @default(false)
 
   // Email notifications (uses account email by default)
-  emailEnabled      Boolean   @default(false)
+  emailEnabled Boolean @default(false)
 
   // Event subscriptions
-  onNewVideo        Boolean   @default(true)
-  onNewVersion      Boolean   @default(true)
-  onNewComment      Boolean   @default(true)
-  onNewReply        Boolean   @default(true)
-  onApprovalEvents  Boolean   @default(true)
+  onNewVideo       Boolean @default(true)
+  onNewVersion     Boolean @default(true)
+  onNewComment     Boolean @default(true)
+  onNewReply       Boolean @default(true)
+  onApprovalEvents Boolean @default(true)
 
   // User timezone for notification timestamps (IANA timezone identifier)
-  timezone          String    @default("UTC")
+  timezone String @default("UTC")
 
   // Timestamps
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("notification_settings")
 }
@@ -800,25 +805,25 @@ model NotificationSetting {
 // ============================================
 
 model WatchProgress {
-  id         String   @id @default(cuid())
-  
+  id String @id @default(cuid())
+
   // User relation (optional for guest progress, though typically requires auth)
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   // Video version relation
-  versionId  String
-  version    VideoVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  
+  versionId String
+  version   VideoVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
   // Progress data
-  progress   Float    // Current playback position in seconds
-  duration   Float    // Total video duration at time of save
-  percentage Float    // Progress as percentage (0-100)
-  
+  progress   Float // Current playback position in seconds
+  duration   Float // Total video duration at time of save
+  percentage Float // Progress as percentage (0-100)
+
   // Timestamps
-  updatedAt  DateTime @updatedAt
-  createdAt  DateTime @default(now())
-  
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
   // One progress record per user per version
   @@unique([userId, versionId])
   @@index([userId])
@@ -996,6 +1001,7 @@ enum CommentSource {
 enum AgentRunKind {
   REVIEW
   EDIT
+  SHORTS
 }
 
 enum AgentRunStatus {
@@ -1016,6 +1022,8 @@ enum MediaJobKind {
   IMPORT_DRIVE
   MATERIALIZE_ROUGH_CUT
   BURN_SUBTITLES
+  ANALYZE_SHORT_FORM
+  RENDER_SHORT_FORM
 }
 
 enum RoughCutStatus {
@@ -1125,6 +1133,7 @@ model RoughCut {
   error             String?          @db.Text
   outputVideoId     String?          @map("output_video_id")
   outputVideo       Video?           @relation("RoughCutOutput", fields: [outputVideoId], references: [id], onDelete: SetNull)
+  shortFormBatches  ShortFormBatch[] @relation("RoughCutShortFormBatches")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -1133,6 +1142,83 @@ model RoughCut {
   @@index([outputVideoId])
   @@index([briefId])
   @@map("rough_cuts")
+}
+
+enum ShortFormBatchStatus {
+  PENDING
+  ANALYZING
+  RANKING
+  READY
+  FAILED
+}
+
+enum ShortFormCandidateStatus {
+  PROPOSED
+  REJECTED
+  APPROVED
+  RENDERING
+  READY
+  FAILED
+}
+
+enum ShortFormCropMode {
+  AUTO
+  MANUAL
+  PADDED
+}
+
+model ShortFormBatch {
+  id              String               @id @default(cuid())
+  roughCutId      String               @map("rough_cut_id")
+  roughCut        RoughCut             @relation("RoughCutShortFormBatches", fields: [roughCutId], references: [id], onDelete: Cascade)
+  sourceVersionId String               @map("source_version_id")
+  sourceVersion   VideoVersion         @relation("ShortFormSourceVersion", fields: [sourceVersionId], references: [id], onDelete: Cascade)
+  requestedById   String               @map("requested_by_id")
+  requestedBy     User                 @relation("ShortFormBatchesRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+  agentRunId      String?              @unique @map("agent_run_id")
+  agentRun        AgentRun?            @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  status          ShortFormBatchStatus @default(PENDING)
+  config          Json
+  warnings        Json?
+  error           String?              @db.Text
+  candidates      ShortFormCandidate[]
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  @@index([roughCutId, createdAt(sort: Desc)])
+  @@index([sourceVersionId, status])
+  @@map("short_form_batches")
+}
+
+model ShortFormCandidate {
+  id             String                   @id @default(cuid())
+  batchId        String                   @map("batch_id")
+  batch          ShortFormBatch           @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  rank           Int
+  sourceStartSec Float                    @map("source_start_sec")
+  sourceEndSec   Float                    @map("source_end_sec")
+  score          Float
+  scores         Json
+  rationale      String?                  @db.Text
+  title          String
+  socialCaption  String                   @default("") @map("social_caption") @db.Text
+  hashtags       Json                     @default("[]")
+  cropMode       ShortFormCropMode        @default(AUTO) @map("crop_mode")
+  cropTrack      Json?                    @map("crop_track")
+  focusX         Float?                   @map("focus_x")
+  focusY         Float?                   @map("focus_y")
+  captionStyle   Json                     @map("caption_style")
+  status         ShortFormCandidateStatus @default(PROPOSED)
+  outputVideoId  String?                  @map("output_video_id")
+  outputVideo    Video?                   @relation("ShortFormOutput", fields: [outputVideoId], references: [id], onDelete: SetNull)
+  error          String?                  @db.Text
+  createdAt      DateTime                 @default(now()) @map("created_at")
+  updatedAt      DateTime                 @updatedAt @map("updated_at")
+
+  @@unique([batchId, rank])
+  @@index([batchId, status])
+  @@index([outputVideoId])
+  @@map("short_form_candidates")
 }
 
 enum MediaJobStatus {
@@ -1225,24 +1311,25 @@ model MediaJob {
 }
 
 model AgentRun {
-  id            String         @id @default(cuid())
-  versionId     String         @map("version_id")
-  version       VideoVersion   @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  kind          AgentRunKind
-  agentSlug     String         @map("agent_slug")
-  status        AgentRunStatus @default(PENDING)
-  model         String
-  triggeredById String?        @map("triggered_by_id")
-  triggeredBy   User?          @relation("AgentRunsTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
-  payload       Json?
-  result        Json?
-  error         String?        @db.Text
-  attempts      Int            @default(0)
-  startedAt     DateTime?      @map("started_at")
-  finishedAt    DateTime?      @map("finished_at")
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @updatedAt @map("updated_at")
-  comments      Comment[]
+  id             String          @id @default(cuid())
+  versionId      String          @map("version_id")
+  version        VideoVersion    @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  kind           AgentRunKind
+  agentSlug      String          @map("agent_slug")
+  status         AgentRunStatus  @default(PENDING)
+  model          String
+  triggeredById  String?         @map("triggered_by_id")
+  triggeredBy    User?           @relation("AgentRunsTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  payload        Json?
+  result         Json?
+  error          String?         @db.Text
+  attempts       Int             @default(0)
+  startedAt      DateTime?       @map("started_at")
+  finishedAt     DateTime?       @map("finished_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  comments       Comment[]
+  shortFormBatch ShortFormBatch?
 
   @@index([status, createdAt])
   @@index([versionId, status])
@@ -1250,22 +1337,22 @@ model AgentRun {
 }
 
 model Transcript {
-  id                   String            @id @default(cuid())
-  versionId            String            @map("version_id")
-  version              VideoVersion      @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  language             String            @default("und")
-  provider             String
-  status               TranscriptStatus  @default(PENDING)
-  searchText           String            @default("") @db.Text @map("search_text")
-  searchVector         Unsupported("tsvector")? @map("search_vector")
-  error                String?           @db.Text
-  translationLanguage  String?           @map("translation_language")
-  translationStatus    TranscriptStatus? @map("translation_status")
-  translationError     String?           @db.Text @map("translation_error")
-  translatedTexts      Json?             @map("translated_texts")
-  createdAt            DateTime          @default(now()) @map("created_at")
-  updatedAt            DateTime          @updatedAt @map("updated_at")
-  segments             TranscriptSegment[]
+  id                  String                   @id @default(cuid())
+  versionId           String                   @map("version_id")
+  version             VideoVersion             @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  language            String                   @default("und")
+  provider            String
+  status              TranscriptStatus         @default(PENDING)
+  searchText          String                   @default("") @map("search_text") @db.Text
+  searchVector        Unsupported("tsvector")? @map("search_vector")
+  error               String?                  @db.Text
+  translationLanguage String?                  @map("translation_language")
+  translationStatus   TranscriptStatus?        @map("translation_status")
+  translationError    String?                  @map("translation_error") @db.Text
+  translatedTexts     Json?                    @map("translated_texts")
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+  segments            TranscriptSegment[]
 
   @@unique([versionId, language])
   @@index([versionId])
@@ -1289,10 +1376,10 @@ model TranscriptSegment {
 }
 
 model SequenceLink {
-  id        String @id @default(cuid())
-  userId    String @map("user_id")
-  versionId String @map("version_id")
-  nle       String
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  versionId     String   @map("version_id")
+  nle           String
   /// The host's own id for the sequence or timeline (Premiere sequence GUID,
   /// Resolve timeline unique id). Duplicating a sequence produces a new one, so
   /// unlike sequenceName this distinguishes a stale duplicate from the original.
