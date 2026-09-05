@@ -209,6 +209,16 @@
     return pad(hours) + ':' + pad(minutes) + ':' + pad(secs) + sep + pad(frames);
   }
 
+  /* Identity beats the marker heuristic when both sides can name the sequence:
+     a duplicate copies markers but gets a fresh id. See sequenceIsBound in
+     ../core/src/index.ts. */
+  function sequenceIsBound(local, previouslySyncedIds, identity) {
+    var host = (identity && identity.hostSequenceId) || null;
+    var linked = (identity && identity.linkedSequenceId) || null;
+    if (host && linked) return host === linked;
+    return timelineLooksBound(local, previouslySyncedIds);
+  }
+
   /* At least one marker this version placed is still on the timeline. See
      timelineLooksBound in ../core/src/index.ts. */
   function timelineLooksBound(local, previouslySyncedIds) {
@@ -230,7 +240,7 @@
     var previous = previouslySyncedIds || [];
     var ids = commentsRemovedFromTimeline(remote, local, previous);
     if (ids.length === 0) return { ok: true, ids: [] };
-    if (!timelineLooksBound(local, previous)) {
+    if (!sequenceIsBound(local, previous, options && options.identity)) {
       return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap: cap };
     }
     if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap: cap };
@@ -249,6 +259,28 @@
       return 'Did not resolve ' + count + ' comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.';
     }
     return 'Did not resolve ' + count + ' comment(s): more than the ' + decision.cap + ' allowed in one sync. Resolve them in the web app if that was intended.';
+  }
+
+  /* See parseSseFrames in ../core/src/index.ts. */
+  function parseSseFrames(buffer) {
+    var parts = String(buffer || '').split('\n\n');
+    var rest = parts.pop() || '';
+    var events = [];
+    for (var i = 0; i < parts.length; i += 1) {
+      var lines = parts[i].split('\n');
+      var event = 'message';
+      var data = [];
+      for (var j = 0; j < lines.length; j += 1) {
+        var line = lines[j];
+        if (line.charAt(0) === ':') continue;
+        if (line.indexOf('event:') === 0) event = line.slice(6).trim();
+        else if (line.indexOf('data:') === 0) data.push(line.slice(5).trim());
+      }
+      if (data.length > 0 || event !== 'message') {
+        events.push({ event: event, data: data.join('\n') });
+      }
+    }
+    return { events: events, rest: rest };
   }
 
   function nextPollDelayMs(consecutiveFailures, baseMs, maxMs) {
@@ -270,10 +302,12 @@
     AUTO_SYNC_MAX_BACKOFF_MS: AUTO_SYNC_MAX_BACKOFF_MS,
     planIsEmpty: planIsEmpty,
     timelineLooksBound: timelineLooksBound,
+    sequenceIsBound: sequenceIsBound,
     resolvableIds: resolvableIds,
     planTimelineResolves: planTimelineResolves,
     describeResolveRefusal: describeResolveRefusal,
     nextPollDelayMs: nextPollDelayMs,
+    parseSseFrames: parseSseFrames,
     commentSentinel: commentSentinel,
     parseSentinel: parseSentinel,
     commentLabel: commentLabel,

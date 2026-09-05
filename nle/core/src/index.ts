@@ -112,6 +112,37 @@ export function commentsRemovedFromTimeline(
 }
 
 /**
+ * What the host and the server each believe the sequence is.
+ *
+ * `hostSequenceId` is what the NLE reports for the sequence in front of the
+ * editor right now (Premiere sequence GUID, Resolve timeline unique id).
+ * `linkedSequenceId` is what an earlier sync stored for this version.
+ */
+export type SequenceIdentity = {
+  hostSequenceId?: string | null;
+  linkedSequenceId?: string | null;
+};
+
+/**
+ * Whether the sequence in front of us is the one this version is synced to.
+ *
+ * When both sides can name the sequence, that answer is exact and settles it.
+ * Otherwise this falls back to the marker heuristic, which cannot tell an
+ * original from a duplicate: duplicating a sequence copies its markers but gets
+ * a fresh id, so a stale duplicate looks bound by markers alone.
+ */
+export function sequenceIsBound(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  identity: SequenceIdentity = {}
+): boolean {
+  const host = identity.hostSequenceId ?? null;
+  const linked = identity.linkedSequenceId ?? null;
+  if (host && linked) return host === linked;
+  return timelineLooksBound(local, previouslySyncedIds);
+}
+
+/**
  * Whether the markers in front of us plausibly belong to the version being
  * synced: at least one marker this version placed is still on the timeline.
  *
@@ -151,14 +182,14 @@ export function planTimelineResolves(
   remote: RemoteComment[],
   local: LocalMarker[],
   previouslySyncedIds: readonly string[],
-  options: { cap?: number } = {}
+  options: { cap?: number; identity?: SequenceIdentity } = {}
 ): TimelineResolveDecision {
   const cap = options.cap ?? DEFAULT_AUTO_RESOLVE_CAP;
   const ids = commentsRemovedFromTimeline(remote, local, previouslySyncedIds);
   // ids is a subset of previouslySyncedIds, so reaching here means both are
   // non-empty and the binding check below is the only thing left to decide.
   if (ids.length === 0) return { ok: true, ids: [] };
-  if (!timelineLooksBound(local, previouslySyncedIds)) {
+  if (!sequenceIsBound(local, previouslySyncedIds, options.identity)) {
     return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap };
   }
   if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap };
@@ -182,6 +213,34 @@ export function describeResolveRefusal(decision: TimelineResolveDecision): strin
     return `Did not resolve ${count} comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.`;
   }
   return `Did not resolve ${count} comment(s): more than the ${decision.cap} allowed in one sync. Resolve them in the web app if that was intended.`;
+}
+
+export type SseEvent = { event: string; data: string };
+
+/**
+ * Pulls whole SSE frames out of a growing buffer, returning the trailing
+ * partial frame for the next read.
+ *
+ * A panel reads the live stream with `fetch` rather than `EventSource` because
+ * the endpoint authenticates a Bearer header, and EventSource cannot send one —
+ * the alternative is a token in the query string, which ends up in server and
+ * proxy logs.
+ */
+export function parseSseFrames(buffer: string): { events: SseEvent[]; rest: string } {
+  const parts = buffer.split('\n\n');
+  const rest = parts.pop() ?? '';
+  const events: SseEvent[] = [];
+  for (const frame of parts) {
+    let event = 'message';
+    const data: string[] = [];
+    for (const line of frame.split('\n')) {
+      if (line.startsWith(':')) continue; // keep-alive comment
+      if (line.startsWith('event:')) event = line.slice('event:'.length).trim();
+      else if (line.startsWith('data:')) data.push(line.slice('data:'.length).trim());
+    }
+    if (data.length > 0 || event !== 'message') events.push({ event, data: data.join('\n') });
+  }
+  return { events, rest };
 }
 
 /** Exponential backoff for the auto-sync poll, so a down server is not hammered. */

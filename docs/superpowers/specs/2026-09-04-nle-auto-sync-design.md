@@ -1,17 +1,16 @@
 # Automatic delivery of web comments into open Premiere / Resolve projects
 
-Status: Phases 0 and 1 shipped. Phases 2 and 3 not started.
+Status: all four phases shipped.
 
 - **Phase 0 (shipped)** — the guards in "Write safety" below.
 - **Phase 1 (shipped)** — an _Auto-sync new comments_ toggle in both panels,
   off by default, polling every 10s with backoff and visibility pausing. It runs
   the read direction only; write-back stays on the Sync button, per the open
   question answered below.
-- **Phase 2 (not started)** — automatic binding of the open sequence to a version.
-  Until it lands, auto-sync follows whichever version is selected in the panel.
-  `timelineLooksBound` is a proxy for identity, not identity itself; see
-  "Residual risk" below for what it still does not catch.
-- **Phase 3 (not started)** — push accelerator.
+- **Phase 2 (shipped)** — the panels identify the open sequence by the host's own
+  id and follow the editor between sequences without the dropdown.
+- **Phase 3 (shipped)** — a bearer-authenticated live stream the panels hold open,
+  so a comment lands as soon as it is written rather than on the next poll.
 
 ## The short version
 
@@ -227,23 +226,58 @@ rebind on `SequenceEvent.ACTIVATED` (Premiere) and on timeline-identity change
 v1 live endpoint under `withApiAuth`. Self-hosted only; note the Vercel
 limitation in the panel UI rather than pretending latency is uniform.
 
-## Residual risk that Phase 2 is still needed for
+## Phase 2: identity, and the duplicate-sequence hole it closes
 
-`timelineLooksBound` asks whether at least one marker this version placed is
-still on the timeline. That is a proxy for "this is the right sequence", and one
-case defeats it: **duplicating a sequence copies its markers**. An older
-duplicate in front of the panel therefore reads as bound, while every comment
-added since the duplicate was made reads as deleted from it:
+`timelineLooksBound` asked whether at least one marker this version placed was
+still on the timeline. That is a proxy for "this is the right sequence", and
+**duplicating a sequence copies its markers**, so a stale duplicate read as bound
+while every comment added since the copy read as deleted from it — five resolves
+per press, against the wrong sequence.
 
-```
-planTimelineResolves(6 open comments, [marker c6], previously synced c1..c6)
-  -> { ok: true, ids: [c1..c5] }
-```
+Identity settles what the heuristic could only guess at. Both hosts can name the
+sequence in front of the editor, and a duplicate gets a fresh name:
 
-The cap holds this to five per press and auto-sync never resolves at all, so the
-exposure is a manual Sync on a stale duplicate. Only the sequence-identity check
-in Phase 2 — a version sentinel written into the project — actually closes it.
-Until then this is accepted, not solved.
+| Host     | Id                       | Duplicating gives |
+| -------- | ------------------------ | ----------------- |
+| Premiere | `sequence.guid`          | a new guid        |
+| Resolve  | `timeline.GetUniqueId()` | a new id          |
+
+`SequenceLink.sequenceId` stores it, and `sequenceIsBound()` compares the two
+when both sides can name the sequence, falling back to the marker heuristic when
+either cannot — an older host, or a link written before the column existed. The
+duplicate case is now refused rather than accepted, and is covered by a test that
+asserts the heuristic says bound and identity says otherwise.
+
+### Following the editor
+
+`GET /api/v1/sequence-link/lookup?nle=&sequenceId=` answers "which version is
+this sequence?", so a panel binds itself instead of asking for a dropdown pick.
+Premiere rebinds on the host's own sequence-activated event and on every poll
+tick; Resolve, which has no event surface, rebinds on the tick. A sequence the
+server does not recognise selects nothing and the binding gate pauses, rather
+than syncing an unknown sequence to whatever was picked last.
+
+The lookup re-checks project access on every read. A link row outlives the access
+that created it, and the row is written by the caller — without the re-check, a
+row naming a version the caller can no longer reach would keep handing back its
+id.
+
+## Phase 3: the push accelerator
+
+`GET /api/v1/versions/[versionId]/comments/live` is the existing SSE route with
+`withApiAuth` in place of `auth()`, which was the only reason a panel could not
+use the original. The panels read it with `fetch`, not `EventSource`: the
+endpoint authenticates a Bearer header, `EventSource` cannot send one, and the
+alternative is a token in the query string where it lands in server and proxy
+logs. `parseSseFrames()` pulls whole frames out of the growing buffer and holds
+back the partial one, since a frame split across reads would otherwise be
+dropped or misread.
+
+The stream is an accelerator and never the delivery mechanism. Its `ready` event
+carries `listening`, which is false where `shouldListenForCommentLive()` is —
+Vercel, where holding a LISTEN per stream exhausted the session pooler. A panel
+that sees `listening: false` keeps polling rather than trusting a stream that
+will stay silent. The poll runs regardless; the stream only removes latency.
 
 ## Server-side changes this implies
 
@@ -268,3 +302,15 @@ Phases 0 and 1 need **no server changes at all**.
    still unknown, and free Resolve cannot script from outside the app at all —
    those editors stay on the EDL import path, which no amount of this work
    changes.
+
+## What is still not covered
+
+- **Neither host's id has been exercised against a real application.** The
+  accessors are written defensively (Premiere's guid is read through several
+  property names and rejects an `[object Object]` stringification; Resolve's
+  `GetUniqueId` is optional-called), and a host that returns nothing falls back
+  to the marker heuristic rather than breaking. But "falls back correctly" is the
+  tested claim, not "reads the right id" — that needs a session in front of the
+  real applications.
+- The `listening: false` path is tested by forcing the flag, not by running on
+  Vercel.

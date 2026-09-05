@@ -11,6 +11,34 @@ function parseCustomData(raw) {
   }
 }
 
+/**
+ * Resolve's own id for the timeline. Duplicating a timeline copies its markers
+ * but gets a fresh id, so this is what tells an original from a stale duplicate.
+ * Older hosts without GetUniqueId return null and fall back to the marker
+ * heuristic.
+ */
+function hostSequenceId(timeline) {
+  const raw = timeline.GetUniqueId?.();
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed.slice(0, 200) : null;
+}
+
+/** What the server has stored for the version we are syncing. */
+async function storedSequenceId(baseUrl, token, versionId) {
+  try {
+    const response = await fetch(
+      `${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/sequence-link?nle=resolve`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload.data?.sequenceLink?.sequenceId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function persistSequenceLink(baseUrl, token, versionId, body) {
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/sequence-link`, {
@@ -40,6 +68,17 @@ async function createWindow() {
   });
   await win.loadFile(path.join(__dirname, 'index.html'));
 
+  // The renderer drives the loop but only the main process can talk to Resolve,
+  // so identifying the front timeline has to come back across IPC.
+  ipcMain.handle('timeline-identity', async () => {
+    const resolve = app.resolve;
+    if (!resolve) return null;
+    const project = resolve.GetProjectManager()?.GetCurrentProject();
+    const timeline = project?.GetCurrentTimeline();
+    if (!timeline) return null;
+    return { sequenceId: hostSequenceId(timeline), sequenceName: timeline.GetName?.() || 'Untitled' };
+  });
+
   ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds, auto }) => {
     const resolve = app.resolve;
     if (!resolve) throw new Error('Resolve scripting API is unavailable. Studio is required.');
@@ -64,6 +103,7 @@ async function createWindow() {
     }
     const offsetSeconds = parsedOffset === null ? 0 : parsedOffset;
     const sequenceName = timeline.GetName?.() || 'Untitled';
+    const sequenceId = hostSequenceId(timeline);
     const rational = nleCore.fpsToRational(fps);
 
     const existing = timeline.GetMarkers() || {};
@@ -87,10 +127,14 @@ async function createWindow() {
     // the server, and the record of which comments have markers. Resolve cannot
     // tell us the editor switched timelines, so this check is what stops an
     // unattended pass from acting on somebody else's timeline.
-    if (auto && !nleCore.timelineLooksBound(local, previousIds || [])) {
+    const identity = {
+      hostSequenceId: sequenceId,
+      linkedSequenceId: await storedSequenceId(baseUrl, token, versionId),
+    };
+    if (auto && !nleCore.sequenceIsBound(local, previousIds || [], identity)) {
       return {
         message:
-          'Auto-sync paused: the open timeline has none of this version\u2019s review markers. Switch back, or press Sync markers to sync this timeline.',
+          'Auto-sync paused: the open timeline is not the one this version is synced to. Switch back, or press Sync markers to sync this timeline.',
         syncedIds: previousIds || [],
       };
     }
@@ -100,6 +144,7 @@ async function createWindow() {
       ? null
       : await persistSequenceLink(baseUrl, token, versionId, {
           nle: 'resolve',
+          sequenceId,
           sequenceName: String(sequenceName).slice(0, 200),
           startTimecode: startTc,
           frameRateNum: rational.num,
@@ -118,7 +163,7 @@ async function createWindow() {
     // is recoverable, resolving one on the review record is not.
     const decision = auto
       ? { ok: true, ids: [] }
-      : nleCore.planTimelineResolves(comments, local, previousIds || []);
+      : nleCore.planTimelineResolves(comments, local, previousIds || [], { identity });
     const refusal = nleCore.describeResolveRefusal(decision);
     const resolvedIds = [];
     // Read through resolvableIds: a refusal's ids are the set that was refused.

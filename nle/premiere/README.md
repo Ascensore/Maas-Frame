@@ -23,10 +23,16 @@ timeline, and markers for comments resolved on the web are removed. It never
 resolves a comment on the web. Putting a note on a timeline is recoverable;
 resolving one on the review record is not.
 
-It also pauses itself whenever the sequence in front of it holds none of this
-version's review markers — after you switch sequences, say — rather than writing
-to whichever sequence happens to be open. Switch back, or press **Sync markers**
-to deliberately sync the sequence you are on.
+It follows you between sequences: bring a different sequence forward and the
+panel asks the app which version that sequence belongs to and selects it, so you
+never touch the dropdown again after the first bind. A sequence the app does not
+recognise selects nothing and auto-sync pauses, rather than syncing an unknown
+sequence to whatever was picked last.
+
+Sequences are matched on Premiere's own sequence guid, not on the name.
+Duplicating a sequence copies its name and its markers but gets a fresh guid, so
+a stale duplicate is recognised as a different sequence rather than synced as the
+original.
 
 So the resolve gesture stays manual: **delete a review marker and press Sync
 markers** to resolve that comment on the web. The panel will not put that marker
@@ -42,6 +48,13 @@ than performed silently:
   the web app.
 - More than five resolves in one sync is refused as implausible for one editing
   session.
+
+## Latency
+
+The panel holds the review app's comment stream open, so a new comment normally
+lands within a second rather than on the next poll. The stream is only an
+accelerator: where the deployment cannot push (it says so when it opens), the
+10-second poll is what delivers, and nothing is lost.
 
 Sequence start timecode (often `01:00:00:00`) is read once per sync and added to
 comment times. Review files are treated as starting at `00:00:00:00`. If the

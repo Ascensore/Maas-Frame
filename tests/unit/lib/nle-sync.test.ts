@@ -10,10 +10,12 @@ import {
   describeResolveRefusal,
   fpsToRational,
   resolvableIds,
+  sequenceIsBound,
   timelineLooksBound,
   nearestResolveColor,
   nextPollDelayMs,
   parseSentinel,
+  parseSseFrames,
   parseSyncedMarkerIds,
   planIsEmpty,
   planTimelineResolves,
@@ -364,6 +366,27 @@ describe('planTimelineResolves', () => {
     expect(decision).toEqual({ ok: true, ids: ['c1'] });
   });
 
+  it('refuses a duplicate sequence even though its copied markers look bound', () => {
+    const many = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'];
+    const local = [marker('c6')];
+    // Without the identity this is the documented residual risk: five resolves
+    // against a stale duplicate, allowed because a copied marker survived.
+    expect(planTimelineResolves(many.map(comment), local, many)).toEqual({
+      ok: true,
+      ids: ['c1', 'c2', 'c3', 'c4', 'c5'],
+    });
+    expect(
+      planTimelineResolves(many.map(comment), local, many, {
+        identity: { hostSequenceId: 'seq-duplicate', linkedSequenceId: 'seq-original' },
+      })
+    ).toEqual({
+      ok: false,
+      reason: 'timeline-not-bound',
+      refusedIds: ['c1', 'c2', 'c3', 'c4', 'c5'],
+      cap: 5,
+    });
+  });
+
   it('allows exactly the cap and refuses one more', () => {
     // Pins the boundary: `>` vs `>=` is otherwise invisible.
     const four = [comment('c1'), comment('c2'), comment('c3'), comment('c4')];
@@ -471,6 +494,40 @@ describe('timelineLooksBound', () => {
   });
 });
 
+describe('sequenceIsBound', () => {
+  it('trusts matching ids over anything the markers suggest', () => {
+    expect(
+      sequenceIsBound([], ['c1'], { hostSequenceId: 'seq-1', linkedSequenceId: 'seq-1' })
+    ).toBe(true);
+  });
+
+  it('rejects a duplicate that carries the original\u2019s markers', () => {
+    // Duplicating a sequence copies its markers but gets a fresh id. The marker
+    // heuristic says bound; identity says otherwise, and identity is right.
+    const local = [marker('c6')];
+    expect(timelineLooksBound(local, ['c1', 'c6'])).toBe(true);
+    expect(
+      sequenceIsBound(local, ['c1', 'c6'], {
+        hostSequenceId: 'seq-duplicate',
+        linkedSequenceId: 'seq-original',
+      })
+    ).toBe(false);
+  });
+
+  it('falls back to the marker heuristic when either side cannot name the sequence', () => {
+    const local = [marker('c2')];
+    expect(sequenceIsBound(local, ['c1', 'c2'], { hostSequenceId: 'seq-1' })).toBe(true);
+    expect(sequenceIsBound(local, ['c1', 'c2'], { linkedSequenceId: 'seq-1' })).toBe(true);
+    expect(sequenceIsBound(local, ['c1', 'c2'], {})).toBe(true);
+    expect(sequenceIsBound([], ['c1', 'c2'], { hostSequenceId: 'seq-1' })).toBe(false);
+    expect(sequenceIsBound([], ['c1', 'c2'])).toBe(false);
+  });
+
+  it('treats an empty-string id as unknown rather than as a match', () => {
+    expect(sequenceIsBound([], ['c1'], { hostSequenceId: '', linkedSequenceId: '' })).toBe(false);
+  });
+});
+
 describe('describeResolveRefusal', () => {
   it('says nothing when the decision was allowed', () => {
     expect(describeResolveRefusal({ ok: true, ids: ['c1'] })).toBeNull();
@@ -496,6 +553,49 @@ describe('describeResolveRefusal', () => {
     });
     expect(message).toContain('3 comment(s)');
     expect(message).toContain('than the 2 allowed');
+  });
+});
+
+describe('parseSseFrames', () => {
+  it('reads a complete frame and its event name', () => {
+    expect(parseSseFrames('event: comments\ndata: {"versionId":"v1"}\n\n')).toEqual({
+      events: [{ event: 'comments', data: '{"versionId":"v1"}' }],
+      rest: '',
+    });
+  });
+
+  it('holds back a partial frame for the next read', () => {
+    // The stream arrives in arbitrary chunks; a frame split mid-name must not
+    // be dropped or misread as an event called "comm".
+    const first = parseSseFrames('event: ready\ndata: {"a":1}\n\nevent: comm');
+    expect(first.events).toEqual([{ event: 'ready', data: '{"a":1}' }]);
+    expect(first.rest).toBe('event: comm');
+
+    const second = parseSseFrames(`${first.rest}ents\ndata: {"b":2}\n\n`);
+    expect(second.events).toEqual([{ event: 'comments', data: '{"b":2}' }]);
+    expect(second.rest).toBe('');
+  });
+
+  it('ignores keep-alive comments', () => {
+    expect(parseSseFrames(': ping\n\n').events).toEqual([]);
+  });
+
+  it('reads several frames from one chunk', () => {
+    const parsed = parseSseFrames(
+      'event: ready\ndata: {}\n\n: ping\n\nevent: comments\ndata: {}\n\n'
+    );
+    expect(parsed.events.map((event) => event.event)).toEqual(['ready', 'comments']);
+  });
+
+  it('joins a multi-line data payload', () => {
+    expect(parseSseFrames('event: x\ndata: one\ndata: two\n\n').events).toEqual([
+      { event: 'x', data: 'one\ntwo' },
+    ]);
+  });
+
+  it('returns nothing for an empty or partial buffer', () => {
+    expect(parseSseFrames('')).toEqual({ events: [], rest: '' });
+    expect(parseSseFrames('event: ready')).toEqual({ events: [], rest: 'event: ready' });
   });
 });
 
@@ -593,7 +693,9 @@ describe('nle-core.cjs UMD', () => {
       planTimelineResolves: typeof planTimelineResolves;
       describeResolveRefusal: typeof describeResolveRefusal;
       nextPollDelayMs: typeof nextPollDelayMs;
+      parseSseFrames: typeof parseSseFrames;
       timelineLooksBound: typeof timelineLooksBound;
+      sequenceIsBound: typeof sequenceIsBound;
       resolvableIds: typeof resolvableIds;
       commentsRemovedFromTimeline: typeof commentsRemovedFromTimeline;
       DEFAULT_AUTO_RESOLVE_CAP: number;
@@ -634,6 +736,14 @@ describe('nle-core.cjs UMD', () => {
         ['c1']
       )
     ).toBe(false);
+
+    expect(umd.sequenceIsBound([], ['c1'], { hostSequenceId: 's', linkedSequenceId: 's' })).toBe(
+      true
+    );
+    expect(
+      umd.sequenceIsBound([anyMarker], ['c1'], { hostSequenceId: 'dup', linkedSequenceId: 'orig' })
+    ).toBe(false);
+    expect(umd.sequenceIsBound([anyMarker], ['c1'], {})).toBe(true);
 
     expect(umd.resolvableIds({ ok: true, ids: ['c1'] })).toEqual(['c1']);
     expect(
@@ -700,6 +810,12 @@ describe('nle-core.cjs UMD', () => {
         cap: 1,
       })
     ).toContain('than the 1 allowed');
+
+    expect(umd.parseSseFrames('event: comments\ndata: {"v":1}\n\nevent: par')).toEqual({
+      events: [{ event: 'comments', data: '{"v":1}' }],
+      rest: 'event: par',
+    });
+    expect(umd.parseSseFrames(': ping\n\n').events).toEqual([]);
 
     expect(umd.nextPollDelayMs(0)).toBe(10000);
     expect(umd.nextPollDelayMs(2)).toBe(40000);

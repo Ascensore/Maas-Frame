@@ -79,6 +79,23 @@ function secondsFromTick(tick) {
  * markers at a guessed offset of 0 puts every note an hour away from its comment
  * on a sequence starting at 01:00:00:00, so auto-sync refuses instead.
  */
+/**
+ * The host's own id for this sequence. Duplicating a sequence copies its name
+ * and its markers but gets a fresh guid, so this is the only thing that tells an
+ * original from a stale duplicate. Returns null when the host will not say,
+ * which falls the binding check back to the marker heuristic.
+ */
+function hostSequenceId(sequence) {
+  const raw = sequence?.guid ?? sequence?.sequenceID ?? sequence?.id ?? null;
+  if (!raw) return null;
+  const value = typeof raw === 'string' ? raw : String(raw);
+  const trimmed = value.trim();
+  // A Guid object without a useful toString stringifies to [object Object],
+  // which would otherwise match every sequence against every other.
+  if (!trimmed || trimmed === '[object Object]' || trimmed === 'undefined') return null;
+  return trimmed.slice(0, 200);
+}
+
 async function sequenceMeta(sequence) {
   let offsetSeconds = 0;
   let offsetOk = false;
@@ -106,7 +123,43 @@ async function sequenceMeta(sequence) {
   } catch {
     // Leave offsetOk false; a manual sync may still proceed at offset 0.
   }
-  return { offsetSeconds, offsetOk, fps, dropFrame, sequenceName };
+  return {
+    offsetSeconds,
+    offsetOk,
+    fps,
+    dropFrame,
+    sequenceName,
+    sequenceId: hostSequenceId(sequence),
+  };
+}
+
+/** Which version, if any, this sequence was last synced to. */
+async function lookupVersionForSequence(baseUrl, token, sequenceId) {
+  if (!sequenceId) return null;
+  try {
+    const { link } = await api(
+      baseUrl,
+      token,
+      `/api/v1/sequence-link/lookup?nle=premiere&sequenceId=${encodeURIComponent(sequenceId)}`
+    );
+    return link;
+  } catch {
+    return null;
+  }
+}
+
+/** What the server has stored for the version we are syncing. */
+async function storedSequenceId(baseUrl, token, versionId) {
+  try {
+    const { sequenceLink } = await api(
+      baseUrl,
+      token,
+      `/api/v1/versions/${versionId}/sequence-link?nle=premiere`
+    );
+    return sequenceLink ? sequenceLink.sequenceId : null;
+  } catch {
+    return null;
+  }
 }
 
 async function persistSequenceLink(baseUrl, token, versionId, meta) {
@@ -117,6 +170,7 @@ async function persistSequenceLink(baseUrl, token, versionId, meta) {
       method: 'PUT',
       body: JSON.stringify({
         nle: 'premiere',
+        sequenceId: meta.sequenceId,
         sequenceName: String(meta.sequenceName || 'Untitled').slice(0, 200),
         startTimecode: core.secondsToSmpte(meta.offsetSeconds, meta.fps, meta.dropFrame),
         frameRateNum: rational.num,
@@ -188,9 +242,13 @@ async function syncMarkers({ auto = false } = {}) {
   // server, and the record of which comments have markers. None of it may happen
   // unattended against a sequence that is not this version's, so the check comes
   // before the first network call rather than in the middle of the writes.
-  if (auto && !core.timelineLooksBound(local, previousIds)) {
+  const identity = {
+    hostSequenceId: meta.sequenceId,
+    linkedSequenceId: await storedSequenceId(baseUrl, token, versionId),
+  };
+  if (auto && !core.sequenceIsBound(local, previousIds, identity)) {
     setStatus(
-      'Auto-sync paused: the open sequence has none of this version\u2019s review markers. Switch back, or press Sync markers to sync this sequence.'
+      'Auto-sync paused: the open sequence is not the one this version is synced to. Switch back, or press Sync markers to sync this sequence.'
     );
     return false;
   }
@@ -202,7 +260,7 @@ async function syncMarkers({ auto = false } = {}) {
   const resolvedIds = [];
   let refusal = null;
   if (!auto) {
-    const decision = core.planTimelineResolves(comments, local, previousIds);
+    const decision = core.planTimelineResolves(comments, local, previousIds, { identity });
     refusal = core.describeResolveRefusal(decision);
     // Read through resolvableIds: a refusal's ids are the set that was refused.
     for (const commentId of core.resolvableIds(decision)) {
@@ -281,6 +339,96 @@ async function syncMarkers({ auto = false } = {}) {
   return true;
 }
 
+/**
+ * Follows the editor: when a different sequence comes to the front, ask the
+ * server which version it belongs to and select it, so auto-sync keeps working
+ * without anyone touching the dropdown. An unknown sequence selects nothing and
+ * the binding gate then pauses, rather than syncing it to whatever was picked
+ * last.
+ */
+let lastBoundSequenceId = null;
+
+async function rebindToActiveSequence() {
+  const baseUrl = el('baseUrl').value.trim();
+  const token = el('token').value.trim();
+  if (!token) return;
+
+  const ppro = require('premierepro');
+  const project = await ppro.Project.getActiveProject();
+  const sequence = project ? await project.getActiveSequence() : null;
+  const sequenceId = sequence ? hostSequenceId(sequence) : null;
+  if (!sequenceId || sequenceId === lastBoundSequenceId) return;
+  lastBoundSequenceId = sequenceId;
+
+  const link = await lookupVersionForSequence(baseUrl, token, sequenceId);
+  if (!link) {
+    setStatus('This sequence is not linked to a version yet. Pick one and press Sync markers.');
+    return;
+  }
+  const select = el('version');
+  const known = Array.from(select.options).some((option) => option.value === link.versionId);
+  if (!known) {
+    select.innerHTML += `<option value="${link.versionId}">${link.videoTitle} v${link.versionNumber}</option>`;
+  }
+  select.value = link.versionId;
+  setStatus(`Following ${link.videoTitle} v${link.versionNumber} for this sequence.`);
+}
+
+/**
+ * Phase 3 accelerator: hold the live stream open and sync the moment a comment
+ * changes, instead of waiting out the poll.
+ *
+ * Read with `fetch` rather than `EventSource` because the endpoint authenticates
+ * a Bearer header and EventSource cannot send one; the alternative would put the
+ * token in the query string, where it lands in server and proxy logs. A host
+ * whose fetch cannot stream simply keeps polling — the poll is the delivery
+ * mechanism, this only removes latency.
+ */
+let liveAbort = null;
+
+function closeLiveStream() {
+  if (liveAbort) liveAbort.abort();
+  liveAbort = null;
+}
+
+async function openLiveStream() {
+  closeLiveStream();
+  const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
+  const versionId = el('version').value;
+  const token = el('token').value.trim();
+  if (!versionId || !token) return;
+
+  const controller = typeof AbortController === 'undefined' ? null : new AbortController();
+  liveAbort = controller;
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/versions/${versionId}/comments/live`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller ? controller.signal : undefined,
+    });
+    const reader = response.ok && response.body ? response.body.getReader() : null;
+    if (!reader) return;
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (liveAbort === controller) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = nle().parseSseFrames(buffer);
+      buffer = parsed.rest;
+      for (const event of parsed.events) {
+        if (event.event !== 'comments') continue;
+        if (!autoSyncEnabled() || syncInFlight) continue;
+        scheduleAutoSync(0);
+      }
+    }
+  } catch {
+    // The stream is optional. The poll keeps delivering either way.
+  } finally {
+    if (liveAbort === controller) liveAbort = null;
+  }
+}
+
 let autoTimer = null;
 let autoFailures = 0;
 let syncInFlight = false;
@@ -312,6 +460,7 @@ async function runAutoSync() {
   }
   syncInFlight = true;
   try {
+    await rebindToActiveSequence().catch(() => undefined);
     // A paused tick is not a success: if a network error preceded it, the
     // backoff it earned has to survive.
     if (await syncMarkers({ auto: true })) autoFailures = 0;
@@ -377,9 +526,26 @@ el('auto').addEventListener('change', () => {
   if (autoSyncEnabled()) {
     saveSettings();
     setStatus('Auto-sync on. Markers follow the web app; resolving stays on Sync markers.');
+    void openLiveStream();
     scheduleAutoSync(0);
   } else {
     stopAutoSync();
+    closeLiveStream();
     setStatus('Auto-sync off.');
   }
 });
+
+// Rebind the moment the editor brings a different sequence forward, rather than
+// waiting up to a poll interval to notice.
+try {
+  const ppro = require('premierepro');
+  const events = ppro.EventManager ?? ppro.Constants?.EventManager;
+  const activated = ppro.Constants?.SequenceEvent?.ACTIVATED ?? 'activeSequenceChanged';
+  if (events?.addGlobalEventListener) {
+    events.addGlobalEventListener(activated, () => {
+      rebindToActiveSequence().catch(() => undefined);
+    });
+  }
+} catch {
+  // No event surface on this host; the poll still rebinds each tick.
+}

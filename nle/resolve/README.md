@@ -26,10 +26,15 @@ Auto-sync runs **one direction only**: comments from the web land on the
 timeline, and markers for comments resolved on the web are removed. It never
 resolves a comment on the web.
 
-It also pauses itself whenever the timeline in front of it holds none of this
-version's review markers. Resolve cannot tell the plugin you switched timelines,
-so this is what stops an unattended pass from writing to the wrong one. Switch
-back, or press **Sync markers** to deliberately sync the timeline you are on.
+It follows you between timelines: bring a different timeline forward and the
+plugin asks the app which version it belongs to and fills in the version id, so
+you only enter one on the first bind. Resolve has no way to tell the plugin you
+switched, so this is checked on each poll. A timeline the app does not recognise
+pauses auto-sync rather than being synced to whatever was entered last.
+
+Timelines are matched on Resolve's own timeline id, not on the name. Duplicating
+a timeline copies its markers but gets a fresh id, so a stale duplicate is
+recognised as a different timeline rather than synced as the original.
 
 So the resolve gesture stays manual: **delete a review marker and press Sync
 markers** to resolve that comment on the web. The plugin will not put that
@@ -43,6 +48,13 @@ Two refusals protect that gesture, and are reported in the status line:
   Resolve has no way to tell the plugin you switched timelines, so this check is
   what stands between a switched timeline and a mass resolve.
 - More than five resolves in one sync is refused as implausible.
+
+## Latency
+
+The panel holds the review app's comment stream open, so a new comment normally
+lands within a second rather than on the next poll. The stream is only an
+accelerator: where the deployment cannot push (it says so when it opens), the
+10-second poll is what delivers, and nothing is lost.
 
 If the timeline start timecode cannot be parsed, auto-sync pauses rather than
 placing every marker an hour from its comment; a manual sync still proceeds and
