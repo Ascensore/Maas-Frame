@@ -124,6 +124,7 @@ import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
 import * as assetsBunnyInitRoute from '@/app/api/videos/[videoId]/assets/bunny-init/route';
 import * as assetsR2InitRoute from '@/app/api/videos/[videoId]/assets/r2-init/route';
 import * as assetsRoute from '@/app/api/videos/[videoId]/assets/route';
+import * as videoBurnInRoute from '@/app/api/videos/[videoId]/burn-in/route';
 import * as subtitleRoute from '@/app/api/videos/[videoId]/subtitles/[subtitleId]/route';
 import * as subtitlesRoute from '@/app/api/videos/[videoId]/subtitles/route';
 import * as videoRoughCutRoute from '@/app/api/videos/[videoId]/rough-cut/route';
@@ -188,7 +189,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 102;
+const EXPECTED_ROUTE_MODULE_COUNT = 103;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -984,6 +985,17 @@ const ROUTE_CASES: readonly RouteCase[] = [
     // "Invalid provider" one line below if the guard were gone. The
     // exact-status coverage lives in tests/api/assets-authz.test.ts.
     body: { kind: 'IMAGE', sourceUrl: `/api/upload/image/${IMAGE_FILENAME}` },
+  },
+  {
+    file: 'videos/[videoId]/burn-in/route.ts',
+    module: videoBurnInRoute,
+    // GET reads the version from the query string, POST from the body. Both are
+    // real fixture ids, so neither method can stop on a validation error above
+    // the guard. Exact-status coverage is in tests/api/burn-in.test.ts.
+    url: (f) => `/api/videos/${f.videoId}/burn-in?versionId=${f.versionId}`,
+    params: (f) => ({ videoId: f.videoId }),
+    headers: { 'content-type': 'application/json' },
+    rawBody: (f) => JSON.stringify({ versionId: f.versionId, style: {} }),
   },
   {
     file: 'videos/[videoId]/subtitles/[subtitleId]/route.ts',
