@@ -253,6 +253,8 @@ model Project {
   // Editorial brief for rough cuts at the project root; folders can bind their own
   editorialBriefId String?
   editorialBrief   EditorialBrief? @relation(fields: [editorialBriefId], references: [id], onDelete: SetNull)
+  /** Free-text editorial guidelines for this project's rough cuts; recorded on each run's brief snapshot. */
+  editorialGuidelines String? @db.Text
   
   // Timestamps
   createdAt   DateTime @default(now())

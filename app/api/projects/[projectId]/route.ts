@@ -7,6 +7,7 @@ import { cleanupBunnyStreamVideosBestEffort } from '@/lib/bunny-stream-cleanup';
 import { buildCleanupWarnings, logCleanupWarnings } from '@/lib/cleanup-warnings';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
+import { PROJECT_GUIDELINES_MAX } from '@/lib/rough-cut/brief';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -110,8 +111,15 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const body = await request.json();
-    const { name, description, visibility, allowDownloads, watermarkReviews, editorialBriefId } =
-      body;
+    const {
+      name,
+      description,
+      visibility,
+      allowDownloads,
+      watermarkReviews,
+      editorialBriefId,
+      editorialGuidelines,
+    } = body;
 
     if (name !== undefined) {
       if (typeof name !== 'string' || name.trim().length === 0) {
@@ -140,6 +148,16 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (watermarkReviews !== undefined && typeof watermarkReviews !== 'boolean') {
       return apiErrors.badRequest('watermarkReviews must be a boolean');
     }
+    if (editorialGuidelines !== undefined && editorialGuidelines !== null) {
+      if (typeof editorialGuidelines !== 'string') {
+        return apiErrors.badRequest('editorialGuidelines must be a string');
+      }
+      if (editorialGuidelines.trim().length > PROJECT_GUIDELINES_MAX) {
+        return apiErrors.badRequest(
+          `editorialGuidelines must be ${PROJECT_GUIDELINES_MAX} characters or fewer`
+        );
+      }
+    }
     if (editorialBriefId !== undefined && editorialBriefId !== null) {
       if (typeof editorialBriefId !== 'string') {
         return apiErrors.badRequest('editorialBriefId must be a brief id or null');
@@ -158,6 +176,9 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     if (allowDownloads !== undefined) updateData.allowDownloads = allowDownloads;
     if (watermarkReviews !== undefined) updateData.watermarkReviews = watermarkReviews;
     if (editorialBriefId !== undefined) updateData.editorialBriefId = editorialBriefId;
+    if (editorialGuidelines !== undefined) {
+      updateData.editorialGuidelines = editorialGuidelines?.trim() || null;
+    }
 
     const project = await db.project.update({
       where: { id: projectId },
