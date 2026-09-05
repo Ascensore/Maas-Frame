@@ -190,6 +190,18 @@ columns on `rough_cuts`. It only adds, so it is safe to apply before the app
 that reads them is deployed; the media worker needs it before it can lease a
 burn-in job at all.
 
+**Rebuild and redeploy the media worker image before deploying an app that can
+queue a burn-in** (see "Media worker host" below for the commands). The image
+needs the new fonts, the new files under `lib/rough-cut`, and `zod`, which is
+now a worker dependency. A stale worker does not merely skip the job it cannot
+run: `queueForKind` throws `Unknown job kind BURN_SUBTITLES` inside
+`publishPending`, _after_ the batch of up to 20 due jobs has been marked
+`QUEUED` and committed. Only the burn-in row is put back to `PENDING`; every
+job claimed after it in that batch stays `QUEUED` and is never published, and
+nothing recovers a `QUEUED` row. The burn-in row is then re-claimed every two
+seconds and strands the tail of the next batch too, so one un-runnable
+burn-in quietly stops probes, transcription and proxies behind it.
+
 Then, in the running app:
 
 1. Create a personal **API token** in Settings for NLE panels (`of_live_…`).

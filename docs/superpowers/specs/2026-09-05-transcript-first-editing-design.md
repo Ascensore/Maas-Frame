@@ -195,12 +195,11 @@ the deploy.
 | `POST /api/versions/[versionId]/transcript/captions`              | Builds the caption track from the version's own transcript, without transcribing again                     |
 | `PATCH /api/versions/[versionId]/transcript/segments/[segmentId]` | Edits one transcript line (text ≤ 2000, speaker ≤ 80) and rebuilds the caption track                       |
 
-Burn-in source resolution: an explicit `subtitleId` wins; otherwise the READY transcript in the
-requested `language` (and an explicit language never falls back to a caption track); otherwise the
-oldest READY transcript; otherwise the oldest caption track. The rule is the same on both sides
-rather than shared code: the route resolves it eagerly and writes the chosen id into the job
-payload, and the job resolves a null `transcriptId` to the oldest READY transcript itself. Two
-implementations of one rule, so a change to either has to be made twice.
+Burn-in source resolution lives in the route (`resolveSource`), which pins the chosen id into the
+job payload; the job re-derives the same rule only for a payload that names no transcript, so the
+two rules have to be kept in step by hand. The order: an explicit `subtitleId` wins; otherwise the
+READY transcript in the requested `language` (and an explicit language never falls back to a
+caption track); otherwise the oldest READY transcript; otherwise the oldest caption track.
 
 ## UI
 
@@ -263,6 +262,17 @@ pre-existing `weak-transcript` also still apply.
   `IMPORT_DRIVE` and `MATERIALIZE_ROUGH_CUT`.
 - **Migration** — apply `20260907110000_transcript_first_editing` with `bun run db:migrate`
   before the deploy.
+- **Rebuild the media worker before the app that can queue a burn-in.** The image needs the new
+  fonts, the new files under `lib/rough-cut`, and `zod` (now a worker dependency). Deploy order
+  matters more than usual here, because a stale worker does not simply ignore the job it cannot
+  run: `queueForKind` in `worker/src/index.ts` throws `Unknown job kind BURN_SUBTITLES` from
+  inside `publishPending`, after `claimDueMediaJobs` has already marked that whole batch of up to
+  `MEDIA_JOB_PUBLISH_BATCH` (20) rows `QUEUED` and committed. The catch resets **only the burn-in
+  row** to `PENDING` and rethrows, so every job claimed after it in that batch stays `QUEUED` and
+  is never sent to pg-boss — and nothing anywhere puts a `QUEUED` row back. The burn-in row
+  returns to `PENDING`, is re-claimed on the next two-second tick, and strands the tail of the
+  next batch as well. In other words one un-runnable burn-in quietly stops probes, transcription
+  and proxies queued after it until the worker image is rebuilt.
 
 ## Known limitations
 
@@ -270,6 +280,11 @@ pre-existing `weak-transcript` also still apply.
   version's `rough-cut` transcript fixes that version's rows and its caption track, but the next
   render regenerates the derived transcript from the sources. Corrections that must survive
   re-renders belong on the source version's transcript.
+- **A near-empty burn looks like a successful one.** Burn-in drops transcript lines that carry no
+  timings and draws the rest, so a transcript that timed only a few of its lines renders
+  "successfully" with only those few cues on screen. The job logs how many lines it dropped, and
+  it refuses outright only when nothing at all was timed. There is nothing in the UI that says a
+  burn was mostly blank.
 - **A media job stuck at RUNNING has no reaper.** If a worker dies mid-job the row stays RUNNING
   and the 409 guard refuses every later request for that version forever. This is inherited, not
   new: it affects `TRANSCODE_PROXY` and the rough-cut render the same way.
