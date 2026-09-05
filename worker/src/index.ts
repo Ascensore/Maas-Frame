@@ -9,7 +9,11 @@ import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
 import { burnInSubtitles, parseBurnInPayload } from './burn-in';
-import { claimDueMediaJobs } from '../lib/media-job-queue';
+import {
+  claimDueMediaJobs,
+  publishClaimedJobs,
+  UnknownJobKindError,
+} from '../lib/media-job-queue';
 import { upsertCaptionTrack } from '../lib/rough-cut/caption-track';
 import { serializeWebVtt } from '../lib/subtitle-validation';
 import { importDriveFile } from './import-drive';
@@ -677,7 +681,9 @@ function queueForKind(kind: string): string {
   if (kind === 'IMPORT_DRIVE') return QUEUE.IMPORT_DRIVE;
   if (kind === 'MATERIALIZE_ROUGH_CUT') return QUEUE.MATERIALIZE_ROUGH_CUT;
   if (kind === 'BURN_SUBTITLES') return QUEUE.BURN_SUBTITLES;
-  throw new Error(`Unknown job kind ${kind}`);
+  // Typed, so publishClaimedJobs can skip this one job instead of abandoning
+  // the rest of the batch the way a real queue failure has to.
+  throw new UnknownJobKindError(kind);
 }
 
 async function markJob(id: string, status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED', error?: string) {
@@ -794,21 +800,22 @@ async function publishPending(boss: PgBoss): Promise<void> {
     await client.query('BEGIN');
     const jobs = await claimDueMediaJobs(client);
     await client.query('COMMIT');
-    for (const job of jobs) {
-      try {
+    await publishClaimedJobs(
+      jobs,
+      async (job) => {
         await boss.send(queueForKind(job.kind), {
           mediaJobId: job.id,
           versionId: job.versionId,
           payload: job.payload,
         } satisfies MediaJobData);
-      } catch (error) {
+      },
+      async (id) => {
         await pool.query(
           `UPDATE media_jobs SET status = 'PENDING', updated_at = NOW() WHERE id = $1 AND status = 'QUEUED'`,
-          [job.id]
+          [id]
         );
-        throw error;
       }
-    }
+    );
   } catch (error) {
     try {
       await client.query('ROLLBACK');

@@ -263,16 +263,21 @@ pre-existing `weak-transcript` also still apply.
 - **Migration** — apply `20260907110000_transcript_first_editing` with `bun run db:migrate`
   before the deploy.
 - **Rebuild the media worker before the app that can queue a burn-in.** The image needs the new
-  fonts, the new files under `lib/rough-cut`, and `zod` (now a worker dependency). Deploy order
-  matters more than usual here, because a stale worker does not simply ignore the job it cannot
-  run: `queueForKind` in `worker/src/index.ts` throws `Unknown job kind BURN_SUBTITLES` from
-  inside `publishPending`, after `claimDueMediaJobs` has already marked that whole batch of up to
-  `MEDIA_JOB_PUBLISH_BATCH` (20) rows `QUEUED` and committed. The catch resets **only the burn-in
-  row** to `PENDING` and rethrows, so every job claimed after it in that batch stays `QUEUED` and
-  is never sent to pg-boss — and nothing anywhere puts a `QUEUED` row back. The burn-in row
-  returns to `PENDING`, is re-claimed on the next two-second tick, and strands the tail of the
-  next batch as well. In other words one un-runnable burn-in quietly stops probes, transcription
-  and proxies queued after it until the worker image is rebuilt.
+  fonts, the new files under `lib/rough-cut`, and `zod` (now a worker dependency). A worker that
+  is behind no longer breaks the pipeline, but it still cannot run the job: `queueForKind` in
+  `worker/src/index.ts` raises `UnknownJobKindError`, and `publishClaimedJobs`
+  (`lib/media-job-queue.ts`) puts that one row back to `PENDING`, logs it, and **carries on
+  publishing the rest of the batch**. The burn-in waits at `PENDING` — claimed and released on
+  every tick — until the worker is rebuilt, and everything else queued behind it keeps moving.
+  What to grep for in the worker's output: the per-job line naming the job id, the kind and
+  `the worker image is out of date`, and, for a genuine queue failure, `worker publish error`.
+
+  This matters because the failure it replaces was silent and total. `claimDueMediaJobs` commits
+  the whole batch of up to `MEDIA_JOB_PUBLISH_BATCH` (20) rows as `QUEUED` before any of them is
+  published, and nothing anywhere moves a `QUEUED` row back, so the old rethrow stranded every job
+  claimed after the burn-in — permanently, and again on every later tick. One un-runnable burn-in
+  stopped the probes, transcriptions and proxies behind it. A queue that is genuinely down still
+  stops the batch, because there is nowhere to publish the rest to either.
 
 ## Known limitations
 
