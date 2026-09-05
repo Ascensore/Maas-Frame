@@ -16,3 +16,9 @@ single NLE, the unused panel can be ignored; both are isolated under `nle/`.
 Live two-way sync is a convenience on top of the file-based workflow, not a
 replacement for it. Try the EDL first. Adopt the panel if editors want markers
 to update without re-importing.
+
+Both panels now offer an opt-in **Auto-sync**, which polls every 10 seconds and
+is deliberately one-directional: comments flow onto the timeline unattended,
+but resolving a comment on the web still takes a button press. The reasoning,
+and the guards that make an unattended writer safe, are in
+`docs/superpowers/specs/2026-09-04-nle-auto-sync-design.md`.

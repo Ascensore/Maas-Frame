@@ -85,6 +85,7 @@ const REVIEWED_MIGRATIONS = [
   '20260905100000_media_job_run_after',
   '20260906100000_editorial_briefs',
   '20260907100000_project_editorial_guidelines',
+  '20260907110000_sequence_link_identity',
   '20260907110000_transcript_first_editing',
 ];
 

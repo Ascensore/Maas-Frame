@@ -9,6 +9,9 @@
       input { width: 100%; box-sizing: border-box; margin: 4px 0 10px; padding: 6px; }
       button { padding: 8px 12px; }
       .status { margin-top: 12px; font-size: 12px; color: #bbb; white-space: pre-wrap; }
+      .hint { font-size: 12px; color: #888; }
+      .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+      .check input { width: auto; margin: 0; }
     </style>
   </head>
   <body>
@@ -20,33 +23,273 @@
     <label>Version id</label>
     <input id="versionId" placeholder="clxxxxxxxx" />
     <button id="sync">Sync markers</button>
+    <label class="check"><input type="checkbox" id="auto" /> Auto-sync new comments</label>
+    <p class="hint">Auto-sync only brings comments in. Deleting a marker resolves its comment on the web when you press Sync markers.</p>
     <div class="status" id="status"></div>
+    <script src="nle-core.cjs"></script>
     <script>
       const { ipcRenderer } = require('electron');
-      document.getElementById('sync').addEventListener('click', async () => {
+      const core = window.OpenFrameNle;
+      const SETTINGS_KEY = 'of-panel-settings';
+      const el = (id) => document.getElementById(id);
+      const setStatus = (message) => {
+        el('status').textContent = message;
+      };
+
+      // Auto-sync has to survive a plugin reload without a human retyping a token.
+      const loadSettings = () => {
         try {
-          const versionId = document.getElementById('versionId').value.trim();
-          const storageKey = 'of-synced-markers:' + versionId;
-          const previousIds = (() => {
-            try {
-              const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
-              return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
-            } catch {
-              return [];
-            }
-          })();
-          const result = await ipcRenderer.invoke('sync', {
-            baseUrl: document.getElementById('baseUrl').value.trim(),
-            token: document.getElementById('token').value.trim(),
-            versionId,
-            previousIds,
-          });
-          if (result && Array.isArray(result.syncedIds)) {
-            localStorage.setItem(storageKey, JSON.stringify(result.syncedIds));
+          const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+          for (const key of ['baseUrl', 'token', 'versionId']) {
+            if (typeof saved[key] === 'string' && saved[key]) el(key).value = saved[key];
           }
-          document.getElementById('status').textContent = result.message || result;
+        } catch {
+          // Ignore malformed storage and keep the markup defaults.
+        }
+      };
+      const saveSettings = () => {
+        try {
+          localStorage.setItem(
+            SETTINGS_KEY,
+            JSON.stringify({
+              baseUrl: el('baseUrl').value.trim(),
+              token: el('token').value.trim(),
+              versionId: el('versionId').value.trim(),
+            })
+          );
+        } catch {
+          // Storage being unavailable must not stop a sync.
+        }
+      };
+
+      const readPreviousIds = (versionId) => {
+        const storageKey = 'of-synced-markers:' + versionId;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const runSync = async (auto) => {
+        const versionId = el('versionId').value.trim();
+        if (!versionId) {
+          if (!auto) setStatus('Version id is required.');
+          return;
+        }
+        const result = await ipcRenderer.invoke('sync', {
+          baseUrl: el('baseUrl').value.trim(),
+          token: el('token').value.trim(),
+          versionId,
+          previousIds: readPreviousIds(versionId),
+          auto,
+        });
+        if (result && Array.isArray(result.syncedIds)) {
+          localStorage.setItem('of-synced-markers:' + versionId, JSON.stringify(result.syncedIds));
+        }
+        setStatus((result && result.message) || result);
+      };
+
+      // Follows the editor: when a different timeline comes forward, ask the
+      // server which version it belongs to and select it, so auto-sync keeps
+      // working without anyone retyping a version id. Resolve has no event for
+      // this, so it is checked on every tick.
+      let lastBoundSequenceId = null;
+
+      const rebindToCurrentTimeline = async () => {
+        const baseUrl = el('baseUrl').value.trim();
+        const token = el('token').value.trim();
+        if (!token) return;
+        const identity = await ipcRenderer.invoke('timeline-identity');
+        const sequenceId = identity && identity.sequenceId;
+        if (!sequenceId || sequenceId === lastBoundSequenceId) return;
+
+        try {
+          const response = await fetch(
+            `${baseUrl.replace(/\/$/, '')}/api/v1/sequence-link/lookup?nle=resolve&sequenceId=${encodeURIComponent(sequenceId)}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!response.ok) return;
+          // Latch only once the server has answered. Latching first turns a
+          // network blip into "not linked yet" until the editor switches away.
+          lastBoundSequenceId = sequenceId;
+          const link = (await response.json()).data?.link;
+          if (!link) {
+            setStatus('This timeline is not linked to a version yet. Enter one and press Sync markers.');
+            return;
+          }
+          const previousVersionId = el('versionId').value.trim();
+          el('versionId').value = link.versionId;
+          saveSettings();
+          setStatus(`Following ${link.videoTitle} v${link.versionNumber} for this timeline.`);
+          if (previousVersionId !== link.versionId) restartLiveStream();
+        } catch {
+          // Leave the current selection alone; the binding gate still protects writes.
+        }
+      };
+
+      // Phase 3 accelerator: sync the moment a comment changes rather than
+      // waiting out the poll. Read with fetch, not EventSource, because the
+      // endpoint authenticates a Bearer header and EventSource cannot send one.
+      //
+      // EventSource also reconnects for free and this does not: the route closes
+      // every stream at its maxDuration, so one read loop buys ~25s and then
+      // goes quiet. Hence the reconnect loop. A generation counter stops it, not
+      // the AbortController, so a host without one cannot strand a live reader.
+      let liveGeneration = 0;
+      let liveAbort = null;
+
+      const closeLiveStream = () => {
+        liveGeneration += 1;
+        if (liveAbort) {
+          try {
+            liveAbort.abort();
+          } catch {
+            // Already aborted.
+          }
+        }
+        liveAbort = null;
+      };
+
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      /* One connection. Returns 'ok', 'error', or 'not-listening'. */
+      const readLiveStreamOnce = async (generation, baseUrl, versionId, token) => {
+        const controller = typeof AbortController === 'undefined' ? null : new AbortController();
+        liveAbort = controller;
+        try {
+          const response = await fetch(`${baseUrl}/api/v1/versions/${versionId}/comments/live`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller ? controller.signal : undefined,
+          });
+          const reader = response.ok && response.body ? response.body.getReader() : null;
+          if (!reader) return 'error';
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (generation === liveGeneration) {
+            const { done, value } = await reader.read();
+            if (done) return 'ok';
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = core.parseSseFrames(buffer);
+            buffer = parsed.rest;
+            for (const event of parsed.events) {
+              if (event.event === 'ready') {
+                // This deployment cannot push; reconnecting would burn a request
+                // every 25s to receive nothing. The poll delivers there.
+                try {
+                  if (JSON.parse(event.data).listening === false) {
+                    await reader.cancel().catch(() => undefined);
+                    return 'not-listening';
+                  }
+                } catch {
+                  // Unreadable ready payload: treat the stream as usable.
+                }
+                continue;
+              }
+              if (event.event !== 'comments') continue;
+              if (!autoOn() || syncInFlight) continue;
+              scheduleAuto(0);
+            }
+          }
+          await reader.cancel().catch(() => undefined);
+          return 'ok';
+        } catch {
+          return 'error';
+        } finally {
+          if (liveAbort === controller) liveAbort = null;
+        }
+      };
+
+      const openLiveStream = async () => {
+        closeLiveStream();
+        const generation = liveGeneration;
+        const baseUrl = el('baseUrl').value.trim().replace(/\/$/, '');
+        const versionId = el('versionId').value.trim();
+        const token = el('token').value.trim();
+        if (!versionId || !token) return;
+
+        let failures = 0;
+        while (generation === liveGeneration && autoOn()) {
+          const outcome = await readLiveStreamOnce(generation, baseUrl, versionId, token);
+          if (generation !== liveGeneration) return;
+          if (outcome === 'not-listening') return;
+          failures = outcome === 'ok' ? 0 : failures + 1;
+          if (failures > 0) await delay(core.nextPollDelayMs(failures));
+        }
+      };
+
+      /* The stream is per version, so a rebind has to move it. */
+      const restartLiveStream = () => {
+        if (!autoOn()) return;
+        void openLiveStream();
+      };
+
+      let autoTimer = null;
+      let autoFailures = 0;
+      let syncInFlight = false;
+
+      const autoOn = () => el('auto').checked;
+      const stopAuto = () => {
+        if (autoTimer) clearTimeout(autoTimer);
+        autoTimer = null;
+        autoFailures = 0;
+      };
+      const scheduleAuto = (delayMs) => {
+        if (autoTimer) clearTimeout(autoTimer);
+        if (!autoOn()) return;
+        autoTimer = setTimeout(tick, delayMs === undefined ? core.nextPollDelayMs(autoFailures) : delayMs);
+      };
+
+      async function tick() {
+        if (!autoOn()) return;
+        // A hidden window is not worth polling, and a sync already running must
+        // not be re-entered: two passes would race on the same markers.
+        if (syncInFlight || document.visibilityState === 'hidden') {
+          scheduleAuto(core.AUTO_SYNC_BASE_MS);
+          return;
+        }
+        syncInFlight = true;
+        try {
+          await rebindToCurrentTimeline().catch(() => undefined);
+          await runSync(true);
+          autoFailures = 0;
         } catch (error) {
-          document.getElementById('status').textContent = error.message;
+          autoFailures += 1;
+          setStatus(`Auto-sync error (retry ${autoFailures}): ${error.message}`);
+        } finally {
+          syncInFlight = false;
+          scheduleAuto();
+        }
+      }
+
+      loadSettings();
+      for (const id of ['baseUrl', 'token', 'versionId']) {
+        el(id).addEventListener('change', saveSettings);
+      }
+      el('versionId').addEventListener('change', restartLiveStream);
+      el('sync').addEventListener('click', async () => {
+        if (syncInFlight) return;
+        syncInFlight = true;
+        saveSettings();
+        try {
+          await runSync(false);
+        } catch (error) {
+          setStatus(error.message);
+        } finally {
+          syncInFlight = false;
+        }
+      });
+      el('auto').addEventListener('change', () => {
+        if (autoOn()) {
+          saveSettings();
+          setStatus('Auto-sync on. Markers follow the web app; resolving stays on Sync markers.');
+          void openLiveStream();
+          scheduleAuto(0);
+        } else {
+          stopAuto();
+          closeLiveStream();
+          setStatus('Auto-sync off.');
         }
       });
     </script>

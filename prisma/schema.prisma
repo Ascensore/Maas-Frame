@@ -1288,10 +1288,16 @@ model TranscriptSegment {
 }
 
 model SequenceLink {
-  id            String   @id @default(cuid())
-  userId        String   @map("user_id")
-  versionId     String   @map("version_id")
-  nle           String
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  versionId String @map("version_id")
+  nle       String
+  /// The host's own id for the sequence or timeline (Premiere sequence GUID,
+  /// Resolve timeline unique id). Duplicating a sequence produces a new one, so
+  /// unlike sequenceName this distinguishes a stale duplicate from the original.
+  /// Nullable: links written before this column existed, and hosts that cannot
+  /// report an id, still work by name.
+  sequenceId    String?  @map("sequence_id")
   sequenceName  String   @map("sequence_name")
   startTimecode String   @map("start_timecode")
   frameRateNum  Int      @map("frame_rate_num")
@@ -1302,6 +1308,8 @@ model SequenceLink {
 
   @@unique([userId, versionId, nle])
   @@index([versionId])
+  // Reverse lookup: "which version is the sequence in front of me?"
+  @@index([userId, nle, sequenceId])
   @@map("sequence_links")
 }
 
