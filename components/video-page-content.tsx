@@ -22,11 +22,13 @@ import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progre
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import { useVideoPageData } from '@/components/video-page/hooks/use-video-page-data';
+import { useRoughCutReview } from '@/components/video-page/hooks/use-rough-cut-review';
 import { useCommentExport } from '@/components/video-page/hooks/use-comment-export';
 import { useDownloadActions } from '@/components/video-page/hooks/use-download-actions';
 import { useVersionDurationSync } from '@/components/video-page/hooks/use-version-duration-sync';
 import { CommentComposer } from '@/components/video-page/comment-composer';
 import { CommentsPane } from '@/components/video-page/comments-pane';
+import { RoughCutReviewPane } from '@/components/video-page/rough-cut-review-pane';
 import { ReviewCommandPalette } from '@/components/video-page/review-command-palette';
 import { KeyboardShortcutsModal } from '@/components/keyboard-shortcuts-modal';
 import { useReviewHotkeys } from '@/components/video-page/hooks/use-review-hotkeys';
@@ -116,7 +118,7 @@ export function VideoPageContent({
     toggleVoiceSpeed,
   } = useCommentMedia();
   const [showResolved, setShowResolved] = useState(false);
-  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets'>('comments');
+  const [activeSidePane, setActiveSidePane] = useState<'comments' | 'assets' | 'cuts'>('comments');
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [focusCommentId, setFocusCommentId] = useState<string | null>(null);
   const [highlightedAssetId, setHighlightedAssetId] = useState<string | null>(null);
@@ -162,10 +164,19 @@ export function VideoPageContent({
     setSelectedTagId,
     projectId,
     fetchVersionComments,
+    reloadVideo,
   } = useVideoPageData({
     mode,
     videoId,
     propProjectId,
+  });
+
+  // A render started from the pane adds a version to this very video, so the
+  // page reloads itself rather than asking the reviewer to.
+  const roughCutReview = useRoughCutReview({
+    videoId,
+    enabled: !loading && !!video && (video.kind ?? 'VIDEO') === 'VIDEO',
+    onRendered: () => void reloadVideo(),
   });
 
   const isGuest = video ? !video.isAuthenticated : false;
@@ -1265,6 +1276,14 @@ export function VideoPageContent({
           onAssetMentionClick={handleAssetMentionClick}
           activePane={activeSidePane}
           setActivePane={setActiveSidePane}
+          showCutsTab={roughCutReview.isRoughCutOutput}
+          cutsPane={
+            <RoughCutReviewPane
+              review={roughCutReview}
+              getCurrentTime={getCurrentTime}
+              onSeekOutput={handleSeekToTimestamp}
+            />
+          }
           focusCommentId={focusCommentId}
           onFocusCommentHandled={() => setFocusCommentId(null)}
           assetsPane={
