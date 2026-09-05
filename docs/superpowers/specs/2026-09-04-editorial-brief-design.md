@@ -385,7 +385,10 @@ format because it has no stable keys.
    the run, and the assembler already reads the brief's silence policy for the kept-gap. UI:
    a briefs card on workspace settings, a selector in the rough-cut dialog, a project-level
    binding on the project settings page, and a folder-or-project binding in the edit
-   workspace's destination card.
+   workspace's destination card. The briefs card also exposes the free-text `goals` on create
+   and as an inline edit per brief, and a project carries free-text `editorialGuidelines`
+   (project settings, 4000 characters) that every run copies onto its snapshot as
+   `projectGuidelines`; neither is interpreted by the assembler in v1.
 3. Assembly: dead air, false starts, take selection (talking head / interview), multicam
    grammar with `holdWideOnChaos`. **Done.** `lib/rough-cut/beats.ts` turns transcript words
    into kept runs, dead-air cuts and beats; a pause after terminal punctuation may run to the

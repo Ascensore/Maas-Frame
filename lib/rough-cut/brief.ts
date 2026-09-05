@@ -87,6 +87,8 @@ export type EditorialBrief = {
 };
 
 const GOALS_MAX = 2000;
+/** Free text a project attaches to its rough cuts; carried on the snapshot, not interpreted in v1. */
+export const PROJECT_GUIDELINES_MAX = 4000;
 const NAME_MAX = 80;
 
 export const DEFAULT_BRIEF_RANKING: BriefRankingCriterion[] = ['cleanliness', 'energy'];
@@ -471,11 +473,14 @@ export type BriefSnapshot = {
   source: BriefSource;
   layoutSource: LayoutSource;
   brief: EditorialBrief;
+  /** The project's free-text guidelines at run time, so a run keeps its own record. */
+  projectGuidelines: string | null;
 };
 
 export function buildBriefSnapshot(options: {
   resolved: ResolvedBrief;
   layoutSource: LayoutSource;
+  projectGuidelines?: string | null;
 }): BriefSnapshot {
   return {
     version: 1,
@@ -483,6 +488,7 @@ export function buildBriefSnapshot(options: {
     source: options.resolved.source,
     layoutSource: options.layoutSource,
     brief: options.resolved.brief,
+    projectGuidelines: options.projectGuidelines?.trim() ? options.projectGuidelines : null,
   };
 }
 
@@ -514,5 +520,9 @@ export function briefFromSnapshot(value: unknown): BriefSnapshot | null {
       ? (raw.layoutSource as LayoutSource)
       : 'guess',
     brief: briefConfigFromStored(rawBrief, projectType),
+    projectGuidelines:
+      typeof raw.projectGuidelines === 'string' && raw.projectGuidelines.trim()
+        ? raw.projectGuidelines
+        : null,
   };
 }

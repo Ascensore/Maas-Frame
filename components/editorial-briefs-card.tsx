@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -80,6 +81,9 @@ export function EditorialBriefsCard({ workspaceId }: { workspaceId: string }) {
     BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD.cameraGrammar.holdWideOnChaos
   );
   const [isDefault, setIsDefault] = useState(false);
+  const [goals, setGoals] = useState(BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD.goals ?? '');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingGoals, setEditingGoals] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -113,6 +117,35 @@ export function EditorialBriefsCard({ workspaceId }: { workspaceId: string }) {
     setTakeSelection(template.takeSelection.enabled);
     setFollowSpeaker(template.cameraGrammar.followSpeaker);
     setHoldWideOnChaos(template.cameraGrammar.holdWideOnChaos);
+    setGoals(template.goals ?? '');
+  };
+
+  const startEditingGoals = (brief: Brief) => {
+    setEditingId(brief.id);
+    setEditingGoals(brief.config.goals ?? '');
+  };
+
+  const handleSaveGoals = async (briefId: string) => {
+    setError('');
+    setIsSaving(true);
+    try {
+      const response = await fetch(`/api/workspaces/${workspaceId}/editorial-briefs/${briefId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: { goals: editingGoals.trim() || null } }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(readError(payload, 'Failed to update brief'));
+        return;
+      }
+      setEditingId(null);
+      await load();
+    } catch {
+      setError('Failed to update brief');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCreate = async (event: React.FormEvent) => {
@@ -129,6 +162,7 @@ export function EditorialBriefsCard({ workspaceId }: { workspaceId: string }) {
           projectType,
           isDefault,
           config: {
+            goals: goals.trim() || null,
             pacing: { silenceAggressiveness: silence },
             takeSelection: {
               enabled: takeSelection,
@@ -228,8 +262,57 @@ export function EditorialBriefsCard({ workspaceId }: { workspaceId: string }) {
                   <p className="text-xs text-muted-foreground">
                     {PROJECT_TYPE_LABELS[brief.projectType]} · {summarize(brief.config)}
                   </p>
+                  {editingId === brief.id ? (
+                    <div className="mt-2 space-y-2">
+                      <Textarea
+                        aria-label={`Goals for ${brief.name}`}
+                        value={editingGoals}
+                        onChange={(event) => setEditingGoals(event.target.value)}
+                        rows={3}
+                        maxLength={2000}
+                        disabled={isSaving}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={isSaving}
+                          onClick={() => void handleSaveGoals(brief.id)}
+                        >
+                          Save goals
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={isSaving}
+                          onClick={() => setEditingId(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-1 whitespace-pre-wrap text-xs">
+                      {brief.config.goals?.trim() ? (
+                        brief.config.goals
+                      ) : (
+                        <span className="text-muted-foreground">No goals written yet.</span>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-1">
+                  {editingId !== brief.id ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => startEditingGoals(brief)}
+                    >
+                      Edit goals
+                    </Button>
+                  ) : null}
                   {!brief.isDefault ? (
                     <Button
                       type="button"
@@ -256,6 +339,21 @@ export function EditorialBriefsCard({ workspaceId }: { workspaceId: string }) {
         )}
 
         <form onSubmit={handleCreate} className="space-y-4 border-t pt-4">
+          <div className="space-y-2">
+            <Label htmlFor="brief-goals">Goals</Label>
+            <Textarea
+              id="brief-goals"
+              value={goals}
+              onChange={(event) => setGoals(event.target.value)}
+              rows={3}
+              maxLength={2000}
+              placeholder="What a good cut of this kind of project looks like."
+            />
+            <p className="text-xs text-muted-foreground">
+              Free text. Starts from the template&apos;s wording for the project type; the settings
+              below are what the assembler acts on.
+            </p>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="brief-name">Name</Label>

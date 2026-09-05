@@ -65,7 +65,7 @@ export async function loadResolvedBrief(options: {
   folderId: string | null;
   briefId?: string | null;
   projectType: EditorialProjectType;
-}): Promise<ResolvedBrief> {
+}): Promise<ResolvedBrief & { projectGuidelines: string | null }> {
   const [briefs, folders, project] = await Promise.all([
     db.editorialBrief.findMany({ where: { workspaceId: options.workspaceId } }),
     db.folder.findMany({
@@ -74,7 +74,7 @@ export async function loadResolvedBrief(options: {
     }),
     db.project.findUnique({
       where: { id: options.projectId },
-      select: { editorialBriefId: true },
+      select: { editorialBriefId: true, editorialGuidelines: true },
     }),
   ]);
   const briefsById = new Map<string, StoredBrief>(
@@ -93,15 +93,21 @@ export async function loadResolvedBrief(options: {
     const stored = briefsById.get(row.id);
     if (stored) defaultsByType.set(row.projectType, stored);
   }
-  return resolveEffectiveBrief({
-    requestedBriefId: options.briefId ?? null,
-    folderId: options.folderId,
-    folders,
-    projectBriefId: project?.editorialBriefId ?? null,
-    briefsById,
-    defaultsByType,
-    projectType: options.projectType,
-  });
+  const projectGuidelines = project?.editorialGuidelines?.trim()
+    ? project.editorialGuidelines
+    : null;
+  return {
+    ...resolveEffectiveBrief({
+      requestedBriefId: options.briefId ?? null,
+      folderId: options.folderId,
+      folders,
+      projectBriefId: project?.editorialBriefId ?? null,
+      briefsById,
+      defaultsByType,
+      projectType: options.projectType,
+    }),
+    projectGuidelines,
+  };
 }
 
 export async function loadFolderVideos(projectId: string, folderId: string | null) {

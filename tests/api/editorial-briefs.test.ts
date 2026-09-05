@@ -221,6 +221,68 @@ describe('POST /api/workspaces/[workspaceId]/editorial-briefs', () => {
     ).toBe(false);
   });
 
+  it('stores free-text goals on create and lets a patch rewrite or clear them', async () => {
+    const { owner, workspace } = await seedProject();
+    signedInAs(owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const created = await callRoute(
+      createBriefRoute,
+      apiRequest(briefsUrl(workspace.id), {
+        body: {
+          name: 'Founder stories',
+          projectType: 'TALKING_HEAD',
+          config: { goals: '  Warm, unhurried; keep the laughs.  ' },
+        },
+      }),
+      { workspaceId: workspace.id }
+    );
+    expect(created.status).toBe(201);
+    const { brief } = await readData<{ brief: { id: string } }>(created);
+    expect(
+      (await db.editorialBrief.findUniqueOrThrow({ where: { id: brief.id } })).config
+    ).toMatchObject({ goals: 'Warm, unhurried; keep the laughs.' });
+
+    const rewritten = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, brief.id), {
+        method: 'PATCH',
+        body: { config: { goals: 'Tighter this season.' } },
+      }),
+      { workspaceId: workspace.id, briefId: brief.id }
+    );
+    expect(rewritten.status).toBe(200);
+    const stored = await db.editorialBrief.findUniqueOrThrow({ where: { id: brief.id } });
+    // Only the goals moved; the rest of the template is intact.
+    expect(stored.config).toEqual({
+      ...BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD,
+      goals: 'Tighter this season.',
+    });
+
+    const cleared = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, brief.id), {
+        method: 'PATCH',
+        body: { config: { goals: null } },
+      }),
+      { workspaceId: workspace.id, briefId: brief.id }
+    );
+    expect(cleared.status).toBe(200);
+    expect(
+      (await db.editorialBrief.findUniqueOrThrow({ where: { id: brief.id } })).config
+    ).toMatchObject({ goals: null });
+
+    const tooLong = await callRoute(
+      patchBriefRoute,
+      apiRequest(briefUrl(workspace.id, brief.id), {
+        method: 'PATCH',
+        body: { config: { goals: 'x'.repeat(2001) } },
+      }),
+      { workspaceId: workspace.id, briefId: brief.id }
+    );
+    expect(tooLong.status).toBe(400);
+  });
+
   it('rejects an unknown type, a mismatched config type, and a duplicate name', async () => {
     const { owner, workspace } = await seedProject();
     await createEditorialBrief({ workspaceId: workspace.id, name: 'Taken' });

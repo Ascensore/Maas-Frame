@@ -41,7 +41,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { folderPath } from '@/lib/folders';
-import type { EditorialProjectType } from '@/lib/rough-cut/brief';
+import { PROJECT_GUIDELINES_MAX, type EditorialProjectType } from '@/lib/rough-cut/brief';
 import { PROJECT_TYPE_LABELS } from '@/components/editorial-briefs-card';
 
 type Visibility = 'PRIVATE' | 'INVITE' | 'PUBLIC';
@@ -105,6 +105,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
     allowDownloads: false,
     watermarkReviews: false,
     editorialBriefId: null as string | null,
+    editorialGuidelines: '',
   });
   const [workspaceBriefs, setWorkspaceBriefs] = useState<WorkspaceBrief[]>([]);
 
@@ -143,6 +144,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
             allowDownloads: project.allowDownloads ?? false,
             watermarkReviews: project.watermarkReviews ?? false,
             editorialBriefId: project.editorialBriefId ?? null,
+            editorialGuidelines: project.editorialGuidelines ?? '',
           });
           // The brief list is optional: without it the section simply stays hidden.
           if (typeof project.workspaceId === 'string') {
@@ -506,6 +508,30 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                     </Select>
                   </div>
                 ) : null}
+
+                <div className="space-y-3 rounded-xl border p-4">
+                  <div>
+                    <Label htmlFor="project-guidelines" className="text-sm font-medium">
+                      Editorial guidelines
+                    </Label>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Free text for this project&apos;s rough cuts: what to keep, what to drop, the
+                      tone, anything the brief does not say. Every rough cut records the text it was
+                      made with.
+                    </p>
+                  </div>
+                  <Textarea
+                    id="project-guidelines"
+                    value={formData.editorialGuidelines}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, editorialGuidelines: e.target.value }))
+                    }
+                    rows={5}
+                    maxLength={PROJECT_GUIDELINES_MAX}
+                    placeholder="Keep the founder's origin story in full. Drop any mention of the old pricing. Short, punchy pacing."
+                    disabled={isSaving}
+                  />
+                </div>
 
                 <div className="space-y-3 rounded-xl border p-4">
                   <div>

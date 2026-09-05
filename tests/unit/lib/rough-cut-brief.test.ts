@@ -369,9 +369,20 @@ describe('briefFromSnapshot', () => {
     const snapshot = buildBriefSnapshot({
       resolved: { briefId: 'brief-1', brief: BUILTIN_BRIEF_TEMPLATES.ASCENSORE, source: 'folder' },
       layoutSource: 'brief',
+      projectGuidelines: 'Keep the origin story in full.',
     });
 
+    expect(snapshot.projectGuidelines).toBe('Keep the origin story in full.');
     expect(briefFromSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
+    // Blank guidelines are stored as none, and a snapshot from before the
+    // field existed reads back as none too.
+    expect(
+      buildBriefSnapshot({
+        resolved: { briefId: null, brief: BUILTIN_BRIEF_TEMPLATES.ASCENSORE, source: 'builtin' },
+        layoutSource: 'guess',
+        projectGuidelines: '   ',
+      }).projectGuidelines
+    ).toBeNull();
     expect(briefFromSnapshot(null)).toBeNull();
     expect(briefFromSnapshot({ version: 1 })).toBeNull();
     expect(briefFromSnapshot({ brief: { projectType: 'VLOG' } })).toBeNull();
@@ -389,6 +400,7 @@ describe('briefFromSnapshot', () => {
       source: 'builtin',
       layoutSource: 'guess',
       brief: { ...BUILTIN_BRIEF_TEMPLATES.TALKING_HEAD, pacing: { silenceAggressiveness: 'high' } },
+      projectGuidelines: null,
     });
   });
 });

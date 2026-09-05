@@ -254,6 +254,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         briefSnapshot: buildBriefSnapshot({
           resolved: resolvedBrief,
           layoutSource: chosen.source,
+          projectGuidelines: resolvedBrief.projectGuidelines,
         }) as Prisma.InputJsonValue,
         requestedById: session.user.id,
         layout,
