@@ -113,7 +113,10 @@ to no single line. Beats covering the same line are grouped as takes of it, and
 **Guidelines are not the script.** `Project.editorialGuidelines` is free text from upstream. Every
 run copies it onto the brief snapshot as `projectGuidelines` and **the assembler never reads it**.
 What the assembler acts on is the structured editorial brief and, when there is one, this
-per-run script. Writing an instruction into the guidelines box will not change a cut.
+per-run script. Writing an instruction into the guidelines box will not change a cut, so both
+screens now say so: the project settings field describes itself as notes for reviewers that travel
+with the run, and the run dialog says under "Original script" that the script — not the guidelines
+— is what guides take selection.
 
 ### Derived transcript on every render
 
@@ -182,24 +185,26 @@ the deploy.
 
 ## API
 
-| Route                                                             | Change                                                                                                     |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `POST /api/projects/[projectId]/rough-cuts`                       | Accepts `script`; calls `ensureTranscriptsForVersions` for the source versions (wide only for MULTICAM)    |
-| `GET /api/rough-cuts/[roughCutId]`                                | `?include=review` adds the review payload; the script is returned only to a caller who may edit            |
-| `PUT /api/rough-cuts/[roughCutId]/overrides`                      | Saves the reviewer's overrides, validated against the run's decisions                                      |
-| `POST /api/rough-cuts/[roughCutId]/render`                        | Queues a re-render; 409 while one is already running                                                       |
-| `GET /api/rough-cuts/[roughCutId]/download`                       | Exports the **effective** program; `?cuts=1` marks the cuts that are still cuts, reviewer cuts included    |
-| `GET /api/videos/[videoId]/rough-cut`                             | The run behind a delivered cut; `{ roughCut: null }` for an ordinary video, `review: null` for a commenter |
-| `POST /api/videos/[videoId]/burn-in`                              | Queues a `BURN_SUBTITLES` job; 409 while one is active for that version                                    |
-| `GET /api/videos/[videoId]/burn-in`                               | The version's burn-in job, ignoring its PROBE_MEDIA row                                                    |
-| `POST /api/versions/[versionId]/transcript/captions`              | Builds the caption track from the version's own transcript, without transcribing again                     |
-| `PATCH /api/versions/[versionId]/transcript/segments/[segmentId]` | Edits one transcript line (text ≤ 2000, speaker ≤ 80) and rebuilds the caption track                       |
+| Route                                                             | Change                                                                                                                     |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/projects/[projectId]/rough-cuts`                       | Accepts `script`; calls `ensureTranscriptsForVersions` for the source versions (wide only for MULTICAM)                    |
+| `GET /api/rough-cuts/[roughCutId]`                                | `?include=review` adds the review payload; the script is returned only to a caller who may edit                            |
+| `PUT /api/rough-cuts/[roughCutId]/overrides`                      | Saves the reviewer's overrides, validated against the run's decisions                                                      |
+| `POST /api/rough-cuts/[roughCutId]/render`                        | Queues a re-render; 409 while one is already running                                                                       |
+| `GET /api/rough-cuts/[roughCutId]/download`                       | Exports the **effective** program; `?cuts=1` marks the cuts that are still cuts, reviewer cuts included                    |
+| `GET /api/videos/[videoId]/rough-cut`                             | The run behind a delivered cut; `{ roughCut: null }` for an ordinary video, `review: null` for a commenter                 |
+| `POST /api/videos/[videoId]/burn-in`                              | Queues a `BURN_SUBTITLES` job; 409 while one is active for that version                                                    |
+| `GET /api/videos/[videoId]/burn-in`                               | The version's burn-in job, ignoring its PROBE_MEDIA row                                                                    |
+| `POST /api/versions/[versionId]/transcript/captions`              | Builds the caption track from the version's own transcript, without transcribing again                                     |
+| `PATCH /api/versions/[versionId]/transcript/segments/[segmentId]` | Edits one transcript line (text ≤ 2000, speaker ≤ 80), blanks that line's stale translation and rebuilds the caption track |
 
 Burn-in source resolution lives in the route (`resolveSource`), which pins the chosen id into the
 job payload; the job re-derives the same rule only for a payload that names no transcript, so the
 two rules have to be kept in step by hand. The order: an explicit `subtitleId` wins; otherwise the
 READY transcript in the requested `language` (and an explicit language never falls back to a
-caption track); otherwise the oldest READY transcript; otherwise the oldest caption track.
+caption track); otherwise the **newest** READY transcript — the one the pane displays and the one
+`POST .../transcript/captions` builds from, so a version carrying two of them burns the words the
+operator is reading; otherwise the oldest caption track.
 
 ## UI
 
@@ -217,7 +222,11 @@ caption track); otherwise the oldest READY transcript; otherwise the oldest capt
 - **Transcript line editing** (`components/video-page/transcript-pane.tsx`): a pencil per line
   opening a text and speaker editor, disabled while a translation overlay is shown so an edit
   cannot save the translation over the original. The caption track is rebuilt in place, and the
-  pane reports when it was not.
+  pane reports when it was not — separately for a full account, a version already at its track
+  limit, and an untimed transcript, since only the first two have anything the operator can do
+  about them. The edited line's entry in the transcript's `translatedTexts` array is blanked in
+  the same transaction, so the overlay falls back to the corrected original instead of showing a
+  translation of the words the line used to say; the rest of the translation is left alone.
 - **Captions from the transcript**: "Generate with AI" in the subtitle menu builds from the
   transcript when there is one.
 - **Burn-in dialog** (`components/video-page/burn-in-dialog.tsx`): reached from "Burn subtitles
@@ -307,6 +316,14 @@ pre-existing `weak-transcript` also still apply.
 
 - A reaper for media jobs stuck at RUNNING after a worker crash, so a dead job stops blocking the
   version.
+- Surfacing a near-empty burn in the UI. The job logs how many untimed lines it skipped, but a
+  render that drew three cues over twenty minutes still reports plain success.
+- Moving `lib/rough-cut/review.ts` out of `lib/rough-cut/`. It imports through `@/` (as the
+  pre-existing `load.ts` and `serialize.ts` do) inside the directory `worker/Dockerfile` copies
+  wholesale. Harmless while the worker's import graph never reaches it, and a trap the day
+  something in the worker does.
+- Trimming the review payload. It ships `effective`, `applied` and `script`, none of which the
+  Cuts pane reads.
 - Streaming the burn-in upload instead of buffering it, and HDR tonemapping on both render paths.
 - Deleting the superseded caption object on the worker path.
 - Virtualising the Cuts list.
