@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool, PoolConfig } from 'pg';
-import { dbPoolIdleTimeoutMillis, dbPoolMax } from '@/lib/db-pool';
+import { dbPoolIdleTimeoutMillis, dbPoolMax, dbRuntimeConnectionString } from '@/lib/db-pool';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -20,7 +20,7 @@ function createPool(connectionString: string): Pool {
   }
 
   const poolConfig: PoolConfig = {
-    connectionString,
+    connectionString: dbRuntimeConnectionString(connectionString),
     max: dbPoolMax(),
     idleTimeoutMillis: dbPoolIdleTimeoutMillis(),
     connectionTimeoutMillis: 5000, // Return error after 5 seconds if can't connect

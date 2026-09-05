@@ -11,6 +11,7 @@
     "dev": "next dev",
     "prebuild": "bun run typecheck",
     "build": "next build",
+    "vercel-build": "bun run scripts/vercel-build.ts",
     "start": "next start",
     "start:docker": "sh ./scripts/docker-entrypoint.sh",
     "lint": "eslint --max-warnings=0",

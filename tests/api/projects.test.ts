@@ -612,6 +612,43 @@ describe('PATCH /api/projects/[projectId]', () => {
     expect(stored.allowDownloads).toBe(true);
   });
 
+  it('stores trimmed editorial guidelines and clears them when blank', async () => {
+    const scenario = await seedProject();
+    signedInAs(scenario.owner);
+
+    const written = await callRoute(
+      patchProject,
+      apiRequest(`/api/projects/${scenario.project.id}`, {
+        method: 'PATCH',
+        body: { editorialGuidelines: '  Drop any mention of the old pricing.  ' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(written.status).toBe(200);
+    expect(
+      (await db.project.findUniqueOrThrow({ where: { id: scenario.project.id } }))
+        .editorialGuidelines
+    ).toBe('Drop any mention of the old pricing.');
+    // The response carries the field so the settings page can show what was saved.
+    expect(await readData<{ editorialGuidelines: string | null }>(written)).toMatchObject({
+      editorialGuidelines: 'Drop any mention of the old pricing.',
+    });
+
+    const cleared = await callRoute(
+      patchProject,
+      apiRequest(`/api/projects/${scenario.project.id}`, {
+        method: 'PATCH',
+        body: { editorialGuidelines: '   ' },
+      }),
+      { projectId: scenario.project.id }
+    );
+    expect(cleared.status).toBe(200);
+    expect(
+      (await db.project.findUniqueOrThrow({ where: { id: scenario.project.id } }))
+        .editorialGuidelines
+    ).toBeNull();
+  });
+
   it('lets a workspace ADMIN edit a project they are not a member of', async () => {
     const scenario = await seedProject();
     const workspaceAdmin = await createUser();
@@ -642,6 +679,8 @@ describe('PATCH /api/projects/[projectId]', () => {
     [{ name: 'x'.repeat(101) }, 'a name over 100 characters'],
     [{ description: 'x'.repeat(1001) }, 'a description over 1000 characters'],
     [{ description: 5 }, 'a non-string description'],
+    [{ editorialGuidelines: 'x'.repeat(4001) }, 'guidelines over 4000 characters'],
+    [{ editorialGuidelines: ['keep'] }, 'non-string guidelines'],
     [{ visibility: 'SEMI_PRIVATE' }, 'an unknown visibility'],
     [{ allowDownloads: 'yes' }, 'a non-boolean allowDownloads'],
     [{ watermarkReviews: 'yes' }, 'a non-boolean watermarkReviews'],

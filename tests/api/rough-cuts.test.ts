@@ -613,6 +613,7 @@ describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', ()
         ...BUILTIN_BRIEF_TEMPLATES.ASCENSORE,
         technical: { roughCutProfileId: null, minShotSeconds: 3 },
       },
+      projectGuidelines: null,
     });
     // The brief's technical block beats the profile; dialog values still land on the snapshot.
     expect(stored.profileSnapshot).toMatchObject({ minShotSeconds: 3, wideCameraRole: 'B' });
@@ -626,6 +627,40 @@ describe('POST /api/projects/[projectId]/rough-cuts with an editorial brief', ()
     );
     expect(fetched.roughCut.briefId).toBe(brief.id);
     expect(fetched.roughCut.briefSnapshot).toMatchObject({ source: 'folder' });
+  });
+
+  it('records the project’s editorial guidelines on the snapshot at run time', async () => {
+    const scenario = await seedMulticam();
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialGuidelines: 'Keep the founder’s origin story in full.' },
+    });
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{ roughCut: { id: string } }>(response);
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(stored.briefSnapshot).toMatchObject({
+      source: 'builtin',
+      projectGuidelines: 'Keep the founder’s origin story in full.',
+    });
+
+    // Later edits to the project do not rewrite what an existing run recorded.
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editorialGuidelines: null },
+    });
+    const again = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+    expect(again.briefSnapshot).toMatchObject({
+      projectGuidelines: 'Keep the founder’s origin story in full.',
+    });
   });
 
   it('a brief’s profile pointer picks the profile, and an explicit profileId still wins', async () => {
