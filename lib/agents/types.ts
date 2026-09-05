@@ -1,4 +1,6 @@
-export type AgentKind = 'REVIEW' | 'EDIT';
+import type { ShortFormAiInput, ShortFormAiResult } from '@/lib/short-form/ai';
+
+export type AgentKind = 'REVIEW' | 'EDIT' | 'SHORTS';
 
 export type AgentContextComment = {
   id: string;
@@ -59,4 +61,5 @@ export interface AgentModel {
   name: string;
   generateFindings(input: { system: string; context: AgentContext }): Promise<ReviewFindings>;
   generateEditPlan(input: { system: string; context: AgentContext }): Promise<EditPlan>;
+  rankShorts(input: { system: string; context: ShortFormAiInput }): Promise<ShortFormAiResult>;
 }

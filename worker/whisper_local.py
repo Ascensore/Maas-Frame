@@ -41,6 +41,7 @@ def main() -> int:
                     "start": float(word.start),
                     "end": float(word.end),
                     "text": word.word.strip(),
+                    "confidence": float(word.probability),
                 }
             )
         segments.append(

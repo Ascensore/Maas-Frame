@@ -14,6 +14,7 @@ import {
   countFillers,
   countLongPauses,
   countRestarts,
+  endsSentence,
   excerpt,
   jaccard,
   normalizeWord,
@@ -44,6 +45,28 @@ export const TAKE_CONTAINMENT_MIN_TOKENS = 6;
  * the day") sits inside plenty of long beats without being a take of them.
  */
 export const TAKE_CONTAINMENT_MAX_RATIO = 3;
+export const TAKE_ORDERED_COVERAGE_THRESHOLD = 0.8;
+export const TAKE_ORDERED_MIN_TOKENS = 5;
+export const TAKE_ORDERED_WINDOW_SECONDS = 45;
+export const TAKE_ORDERED_MIN_SECONDS = 2;
+
+/** Ordered lexical coverage of the shorter range, tolerant of inserted words. */
+export function orderedTokenCoverage(left: string[], right: string[]): number {
+  if (Math.min(left.length, right.length) < TAKE_ORDERED_MIN_TOKENS) return 0;
+  const previous = new Array<number>(right.length + 1).fill(0);
+  for (const token of left) {
+    let diagonal = 0;
+    for (let index = 1; index <= right.length; index += 1) {
+      const above = previous[index]!;
+      previous[index] =
+        token === right[index - 1]
+          ? diagonal + 1
+          : Math.max(previous[index]!, previous[index - 1]!);
+      diagonal = above;
+    }
+  }
+  return previous[right.length]! / Math.min(left.length, right.length);
+}
 
 export type TakeCandidate = {
   beat: Beat;
@@ -53,6 +76,8 @@ export type TakeCandidate = {
   energy: number | null;
   /** How well the beat matches the operator's script, 0–1, when there is one. */
   scriptMatch?: number | null;
+  /** Mean provider word confidence when the provider supplied it. */
+  transcriptConfidence?: number | null;
 };
 
 export type TakeScores = {
@@ -79,6 +104,8 @@ export function groupTakes(
     fillers: ReadonlySet<string>;
     similarity?: number;
     windowSeconds?: number;
+    /** Tight-mode local alignment for short sentence/restart units. */
+    orderedAlignment?: boolean;
     /** Index groups a second signal found, unioned in as if their members matched. */
     alsoGroup?: number[][];
   }
@@ -86,6 +113,7 @@ export function groupTakes(
   const similarity = options.similarity ?? TAKE_SIMILARITY_THRESHOLD;
   const window = options.windowSeconds ?? TAKE_WINDOW_SECONDS;
   const shingles: Array<Set<string> | null> = [];
+  const orderedTokens: string[][] = [];
   const tokenCounts: number[] = [];
   for (const candidate of candidates) {
     const tokens = contentTokens(
@@ -93,6 +121,7 @@ export function groupTakes(
       options.fillers
     );
     tokenCounts.push(tokens.length);
+    orderedTokens.push(tokens);
     shingles.push(tokens.length >= TAKE_MIN_CONTENT_TOKENS ? trigrams(tokens) : null);
   }
   /** One take says a piece of the other, and the two are of comparable length. */
@@ -111,8 +140,18 @@ export function groupTakes(
       const right = shingles[b];
       if (!right) continue;
       if (Math.abs(candidates[b]!.timelineStart - candidates[a]!.timelineStart) > window) continue;
+      const localOrderedMatch =
+        options.orderedAlignment === true &&
+        Math.abs(candidates[b]!.timelineStart - candidates[a]!.timelineStart) <=
+          TAKE_ORDERED_WINDOW_SECONDS &&
+        beatDuration(candidates[a]!.beat) >= TAKE_ORDERED_MIN_SECONDS &&
+        beatDuration(candidates[b]!.beat) >= TAKE_ORDERED_MIN_SECONDS &&
+        beatDuration(candidates[a]!.beat) <= TAKE_ORDERED_WINDOW_SECONDS &&
+        beatDuration(candidates[b]!.beat) <= TAKE_ORDERED_WINDOW_SECONDS &&
+        orderedTokenCoverage(orderedTokens[a]!, orderedTokens[b]!) >=
+          TAKE_ORDERED_COVERAGE_THRESHOLD;
       // Containment is the expensive fallback, so it only runs when Jaccard fails.
-      if (jaccard(left, right) < similarity && !contained(a, b)) continue;
+      if (jaccard(left, right) < similarity && !contained(a, b) && !localOrderedMatch) continue;
       parent[find(parent, a)] = find(parent, b);
     }
   }
@@ -160,18 +199,26 @@ const CLEANLINESS_EPSILON = 1e-9;
 
 function compareBy(
   ranking: BriefRankingCriterion[],
-  scores: Map<number, TakeScores>
+  scores: Map<number, TakeScores>,
+  candidates: TakeCandidate[],
+  preferred: ReadonlySet<number>
 ): (a: number, b: number) => number {
   return (a, b) => {
     const left = scores.get(a)!;
     const right = scores.get(b)!;
+    if (ranking.includes('script_match')) {
+      const l = left.scriptMatch ?? -1;
+      const r = right.scriptMatch ?? -1;
+      if (l !== r) return r - l;
+    }
+    const leftComplete = endsSentence(candidates[a]!.beat.words.at(-1)?.text ?? '') ? 1 : 0;
+    const rightComplete = endsSentence(candidates[b]!.beat.words.at(-1)?.text ?? '') ? 1 : 0;
+    if (leftComplete !== rightComplete) return rightComplete - leftComplete;
+    const leftConfidence = candidates[a]!.transcriptConfidence ?? -1;
+    const rightConfidence = candidates[b]!.transcriptConfidence ?? -1;
+    if (leftConfidence !== rightConfidence) return rightConfidence - leftConfidence;
+    if (preferred.has(a) !== preferred.has(b)) return preferred.has(b) ? 1 : -1;
     for (const criterion of ranking) {
-      if (criterion === 'script_match') {
-        // A take with no script match at all loses to one that has any.
-        const l = left.scriptMatch ?? -1;
-        const r = right.scriptMatch ?? -1;
-        if (l !== r) return r - l;
-      }
       if (
         criterion === 'cleanliness' &&
         Math.abs(left.cleanliness - right.cleanliness) > CLEANLINESS_EPSILON
@@ -259,6 +306,8 @@ export type ResolveTakesOptions = {
   alignments?: ScriptAlignment[];
   /** The run's shortest kept shot; a splice may not leave less than this behind. */
   minShotSeconds?: number;
+  /** High-confidence preferred versions from the optional semantic model. */
+  preferredIndices?: ReadonlySet<number>;
 };
 
 /**
@@ -324,7 +373,12 @@ export function resolveTakes(
         scriptMatch: candidate.scriptMatch ?? null,
       });
     }
-    const rank = compareBy(options.ranking, scores);
+    const rank = compareBy(
+      options.ranking,
+      scores,
+      candidates,
+      options.preferredIndices ?? new Set()
+    );
     const order = [...group].sort((a, b) => sizeOf(b) - sizeOf(a) || rank(a, b));
 
     const kept: Array<{ index: number; cuts: SpliceCut[] }> = [];

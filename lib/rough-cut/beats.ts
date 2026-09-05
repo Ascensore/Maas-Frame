@@ -17,7 +17,7 @@ import type { CutReasonCode as ProgramCutReasonCode } from './types';
 
 export type SpeechRun = { start: number; end: number };
 
-export type BeatWord = TimedWord & { speaker: string | null };
+export type BeatWord = TimedWord & { speaker: string | null; confidence?: number };
 
 export type Beat = {
   versionId: string;
@@ -87,7 +87,14 @@ export function wordsFromSegments(
       const start = Math.max(0, Math.min(clampEnd, word.start));
       const end = Math.max(start, Math.min(clampEnd, word.end));
       if (start >= clampEnd) continue;
-      out.push({ start, end, text: word.text, speaker });
+      const confidence = (word as Partial<BeatWord>).confidence;
+      out.push({
+        start,
+        end,
+        text: word.text,
+        speaker,
+        ...(typeof confidence === 'number' && Number.isFinite(confidence) ? { confidence } : {}),
+      });
     }
   }
   return out.sort((a, b) => a.start - b.start || a.end - b.end);
@@ -111,7 +118,13 @@ function deadAir(
 
 export function analyseSpeech(
   segments: TranscriptSegmentRow[],
-  options: { versionId: string; durationSeconds: number; policy: SilencePolicy }
+  options: {
+    versionId: string;
+    durationSeconds: number;
+    policy: SilencePolicy;
+    /** Local VAD speech islands. When supplied, automatic cuts never overlap them. */
+    voiceActivity?: SpeechRun[];
+  }
 ): SpeechAnalysis {
   const { versionId, policy } = options;
   const words = wordsFromSegments(segments, options.durationSeconds);
@@ -120,9 +133,40 @@ export function analyseSpeech(
   if (words.length === 0) return { beats, cuts, runs: [] };
 
   const first = words[0]!;
-  if (first.start > policy.maxKeptGapBetweenBeatsSeconds + EPSILON) {
-    cuts.push(deadAir(versionId, 0, first.start, 'before the first word'));
-  }
+  const voiceActivity = options.voiceActivity
+    ?.filter((run) => run.end > run.start + EPSILON)
+    .sort((a, b) => a.start - b.start);
+  const confirmedSilence = (start: number, end: number): SpeechRun[] => {
+    if (!voiceActivity) return end > start + EPSILON ? [{ start, end }] : [];
+    let cursor = start;
+    const silence: SpeechRun[] = [];
+    for (const speech of voiceActivity) {
+      if (speech.end <= cursor + EPSILON) continue;
+      if (speech.start >= end - EPSILON) break;
+      if (speech.start > cursor + EPSILON) {
+        silence.push({ start: cursor, end: Math.min(end, speech.start) });
+      }
+      cursor = Math.max(cursor, speech.end);
+      if (cursor >= end - EPSILON) break;
+    }
+    if (cursor < end - EPSILON) silence.push({ start: cursor, end });
+    return silence.filter((run) => run.end > run.start + EPSILON);
+  };
+  const compressedGap = (
+    start: number,
+    end: number,
+    limit: number,
+    retained: number
+  ): SpeechRun[] => {
+    if (end - start <= limit + EPSILON) return [];
+    const keep = Math.min(retained, Math.max(0, end - start));
+    return confirmedSilence(start + keep / 2, end - keep / 2);
+  };
+
+  const leading = compressedGap(0, first.start, policy.maxKeptGapBetweenBeatsSeconds, 0);
+  cuts.push(
+    ...leading.map((range) => deadAir(versionId, range.start, range.end, 'before the first word'))
+  );
 
   let beat: Beat = {
     versionId,
@@ -146,16 +190,36 @@ export function analyseSpeech(
     const limit = afterTerminal
       ? policy.maxKeptGapBetweenBeatsSeconds
       : policy.maxKeptGapInsideBeatSeconds;
-    const cut = pause > limit + EPSILON;
+    const retained = afterTerminal
+      ? policy.retainedGapBetweenBeatsSeconds
+      : policy.retainedGapInsideBeatSeconds;
+    const removed = compressedGap(previous.end, word.start, limit, retained);
+    const cut = removed.length > 0;
     const endsBeat = speakerChange || pause > policy.maxKeptGapBetweenBeatsSeconds + EPSILON;
 
-    if (cut) {
-      cuts.push(
-        deadAir(versionId, previous.end, word.start, endsBeat ? 'between thoughts' : 'mid-sentence')
-      );
-    }
+    cuts.push(
+      ...removed.map((range) =>
+        deadAir(
+          versionId,
+          range.start,
+          range.end,
+          (policy.detectNestedTakes ? afterTerminal : endsBeat || afterTerminal)
+            ? 'between thoughts'
+            : 'mid-sentence'
+        )
+      )
+    );
 
     if (endsBeat) {
+      if (cut) {
+        beat.runs[beat.runs.length - 1]!.end = removed[0]!.start;
+        for (let removedIndex = 1; removedIndex < removed.length; removedIndex += 1) {
+          beat.runs.push({
+            start: removed[removedIndex - 1]!.end,
+            end: removed[removedIndex]!.start,
+          });
+        }
+      }
       closeBeat();
       beat = {
         versionId,
@@ -163,7 +227,7 @@ export function analyseSpeech(
         end: word.end,
         speaker: word.speaker,
         words: [word],
-        runs: [{ start: word.start, end: word.end }],
+        runs: [{ start: cut ? removed[removed.length - 1]!.end : word.start, end: word.end }],
       };
       continue;
     }
@@ -173,7 +237,14 @@ export function analyseSpeech(
     if (beat.speaker === null) beat.speaker = word.speaker;
     const run = beat.runs[beat.runs.length - 1]!;
     if (cut) {
-      beat.runs.push({ start: word.start, end: word.end });
+      run.end = removed[0]!.start;
+      for (let removedIndex = 1; removedIndex < removed.length; removedIndex += 1) {
+        beat.runs.push({
+          start: removed[removedIndex - 1]!.end,
+          end: removed[removedIndex]!.start,
+        });
+      }
+      beat.runs.push({ start: removed[removed.length - 1]!.end, end: word.end });
     } else {
       run.end = Math.max(run.end, word.end);
     }
@@ -181,14 +252,91 @@ export function analyseSpeech(
   closeBeat();
 
   const last = words[words.length - 1]!;
-  if (
-    Number.isFinite(options.durationSeconds) &&
-    options.durationSeconds - last.end > policy.maxKeptGapBetweenBeatsSeconds + EPSILON
-  ) {
-    cuts.push(deadAir(versionId, last.end, options.durationSeconds, 'after the last word'));
+  if (Number.isFinite(options.durationSeconds)) {
+    const trailing = compressedGap(
+      last.end,
+      options.durationSeconds,
+      policy.maxKeptGapBetweenBeatsSeconds,
+      0
+    );
+    cuts.push(
+      ...trailing.map((range) => deadAir(versionId, range.start, range.end, 'after the last word'))
+    );
   }
 
   return { beats, cuts, runs: beats.flatMap((entry) => entry.runs) };
+}
+
+const EXPLICIT_RESTARTS = new Set(['again', 'sorry', 'restart', 'actually']);
+const REPEATED_OPENING_TOKENS = 5;
+
+/**
+ * Sentence/restart units used by the tight take detector. The regular beat
+ * model remains unchanged, preserving old decision lists, while tight can
+ * compare a repeated line nested inside one long transcript beat.
+ */
+export function takeUnitsFromBeats(beats: Beat[], fillers: ReadonlySet<string>): Beat[] {
+  const units: Beat[] = [];
+  for (const beat of beats) {
+    if (beat.words.length < 2) {
+      units.push(beat);
+      continue;
+    }
+    const boundaries = new Set<number>([0, beat.words.length]);
+    for (let index = 1; index < beat.words.length; index += 1) {
+      const token = contentTokens([beat.words[index]!.text], fillers)[0] ?? '';
+      if (endsSentence(beat.words[index - 1]!.text) || EXPLICIT_RESTARTS.has(token)) {
+        boundaries.add(index);
+      }
+    }
+    const tokens = beat.words.map((word) => contentTokens([word.text], fillers)[0] ?? '');
+    for (let right = REPEATED_OPENING_TOKENS; right < tokens.length; right += 1) {
+      if (!tokens[right]) continue;
+      for (let left = 0; left + REPEATED_OPENING_TOKENS <= right; left += 1) {
+        const repeated = Array.from(
+          { length: REPEATED_OPENING_TOKENS },
+          (_, offset) => offset
+        ).every(
+          (offset) => tokens[left + offset] && tokens[left + offset] === tokens[right + offset]
+        );
+        if (repeated) {
+          boundaries.add(right);
+          right += REPEATED_OPENING_TOKENS - 1;
+          break;
+        }
+      }
+    }
+    const positions = [...boundaries].sort((a, b) => a - b);
+    for (let index = 1; index < positions.length; index += 1) {
+      const first = positions[index - 1]!;
+      const last = positions[index]!;
+      const words = beat.words.slice(first, last);
+      if (words.length === 0) continue;
+      const leftBoundary =
+        first === 0
+          ? (beat.runs[0]?.start ?? words[0]!.start)
+          : (beat.words[first - 1]!.end + words[0]!.start) / 2;
+      const rightBoundary =
+        last === beat.words.length
+          ? (beat.runs[beat.runs.length - 1]?.end ?? words[words.length - 1]!.end)
+          : (words[words.length - 1]!.end + beat.words[last]!.start) / 2;
+      const runs = beat.runs
+        .map((run) => ({
+          start: Math.max(run.start, leftBoundary),
+          end: Math.min(run.end, rightBoundary),
+        }))
+        .filter((run) => run.end > run.start + EPSILON);
+      units.push({
+        ...beat,
+        start: words[0]!.start,
+        end: words[words.length - 1]!.end,
+        speaker: words.find((word) => word.speaker)?.speaker ?? beat.speaker,
+        words,
+        runs,
+      });
+    }
+  }
+  return units;
 }
 
 export function beatText(beat: Beat): string {

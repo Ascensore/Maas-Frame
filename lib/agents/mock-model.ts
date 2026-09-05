@@ -1,6 +1,7 @@
 import { TRANSCRIPT_NOT_READY_MESSAGE } from '@/lib/agents/errors';
 import { emptyEditPlan } from '@/lib/agents/edit-plan';
 import type { AgentContext, AgentModel, EditPlan, ReviewFindings } from '@/lib/agents/types';
+import type { ShortFormAiResult } from '@/lib/short-form/ai';
 
 export const MOCK_MODEL_NAME = 'mock';
 
@@ -44,6 +45,21 @@ export function createMockAgentModel(): AgentModel {
     },
     async generateEditPlan({ context }): Promise<EditPlan> {
       return mockEditPlan(context);
+    },
+    async rankShorts({ context }): Promise<ShortFormAiResult> {
+      return {
+        candidates: [...context.candidates]
+          .sort((a, b) => b.deterministicScore - a.deterministicScore)
+          .map((candidate, index) => ({
+            id: candidate.id,
+            rank: index + 1,
+            title: candidate.transcript.slice(0, 80),
+            socialCaption: candidate.transcript.slice(0, 300),
+            hashtags: [],
+            hook: candidate.transcript.slice(0, 160),
+            rationale: 'Deterministic mock reranking.',
+          })),
+      };
     },
   };
 }

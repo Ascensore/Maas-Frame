@@ -147,6 +147,10 @@ import * as roughCutRoute from '@/app/api/rough-cuts/[roughCutId]/route';
 import * as roughCutDownloadRoute from '@/app/api/rough-cuts/[roughCutId]/download/route';
 import * as roughCutOverridesRoute from '@/app/api/rough-cuts/[roughCutId]/overrides/route';
 import * as roughCutRenderRoute from '@/app/api/rough-cuts/[roughCutId]/render/route';
+import * as roughCutShortsRoute from '@/app/api/rough-cuts/[roughCutId]/shorts/route';
+import * as shortFormBatchRoute from '@/app/api/short-form-batches/[batchId]/route';
+import * as shortFormRenderRoute from '@/app/api/short-form-batches/[batchId]/render/route';
+import * as shortRoute from '@/app/api/shorts/[shortId]/route';
 
 // ---------------------------------------------------------------------------
 // R2 boundary
@@ -192,7 +196,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 106;
+const EXPECTED_ROUTE_MODULE_COUNT = 110;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -280,6 +284,8 @@ interface Fixtures {
   roughCutId: string;
   profileId: string;
   briefId: string;
+  shortFormBatchId: string;
+  shortFormCandidateId: string;
 }
 
 async function seedFixtures(): Promise<Fixtures> {
@@ -401,6 +407,33 @@ async function seedFixtures(): Promise<Fixtures> {
     status: 'READY',
   });
   const brief = await createEditorialBrief({ workspaceId: workspace.id, name: 'Show' });
+  const shortFormBatch = await db.shortFormBatch.create({
+    data: {
+      roughCutId: roughCut.id,
+      sourceVersionId: version.id,
+      requestedById: owner.id,
+      status: 'READY',
+      config: {
+        count: 8,
+        minDurationSeconds: 15,
+        maxDurationSeconds: 45,
+        useAi: false,
+        captionStyle: {},
+      },
+    },
+  });
+  const shortFormCandidate = await db.shortFormCandidate.create({
+    data: {
+      batchId: shortFormBatch.id,
+      rank: 1,
+      sourceStartSec: 1,
+      sourceEndSec: 20,
+      score: 0.8,
+      scores: {},
+      title: 'Matrix short',
+      captionStyle: {},
+    },
+  });
 
   const feedback = await db.userFeedback.create({
     data: {
@@ -432,6 +465,8 @@ async function seedFixtures(): Promise<Fixtures> {
     profileId: profile.id,
     roughCutId: roughCut.id,
     briefId: brief.id,
+    shortFormBatchId: shortFormBatch.id,
+    shortFormCandidateId: shortFormCandidate.id,
   };
 }
 
@@ -450,6 +485,7 @@ interface RouteCase {
   /** JSON body for the non-GET methods. A valid `{}` by default, so that a
    *  route which parses before authorizing rejects rather than crashes. */
   body?: unknown;
+  bodyFor?: (fixtures: Fixtures) => unknown;
   /** Replaces `body`, for the routes that read request.formData(). */
   rawBody?: (fixtures: Fixtures) => BodyInit;
   headers?: Record<string, string>;
@@ -1129,6 +1165,33 @@ const ROUTE_CASES: readonly RouteCase[] = [
     params: (f) => ({ roughCutId: f.roughCutId }),
   },
   {
+    file: 'rough-cuts/[roughCutId]/shorts/route.ts',
+    module: roughCutShortsRoute,
+    url: (f) => `/api/rough-cuts/${f.roughCutId}/shorts`,
+    params: (f) => ({ roughCutId: f.roughCutId }),
+    body: { count: 8 },
+  },
+  {
+    file: 'short-form-batches/[batchId]/route.ts',
+    module: shortFormBatchRoute,
+    url: (f) => `/api/short-form-batches/${f.shortFormBatchId}`,
+    params: (f) => ({ batchId: f.shortFormBatchId }),
+  },
+  {
+    file: 'short-form-batches/[batchId]/render/route.ts',
+    module: shortFormRenderRoute,
+    url: (f) => `/api/short-form-batches/${f.shortFormBatchId}/render`,
+    params: (f) => ({ batchId: f.shortFormBatchId }),
+    bodyFor: (f) => ({ candidateIds: [f.shortFormCandidateId] }),
+  },
+  {
+    file: 'shorts/[shortId]/route.ts',
+    module: shortRoute,
+    url: (f) => `/api/shorts/${f.shortFormCandidateId}`,
+    params: (f) => ({ shortId: f.shortFormCandidateId }),
+    body: { title: 'Changed' },
+  },
+  {
     file: 'workspaces/[workspaceId]/members/invitations/[invitationId]/route.ts',
     module: workspaceInvitationRoute,
     url: (f) => `/api/workspaces/${f.workspaceId}/members/invitations/${f.workspaceInvitationId}`,
@@ -1296,6 +1359,7 @@ describe('auth matrix', () => {
       signedOut();
       vi.stubEnv('OPENFRAME_ENABLE_AGENTS', 'true');
       vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+      vi.stubEnv('OPENFRAME_ENABLE_SHORTS', 'true');
       fixtures = await seedFixtures();
     });
 
@@ -1316,7 +1380,9 @@ describe('auth matrix', () => {
             ...(sendsBody
               ? entry.rawBody
                 ? { rawBody: entry.rawBody(fixtures) }
-                : { body: entry.body ?? {} }
+                : {
+                    body: entry.bodyFor ? entry.bodyFor(fixtures) : (entry.body ?? {}),
+                  }
               : {}),
           });
 

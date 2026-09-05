@@ -27,7 +27,12 @@ describe('materializeFfmpegArgs', () => {
     expect(args[args.indexOf('-t', firstDashI) + 1]).toBe('2.250');
 
     expect(args).toContain('-filter_complex');
-    expect(args).toContain('[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[vout][aout]');
+    const filter = args[args.indexOf('-filter_complex') + 1]!;
+    expect(filter).toContain('[0:a:0]afade=t=in:st=0:d=0.005');
+    expect(filter).toContain('afade=t=out:st=2.495:d=0.005[a0]');
+    expect(filter).toContain('[1:a:0]afade=t=in:st=0:d=0.005');
+    expect(filter).toContain('afade=t=out:st=2.245:d=0.005[a1]');
+    expect(filter).toContain('[0:v:0][a0][1:v:0][a1]concat=n=2:v=1:a=1[vout][aout]');
     expect(args).toContain('libx264');
     expect(args).toContain('aac');
     expect(args[args.length - 1]).toBe('/tmp/out.mp4');

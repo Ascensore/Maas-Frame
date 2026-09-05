@@ -88,6 +88,7 @@ const REVIEWED_MIGRATIONS = [
   '20260907110000_sequence_link_identity',
   '20260907120000_transcript_first_editing',
   '20260906120000_project_edit_script',
+  '20260908100000_short_form', // replayed: one active batch per source version
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */
@@ -97,6 +98,7 @@ const REQUIRED_INDEXES = [
   'video_versions_r2_originalurl_unique',
   'video_versions_r2_thumbnail_unique',
   'transcripts_search_vector_idx',
+  'short_form_batches_active_source_key',
 ];
 
 const POST_PUSH_SQL = `
@@ -155,6 +157,13 @@ CREATE TRIGGER transcripts_search_vector_trigger
 BEFORE INSERT OR UPDATE OF search_text ON transcripts
 FOR EACH ROW
 EXECUTE FUNCTION transcripts_search_vector_update();
+
+-- Replayed from 20260908100000_short_form. Prisma cannot express a partial
+-- unique index; this is the transaction-safe guard against two active batches
+-- analyzing the same snapshotted rough-cut version.
+CREATE UNIQUE INDEX IF NOT EXISTS "short_form_batches_active_source_key"
+ON "short_form_batches" ("source_version_id")
+WHERE "status" IN ('PENDING', 'ANALYZING', 'RANKING');
 `;
 
 function assertMigrationsReviewed(): void {

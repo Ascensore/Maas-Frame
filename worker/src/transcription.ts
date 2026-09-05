@@ -7,6 +7,7 @@ export type TranscriptWord = {
   start: number;
   end: number;
   text: string;
+  confidence?: number;
 };
 
 export type TranscriptCue = {
@@ -190,7 +191,7 @@ const deepgramProvider: TranscriptionProvider = {
           detected_language?: string;
           alternatives?: Array<{
             transcript?: string;
-            words?: Array<{ word?: string; start?: number; end?: number }>;
+            words?: Array<{ word?: string; start?: number; end?: number; confidence?: number }>;
           }>;
         }>;
       };
@@ -203,6 +204,7 @@ const deepgramProvider: TranscriptionProvider = {
         start: typeof word.start === 'number' ? word.start : 0,
         end: typeof word.end === 'number' ? word.end : 0,
         text: word.word as string,
+        ...(typeof word.confidence === 'number' ? { confidence: word.confidence } : {}),
       }));
 
     const detected =

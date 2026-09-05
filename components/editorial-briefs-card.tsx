@@ -41,6 +41,7 @@ const SILENCE_LABELS: Record<SilenceAggressiveness, string> = {
   low: 'Low — keep most pauses',
   medium: 'Medium',
   high: 'High — cut dead air hard',
+  tight: 'Tight — talking-head jump cuts',
 };
 
 function readError(payload: unknown, fallback: string): string {

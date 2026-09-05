@@ -18,6 +18,8 @@ import { upsertCaptionTrack } from '../lib/rough-cut/caption-track';
 import { serializeWebVtt } from '../lib/subtitle-validation';
 import { importDriveFile } from './import-drive';
 import { materializeRoughCut } from './materialize-rough-cut';
+import { analyzeShortFormBatch } from './analyze-short-form';
+import { renderShortFormCandidate } from './render-short-form';
 import {
   createWhisperLocalProvider,
   getWorkerTranscriptionProvider,
@@ -667,6 +669,8 @@ const QUEUE = {
   IMPORT_DRIVE: 'import-drive',
   MATERIALIZE_ROUGH_CUT: 'materialize-rough-cut',
   BURN_SUBTITLES: 'burn-subtitles',
+  ANALYZE_SHORT_FORM: 'analyze-short-form',
+  RENDER_SHORT_FORM: 'render-short-form',
 } as const;
 
 type MediaJobData = {
@@ -685,6 +689,8 @@ function queueForKind(kind: string): string {
   if (kind === 'IMPORT_DRIVE') return QUEUE.IMPORT_DRIVE;
   if (kind === 'MATERIALIZE_ROUGH_CUT') return QUEUE.MATERIALIZE_ROUGH_CUT;
   if (kind === 'BURN_SUBTITLES') return QUEUE.BURN_SUBTITLES;
+  if (kind === 'ANALYZE_SHORT_FORM') return QUEUE.ANALYZE_SHORT_FORM;
+  if (kind === 'RENDER_SHORT_FORM') return QUEUE.RENDER_SHORT_FORM;
   // Typed, so publishClaimedJobs can skip this one job instead of abandoning
   // the rest of the batch the way a real queue failure has to.
   throw new UnknownJobKindError(kind);
@@ -784,6 +790,34 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
         },
         data.versionId,
         payload
+      );
+    } else if (kind === 'ANALYZE_SHORT_FORM') {
+      const batchId =
+        data.payload && typeof data.payload === 'object' && 'batchId' in data.payload
+          ? String((data.payload as { batchId?: unknown }).batchId ?? '')
+          : '';
+      if (!batchId) throw new Error('ANALYZE_SHORT_FORM payload is missing batchId');
+      await analyzeShortFormBatch(
+        {
+          pool,
+          run,
+          downloadVersionMedia: downloadVersionFile,
+          scriptDir: join(import.meta.dir, '..'),
+          ...(process.env.SHORT_FORM_VISUAL_PYTHON
+            ? { visualPython: process.env.SHORT_FORM_VISUAL_PYTHON }
+            : {}),
+        },
+        batchId
+      );
+    } else if (kind === 'RENDER_SHORT_FORM') {
+      const candidateId =
+        data.payload && typeof data.payload === 'object' && 'candidateId' in data.payload
+          ? String((data.payload as { candidateId?: unknown }).candidateId ?? '')
+          : '';
+      if (!candidateId) throw new Error('RENDER_SHORT_FORM payload is missing candidateId');
+      await renderShortFormCandidate(
+        { pool, run, downloadVersionMedia: downloadVersionFile, uploadObject },
+        candidateId
       );
     } else {
       throw new Error(`Unknown job kind ${kind}`);
@@ -895,6 +929,16 @@ async function start(): Promise<void> {
   await boss.work(QUEUE.BURN_SUBTITLES, async (jobs) => {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'BURN_SUBTITLES');
+    }
+  });
+  await boss.work(QUEUE.ANALYZE_SHORT_FORM, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'ANALYZE_SHORT_FORM');
+    }
+  });
+  await boss.work(QUEUE.RENDER_SHORT_FORM, async (jobs) => {
+    for (const job of jobs) {
+      await runMediaJob(job.data as MediaJobData, 'RENDER_SHORT_FORM');
     }
   });
 

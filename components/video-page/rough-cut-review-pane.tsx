@@ -22,6 +22,7 @@ import {
   RoughCutSourcePreview,
   type RoughCutSourcePreviewHandle,
 } from '@/components/video-page/rough-cut-source-preview';
+import { ShortFormPanel } from '@/components/video-page/short-form-panel';
 
 /**
  * What the assembler removed from the delivered cut, why, and what the reviewer
@@ -417,6 +418,7 @@ export function RoughCutReviewPane({
       </section>
 
       {error && <p className="text-destructive text-xs">{error}</p>}
+      {roughCut?.id && <ShortFormPanel roughCutId={roughCut.id} />}
     </div>
   );
 }

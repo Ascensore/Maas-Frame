@@ -47,7 +47,7 @@ export const deepgramProvider: TranscriptionProvider = {
           detected_language?: string;
           alternatives?: Array<{
             transcript?: string;
-            words?: Array<{ word?: string; start?: number; end?: number }>;
+            words?: Array<{ word?: string; start?: number; end?: number; confidence?: number }>;
           }>;
         }>;
       };
@@ -60,6 +60,7 @@ export const deepgramProvider: TranscriptionProvider = {
         start: typeof word.start === 'number' ? word.start : 0,
         end: typeof word.end === 'number' ? word.end : 0,
         text: word.word as string,
+        ...(typeof word.confidence === 'number' ? { confidence: word.confidence } : {}),
       }));
 
     const detected =
@@ -73,7 +74,7 @@ export const deepgramProvider: TranscriptionProvider = {
 };
 
 function groupWordsIntoCues(
-  words: Array<{ start: number; end: number; text: string }>
+  words: Array<{ start: number; end: number; text: string; confidence?: number }>
 ): TranscriptionResult['segments'] {
   if (words.length === 0) return [];
 

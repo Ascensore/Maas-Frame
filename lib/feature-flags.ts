@@ -184,6 +184,11 @@ export function isRoughCutFeatureEnabled() {
   return readBooleanEnv('OPENFRAME_ENABLE_ROUGH_CUT', false);
 }
 
+/** On-demand vertical clips derived from completed rough-cut versions. */
+export function isShortsFeatureEnabled() {
+  return readBooleanEnv('OPENFRAME_ENABLE_SHORTS', false);
+}
+
 /**
  * Speaker diarization for rough cuts and transcript segments. Defaults off:
  * pyannote 3.1 is a gated Hugging Face model and needs HUGGINGFACE_TOKEN.
