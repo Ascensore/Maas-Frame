@@ -1,3 +1,4 @@
+import { parseEditScript } from '@/lib/rough-cut/script';
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { auth, checkProjectAccess } from '@/lib/auth';
@@ -170,6 +171,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const updateData: Record<string, unknown> = {};
+    if (body.editScript !== undefined) {
+      const parsed = parseEditScript(body.editScript);
+      if (!parsed.ok) return apiErrors.badRequest(parsed.error);
+      updateData.editScript = parsed.value;
+    }
     if (name !== undefined) updateData.name = name.trim();
     if (description !== undefined) updateData.description = description?.trim() || null;
     if (visibility !== undefined) updateData.visibility = visibility;

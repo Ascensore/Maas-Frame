@@ -1,13 +1,13 @@
 import { parseTimecode } from '../timecode';
 
 const CREATION_TIME_KEYS = [
-  'creation_time',
   'com.apple.quicktime.creationdate',
+  'datetimeoriginal',
+  'recorded_date',
+  'creation_time',
   'date',
   'encoded_date',
   'tagged_date',
-  'datetimeoriginal',
-  'recorded_date',
   'media_create_date',
 ];
 
@@ -174,21 +174,12 @@ export function parseMediaCreationTime(value: string): Date | null {
   if (parseTimecode(trimmed)) return null;
 
   const withoutUtc = trimmed.replace(/^utc\s+/i, '');
-  const exif = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(withoutUtc);
-  if (exif) {
-    return dateFromParts(
-      Number(exif[1]),
-      Number(exif[2]),
-      Number(exif[3]),
-      Number(exif[4]),
-      Number(exif[5]),
-      Number(exif[6])
-    );
-  }
-
-  const withColonTz = withoutUtc.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+  // Normalize EXIF separators without discarding an explicit timezone.
+  const normalized = withoutUtc.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+  const withColonTz = normalized.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
   const isoish = /T/.test(withColonTz) ? withColonTz : withColonTz.replace(' ', 'T');
-  const ms = Date.parse(isoish);
+  const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(isoish) ? isoish : `${isoish}Z`;
+  const ms = Date.parse(zoned);
   if (Number.isFinite(ms)) {
     const date = new Date(ms);
     if (isPlausibleRecordingYear(date.getUTCFullYear())) return date;
@@ -260,7 +251,44 @@ export function parseCreationTimeFromFileName(name: string): Date | null {
   );
 }
 
+function xmpCreationTime(tags: Record<string, string>): Date | null {
+  // ffprobe exports the XMP packet as text. Read only literal date fields;
+  // there is no XML entity resolution or external resource access here.
+  for (const [key, packet] of Object.entries(tags)) {
+    if (!/^xmp_?$/i.test(key)) continue;
+    for (const field of ['DateTimeOriginal', 'DateCreated', 'CreateDate', 'CreationDate']) {
+      const attribute = new RegExp(`(?:[\\w.-]+:)?${field}\\s*=\\s*["']([^"']+)["']`, 'i').exec(
+        packet
+      );
+      const element = new RegExp(`<(?:[\\w.-]+:)?${field}(?:\\s[^>]*)?>([^<]+)</`, 'i').exec(
+        packet
+      );
+      const value = attribute?.[1] ?? element?.[1];
+      const parsed = value ? parseMediaCreationTime(value) : null;
+      if (parsed) return parsed;
+    }
+  }
+  return null;
+}
+
 export function readEmbeddedCreationTime(probe: ProbeJson, fileName?: string | null): Date | null {
+  // Search original capture tags across every stream before considering
+  // container creation_time, which may describe a later remux/export.
+  const bags = [
+    tagRecord(probe.format?.tags),
+    ...(probe.streams ?? []).map((stream) => tagRecord(stream.tags)),
+  ];
+  for (const key of ['com.apple.quicktime.creationdate', 'datetimeoriginal', 'recorded_date']) {
+    for (const tags of bags) {
+      const value = lookupTag(tags, key);
+      const parsed = value ? parseMediaCreationTime(value) : null;
+      if (parsed) return parsed;
+    }
+  }
+  for (const tags of bags) {
+    const fromXmp = xmpCreationTime(tags);
+    if (fromXmp) return fromXmp;
+  }
   const fromFormat = firstCreationTime(probe.format?.tags);
   if (fromFormat) return fromFormat;
   for (const stream of probe.streams ?? []) {

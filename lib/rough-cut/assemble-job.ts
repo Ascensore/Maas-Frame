@@ -1016,7 +1016,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         clipOrder: assembly.clipOrder,
         slotByVersion,
         editorial,
-        script: readScript(cut.script),
+        script: readScript(cut.script) ?? briefFromSnapshot(cut.brief_snapshot)?.script ?? null,
         wavFor,
         required,
         waitLimitSeconds,
@@ -1142,7 +1142,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         editorial,
         warnings,
         wavFor,
-        script: readScript(cut.script),
+        script: readScript(cut.script) ?? briefFromSnapshot(cut.brief_snapshot)?.script ?? null,
         minShotSeconds: profile.minShotSeconds,
       });
       sourceCuts = result.cuts;

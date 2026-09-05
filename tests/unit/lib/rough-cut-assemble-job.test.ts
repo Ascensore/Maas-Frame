@@ -1699,3 +1699,35 @@ describe('assembleRoughCut editorial pass', () => {
 function NOW_DATE(): Date {
   return new Date(NOW);
 }
+
+describe('saved script through the assembly pipeline', () => {
+  it('uses the snapshot script to keep matching dialogue and reject the later alternative', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(2, 'our revenue this year doubled to four million dollars'),
+          spokenSegment(12, 'our revenue this year doubled to four million euros'),
+        ],
+      },
+      briefSnapshot: {
+        ...briefSnapshotFor('TALKING_HEAD', { ranking: ['script_match', 'cleanliness'] }),
+        script: 'our revenue this year doubled to four million dollars',
+      },
+    });
+    await assembleRoughCut(h.deps, 'cut-1');
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([['ver-a', 0, 3.5, 2, 5.5]]);
+    expect(
+      result?.decisions?.cuts
+        ?.filter((cut) => cut.reason.code === 'REJECTED_TAKE')
+        .map((cut) => cut.key)
+    ).toEqual(['ver-a:288-372']);
+    expect(result?.warnings).toEqual([]);
+  });
+});

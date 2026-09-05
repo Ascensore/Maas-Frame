@@ -110,6 +110,22 @@ describe('parseMediaCreationTime', () => {
 });
 
 describe('readEmbeddedCreationTime', () => {
+  it('uses the original camera timestamp ahead of the container export timestamp', () => {
+    expect(
+      readEmbeddedCreationTime({
+        format: { tags: { creation_time: '2026-09-05T12:00:00Z' } },
+        streams: [{ codec_type: 'video', tags: { DateTimeOriginal: '2026:03:15 14:22:01+01:00' } }],
+      })?.toISOString()
+    ).toBe('2026-03-15T13:22:01.000Z');
+  });
+
+  it('reads the creation date spelling emitted by camera metadata', () => {
+    expect(
+      readEmbeddedCreationTime({
+        format: { tags: { creation_date: '2026-03-15T14:22:01Z' } },
+      })?.toISOString()
+    ).toBe('2026-03-15T14:22:01.000Z');
+  });
   it('reads format.tags.creation_time', () => {
     expect(
       readEmbeddedCreationTime({
@@ -187,5 +203,20 @@ describe('readEmbeddedCameraLabel', () => {
         format: { tags: { model: 'Lavf60.16.100', make: 'Lavc' } },
       })
     ).toBeNull();
+  });
+});
+
+describe('camera XMP recording date', () => {
+  it('reads a capture timestamp from embedded XMP ahead of export time', () => {
+    expect(
+      readEmbeddedCreationTime({
+        format: {
+          tags: {
+            creation_time: '2026-09-05T12:00:00Z',
+            xmp: '<rdf:Description exif:DateTimeOriginal="2026:03:15 14:22:01+01:00" xmp:ModifyDate="2026-09-05T12:00:00Z" />',
+          },
+        },
+      })?.toISOString()
+    ).toBe('2026-03-15T13:22:01.000Z');
   });
 });

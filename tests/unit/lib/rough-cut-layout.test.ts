@@ -57,6 +57,23 @@ describe('naturalCompare', () => {
 });
 
 describe('sortClipsChronologically', () => {
+  it('uses recording dates across midnight even when camera timecode resets', () => {
+    const ordered = sortClipsChronologically([
+      clip({
+        id: 'later',
+        title: 'A',
+        startTimecode: '00:01:00:00',
+        recordedAt: '2026-03-16T00:01:00Z',
+      }),
+      clip({
+        id: 'earlier',
+        title: 'B',
+        startTimecode: '23:59:00:00',
+        recordedAt: '2026-03-15T23:59:00Z',
+      }),
+    ]);
+    expect(ordered.map((entry) => entry.id)).toEqual(['earlier', 'later']);
+  });
   it('orders by start timecode even when folder position is reversed', () => {
     const ordered = sortClipsChronologically([
       clip({ id: 'late', title: 'B', position: 0, startTimecode: '01:00:10:00' }),
@@ -231,7 +248,7 @@ describe('parseRecordedAtMs', () => {
     expect(parseRecordedAtMs('2026-01-15T10:22:03.000000Z')).toBe(
       Date.parse('2026-01-15T10:22:03.000Z')
     );
-    expect(parseRecordedAtMs('2026-01-15 10:22:03')).toBe(Date.parse('2026-01-15T10:22:03'));
+    expect(parseRecordedAtMs('2026-01-15 10:22:03')).toBe(Date.parse('2026-01-15T10:22:03Z'));
     expect(parseRecordedAtMs('2026:01:15 10:22:03')).toBe(Date.parse('2026-01-15T10:22:03.000Z'));
     expect(parseRecordedAtMs('not-a-date')).toBeNull();
     expect(parseRecordedAtMs('')).toBeNull();

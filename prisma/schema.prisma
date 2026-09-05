@@ -230,6 +230,7 @@ model Project {
   id          String   @id @default(cuid())
   name        String
   description String?  @db.Text
+  editScript  String?  @db.Text @map("edit_script")
   slug        String   @unique // URL-friendly identifier
   
   // Visibility

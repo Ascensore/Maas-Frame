@@ -37,7 +37,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
 
   const projectRow = await db.project.findUnique({
     where: { id: project.id },
-    select: { name: true, workspaceId: true, editorialBriefId: true },
+    select: { name: true, workspaceId: true, editorialBriefId: true, editScript: true },
   });
   if (!projectRow) notFound();
 
@@ -53,12 +53,23 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
   const currentFolderId = currentFolder?.id ?? null;
 
   const videos = await loadFolderVideos(project.id, currentFolderId);
+  const probeJobs = await db.mediaJob.findMany({
+    where: {
+      versionId: { in: videos.flatMap((video) => video.versions.map((version) => version.id)) },
+      kind: 'PROBE_MEDIA',
+    },
+    distinct: ['versionId'],
+    orderBy: { createdAt: 'desc' },
+    select: { versionId: true, status: true },
+  });
+  const probeByVersion = new Map(probeJobs.map((job) => [job.versionId, job.status]));
   const clips: EditBinClip[] = videos.map((video) => {
     const version = video.versions[0] ?? null;
     const metadata = metadataStringRecord(video.metadata);
     const providerId = version?.providerId ?? null;
     return {
       id: video.id,
+      probeStatus: version ? (probeByVersion.get(version.id) ?? null) : null,
       title: video.title,
       durationSeconds: typeof version?.duration === 'number' ? version.duration : null,
       startTimecode: version?.startTimecode ?? null,
@@ -93,6 +104,7 @@ export default async function ProjectEditPage({ params, searchParams }: EditPage
       projectName={projectRow.name}
       workspaceId={projectRow.workspaceId}
       projectBriefId={projectRow.editorialBriefId}
+      editScript={projectRow.editScript}
       folders={serializedFolders}
       currentFolderId={currentFolderId}
       clips={clips}

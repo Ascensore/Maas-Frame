@@ -87,6 +87,7 @@ const REVIEWED_MIGRATIONS = [
   '20260907100000_project_editorial_guidelines',
   '20260907110000_sequence_link_identity',
   '20260907120000_transcript_first_editing',
+  '20260906120000_project_edit_script',
 ];
 
 /** Objects POST_PUSH_SQL must have produced. Verified after it runs. */

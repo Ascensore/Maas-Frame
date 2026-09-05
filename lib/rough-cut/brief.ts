@@ -1,3 +1,4 @@
+import { parseEditScript } from './script';
 import { z } from 'zod';
 import { folderPath } from '../folders';
 import type { LayoutGuess, LayoutGuessReason } from './layout';
@@ -475,12 +476,14 @@ export type BriefSnapshot = {
   brief: EditorialBrief;
   /** The project's free-text guidelines at run time, so a run keeps its own record. */
   projectGuidelines: string | null;
+  script?: string | null;
 };
 
 export function buildBriefSnapshot(options: {
   resolved: ResolvedBrief;
   layoutSource: LayoutSource;
   projectGuidelines?: string | null;
+  script?: string | null;
 }): BriefSnapshot {
   return {
     version: 1,
@@ -489,6 +492,7 @@ export function buildBriefSnapshot(options: {
     layoutSource: options.layoutSource,
     brief: options.resolved.brief,
     projectGuidelines: options.projectGuidelines?.trim() ? options.projectGuidelines : null,
+    ...(options.script ? { script: options.script } : {}),
   };
 }
 
@@ -524,5 +528,8 @@ export function briefFromSnapshot(value: unknown): BriefSnapshot | null {
       typeof raw.projectGuidelines === 'string' && raw.projectGuidelines.trim()
         ? raw.projectGuidelines
         : null,
+    ...(typeof raw.script === 'string' && parseEditScript(raw.script).ok
+      ? { script: raw.script }
+      : {}),
   };
 }

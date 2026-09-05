@@ -155,3 +155,18 @@ describe('scriptCoverageWarnings / rankingWithScript', () => {
     expect(rankingWithScript(['energy', 'script_match'])).toEqual(['script_match', 'energy']);
   });
 });
+
+import { parseEditScript } from '@/lib/rough-cut/script';
+describe('edit scripts', () => {
+  it('trims scripts, accepts the length limit, and refuses wrong types or oversized input', () => {
+    expect(parseEditScript('  Opening\nClosing  ')).toEqual({
+      ok: true,
+      value: 'Opening\nClosing',
+    });
+    expect(parseEditScript(' ')).toEqual({ ok: true, value: null });
+    expect(parseEditScript(null)).toEqual({ ok: true, value: null });
+    expect(parseEditScript('x'.repeat(50000))).toEqual({ ok: true, value: 'x'.repeat(50000) });
+    expect(parseEditScript('x'.repeat(50001)).ok).toBe(false);
+    expect(parseEditScript({ text: 'Opening' }).ok).toBe(false);
+  });
+});

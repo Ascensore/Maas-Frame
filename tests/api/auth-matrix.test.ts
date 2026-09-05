@@ -1,3 +1,4 @@
+import * as videoProbeRoute from '@/app/api/projects/[projectId]/videos/probe/route';
 // A sweep over every route module under app/api asserting that an
 // unauthenticated caller can never reach a 2xx.
 //
@@ -191,7 +192,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 105;
+const EXPECTED_ROUTE_MODULE_COUNT = 106;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -656,6 +657,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/projects/${f.projectId}/tags/${f.tagId}`,
     params: (f) => ({ projectId: f.projectId, tagId: f.tagId }),
     body: { name: 'Anon' },
+  },
+  {
+    file: 'projects/[projectId]/videos/probe/route.ts',
+    module: videoProbeRoute,
+    url: (f) => `/api/projects/${f.projectId}/videos/probe`,
+    params: (f) => ({ projectId: f.projectId }),
+    body: { videoIds: ['does-not-matter'] },
   },
   {
     file: 'projects/[projectId]/videos/bulk-delete/route.ts',

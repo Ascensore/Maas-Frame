@@ -58,7 +58,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const { projectId } = await params;
     const project = await db.project.findUnique({
       where: { id: projectId },
-      select: { id: true, ownerId: true, workspaceId: true, visibility: true },
+      select: { id: true, ownerId: true, workspaceId: true, visibility: true, editScript: true },
     });
     if (!project) return apiErrors.notFound('Project');
 
@@ -100,7 +100,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const { projectId } = await params;
     const project = await db.project.findUnique({
       where: { id: projectId },
-      select: { id: true, ownerId: true, workspaceId: true, visibility: true },
+      select: { id: true, ownerId: true, workspaceId: true, visibility: true, editScript: true },
     });
     if (!project) return apiErrors.notFound('Project');
 
@@ -158,7 +158,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    let script: string | null = null;
+    let script: string | null = project.editScript;
+    if (body?.script === null) script = null;
     if (body && body.script !== undefined && body.script !== null) {
       if (typeof body.script !== 'string') {
         return apiErrors.badRequest('script must be a string');
@@ -312,6 +313,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           resolved: resolvedBrief,
           layoutSource: chosen.source,
           projectGuidelines: resolvedBrief.projectGuidelines,
+          script,
         }) as Prisma.InputJsonValue,
         requestedById: session.user.id,
         layout,

@@ -173,3 +173,18 @@ export function scriptCoverageWarnings(
 export function rankingWithScript(ranking: BriefRankingCriterion[]): BriefRankingCriterion[] {
   return ['script_match', ...ranking.filter((criterion) => criterion !== 'script_match')];
 }
+
+export const EDIT_SCRIPT_MAX_LENGTH = 50000;
+
+export function parseEditScript(
+  value: unknown
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false, error: 'Script must be text or null' };
+  if (value.length > EDIT_SCRIPT_MAX_LENGTH)
+    return {
+      ok: false,
+      error: `Script must be ${EDIT_SCRIPT_MAX_LENGTH.toLocaleString('en-US')} characters or fewer`,
+    };
+  return { ok: true, value: value.trim() || null };
+}

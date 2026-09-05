@@ -1,3 +1,4 @@
+import { VideoUploadProvider } from '@/components/video-drag-drop-uploader';
 import type { Metadata } from 'next';
 import { JetBrains_Mono, Plus_Jakarta_Sans } from 'next/font/google';
 import { Toaster } from 'sonner';
@@ -153,7 +154,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          {children}
+          <VideoUploadProvider>{children}</VideoUploadProvider>
           <Toaster />
         </ThemeProvider>
       </body>

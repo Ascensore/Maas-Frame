@@ -1,6 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, Loader2, UploadCloud, XCircle } from 'lucide-react';
@@ -68,6 +77,71 @@ interface VideoDragDropUploaderProps {
   pickerDescription?: string;
 }
 
+type UploadConfiguration = VideoDragDropUploaderProps & { pickerHost: HTMLDivElement | null };
+const UploadConfigurationContext = createContext<
+  ((config: UploadConfiguration | null) => void) | null
+>(null);
+
+/** Own the queue above routing so client navigation never interrupts an upload. */
+export function VideoUploadProvider({ children }: { children: React.ReactNode }) {
+  const [configuration, setConfiguration] = useState<UploadConfiguration | null>(null);
+  return (
+    <UploadConfigurationContext.Provider value={setConfiguration}>
+      {children}
+      <VideoUploadManager {...(configuration ?? { canUpload: false, pickerHost: null })} />
+    </UploadConfigurationContext.Provider>
+  );
+}
+
+/** A page registers its destination and supplies a host for the local picker. */
+export function VideoDragDropUploader(props: VideoDragDropUploaderProps) {
+  const configure = useContext(UploadConfigurationContext);
+  const [pickerHost, setPickerHost] = useState<HTMLDivElement | null>(null);
+  const {
+    fixedProjectId,
+    fixedProjectName,
+    workspaceId,
+    projectOptions,
+    canUpload,
+    directUploadProvider,
+    folderId,
+    showBinPicker,
+    pickerTitle,
+    pickerDescription,
+  } = props;
+  useEffect(() => {
+    if (!configure) return;
+    configure({
+      fixedProjectId,
+      fixedProjectName,
+      workspaceId,
+      projectOptions,
+      canUpload,
+      directUploadProvider,
+      folderId,
+      showBinPicker,
+      pickerTitle,
+      pickerDescription,
+      pickerHost,
+    });
+    return () => configure(null);
+  }, [
+    configure,
+    fixedProjectId,
+    fixedProjectName,
+    workspaceId,
+    projectOptions,
+    canUpload,
+    directUploadProvider,
+    folderId,
+    showBinPicker,
+    pickerTitle,
+    pickerDescription,
+    pickerHost,
+  ]);
+  return <div ref={setPickerHost} />;
+}
+
 function hasFileData(dataTransfer: DataTransfer | null): boolean {
   if (!dataTransfer) return false;
   return Array.from(dataTransfer.types || []).includes('Files');
@@ -82,7 +156,7 @@ function createQueueItem(file: File): QueueItem {
   };
 }
 
-export function VideoDragDropUploader({
+function VideoUploadManager({
   fixedProjectId,
   fixedProjectName,
   workspaceId,
@@ -93,7 +167,8 @@ export function VideoDragDropUploader({
   showBinPicker = false,
   pickerTitle = 'Upload from this computer or a camera card',
   pickerDescription = 'Drop files here or browse a card, disk, or folder. They land in the selected bin folder.',
-}: VideoDragDropUploaderProps) {
+  pickerHost,
+}: UploadConfiguration) {
   const router = useRouter();
 
   const [projects, setProjects] = useState<ProjectOption[]>(projectOptions ?? []);
@@ -115,7 +190,8 @@ export function VideoDragDropUploader({
   const pendingUploadRef = useRef<(PendingProjectUploadCleanup & { projectId: string }) | null>(
     null
   );
-  const cancelRequestedRef = useRef(false);
+  const activeQueueRef = useRef<{ cancelled: boolean } | null>(null);
+  const uploadRunningRef = useRef(false);
   const dragDepthRef = useRef(0);
   const hasLoadedProjectsRef = useRef(false);
 
@@ -195,11 +271,14 @@ export function VideoDragDropUploader({
   }, [canUpload, needsProjectSelection, projectOptions, workspaceId]);
 
   useEffect(() => {
-    if (!canUpload) {
-      setDialogOpen(false);
-      setQueue([]);
-    }
-  }, [canUpload]);
+    if (!isUploading) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [isUploading]);
 
   useEffect(() => {
     hasLoadedProjectsRef.current = false;
@@ -213,29 +292,31 @@ export function VideoDragDropUploader({
   const resetUploadState = useCallback(() => {
     activeTusUploadRef.current = null;
     pendingUploadRef.current = null;
+    activeQueueRef.current = null;
+    uploadRunningRef.current = false;
     setIsUploading(false);
     setUploadStatus('');
     setUploadProgress(0);
   }, []);
 
   const cancelPendingUpload = useCallback(async () => {
-    if (!isUploading) return;
-    cancelRequestedRef.current = true;
+    const queueRun = activeQueueRef.current;
+    if (!isUploading || !queueRun || queueRun.cancelled) return;
+    queueRun.cancelled = true;
+    const upload = activeTusUploadRef.current;
+    const pending = pendingUploadRef.current;
 
-    if (activeTusUploadRef.current) {
+    if (upload) {
       try {
-        await Promise.resolve(activeTusUploadRef.current.abort(false));
+        await Promise.resolve(upload.abort(false));
       } catch {
         // Ignore abort failures and continue cleanup.
-      } finally {
-        activeTusUploadRef.current = null;
       }
     }
-
-    const pending = pendingUploadRef.current;
     if (pending) {
       await cleanupPendingProjectUpload(pending.projectId, pending);
     }
+    if (activeQueueRef.current !== queueRun) return;
 
     setQueue((prev) =>
       prev.map((item) =>
@@ -252,10 +333,12 @@ export function VideoDragDropUploader({
 
   const uploadQueueToProject = useCallback(
     async (files: File[], projectId: string, projectName?: string) => {
-      if (files.length === 0) return;
+      if (files.length === 0 || uploadRunningRef.current) return;
+      uploadRunningRef.current = true;
 
       setDialogOpen(true);
-      cancelRequestedRef.current = false;
+      const queueRun = { cancelled: false };
+      activeQueueRef.current = queueRun;
       setIsUploading(true);
       setSelectedProjectId(projectId);
       setSelectedProjectName(projectName ?? projectsById.get(projectId) ?? null);
@@ -267,7 +350,7 @@ export function VideoDragDropUploader({
       let failCount = 0;
 
       for (let index = 0; index < initialQueue.length; index++) {
-        if (cancelRequestedRef.current) break;
+        if (queueRun.cancelled) break;
 
         const item = initialQueue[index];
         setUploadProgress(0);
@@ -287,28 +370,36 @@ export function VideoDragDropUploader({
             bunnyCdnHostname,
             folderId,
             onProgress: (progress) => {
+              if (queueRun.cancelled) return;
               setUploadProgress(progress);
               setQueue((prev) =>
                 prev.map((entry) => (entry.id === item.id ? { ...entry, progress } : entry))
               );
             },
             onStatus: (status) => {
+              if (queueRun.cancelled) return;
               setUploadStatus(`Uploading ${index + 1} of ${initialQueue.length}: ${status}`);
             },
             onTusUploadReady: (upload) => {
+              if (queueRun.cancelled) {
+                void Promise.resolve(upload.abort(false)).catch(() => undefined);
+                return;
+              }
               activeTusUploadRef.current = upload;
             },
             onPendingUpload: (pending) => {
+              if (queueRun.cancelled) return;
               pendingUploadRef.current = { ...pending, projectId };
             },
-            isCancelled: () => cancelRequestedRef.current,
+            isCancelled: () => queueRun.cancelled,
           });
 
-          if (cancelRequestedRef.current) break;
+          if (queueRun.cancelled) break;
 
           pendingUploadRef.current = null;
           activeTusUploadRef.current = null;
           successCount += 1;
+          router.refresh();
 
           setQueue((prev) =>
             prev.map((entry) =>
@@ -316,7 +407,7 @@ export function VideoDragDropUploader({
             )
           );
         } catch (error) {
-          if (cancelRequestedRef.current) break;
+          if (queueRun.cancelled) break;
 
           pendingUploadRef.current = null;
           activeTusUploadRef.current = null;
@@ -337,11 +428,9 @@ export function VideoDragDropUploader({
         }
       }
 
+      // Cancellation owns cleanup and unlocking, even if the transfer settles first.
+      if (queueRun.cancelled || activeQueueRef.current !== queueRun) return;
       resetUploadState();
-
-      if (cancelRequestedRef.current) {
-        return;
-      }
 
       if (successCount > 0) {
         router.refresh();
@@ -376,6 +465,11 @@ export function VideoDragDropUploader({
 
   const handleDropFiles = useCallback(
     (files: File[]) => {
+      if (uploadRunningRef.current) {
+        setDialogOpen(true);
+        toast.info('Wait for the current upload queue to finish before adding files');
+        return;
+      }
       if (!canUpload) {
         toast.error('You do not have permission to upload videos here');
         return;
@@ -408,6 +502,7 @@ export function VideoDragDropUploader({
   );
 
   useEffect(() => {
+    if (!canUpload) return;
     const handleDragEnter = (event: DragEvent) => {
       if (!hasFileData(event.dataTransfer)) return;
       event.preventDefault();
@@ -455,7 +550,7 @@ export function VideoDragDropUploader({
       window.removeEventListener('dragleave', handleDragLeave);
       window.removeEventListener('drop', handleDrop);
     };
-  }, [handleDropFiles]);
+  }, [canUpload, handleDropFiles]);
 
   const closeDialog = useCallback(() => {
     setQueue([]);
@@ -467,34 +562,41 @@ export function VideoDragDropUploader({
 
   return (
     <>
-      {showBinPicker && canUpload && (
-        <div className="rounded-2xl border-2 border-dashed border-border bg-muted/20 p-6 text-center">
-          <UploadCloud className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
-          <p className="text-sm font-medium">{pickerTitle}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{pickerDescription}</p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            multiple
-            accept={REVIEW_FILE_ACCEPT}
-            onChange={(event) => {
-              const files = Array.from(event.target.files ?? []);
-              event.target.value = '';
-              if (files.length > 0) handleDropFiles(files);
-            }}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mt-4"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Choose files
-          </Button>
-        </div>
-      )}
+      {showBinPicker &&
+        canUpload &&
+        pickerHost &&
+        createPortal(
+          <div className="rounded-2xl border-2 border-dashed border-border bg-muted/20 p-6 text-center">
+            <UploadCloud className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium">{pickerTitle}</p>
+            <p className="mt-1 text-sm text-muted-foreground">{pickerDescription}</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              aria-label="Upload source files"
+              disabled={isUploading}
+              className="hidden"
+              multiple
+              accept={REVIEW_FILE_ACCEPT}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = '';
+                if (files.length > 0) handleDropFiles(files);
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              disabled={isUploading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose files
+            </Button>
+          </div>,
+          pickerHost
+        )}
 
       {isDragActive && (
         <div className="pointer-events-none fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm">
@@ -512,12 +614,46 @@ export function VideoDragDropUploader({
         </div>
       )}
 
+      {!dialogOpen && hasQueue && (
+        <div
+          className="fixed bottom-5 right-5 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border bg-background p-4 shadow-lg"
+          role="status"
+        >
+          <p className="text-sm font-medium">
+            {isUploading ? 'Uploading source files' : 'Upload results'}
+          </p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {selectedProjectName} · {doneCount} of {totalCount} uploaded
+          </p>
+          {isUploading && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {uploadProgress}% of current file · Keep this tab open
+            </p>
+          )}
+          {errorCount > 0 && <p className="text-xs text-destructive">{errorCount} failed</p>}
+          <div className="mt-3 flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
+              View uploads
+            </Button>
+            {isUploading ? (
+              <Button size="sm" variant="ghost" onClick={() => setShowCancelUploadDialog(true)}>
+                Cancel upload
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={closeDialog}>
+                Dismiss
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       <Dialog
         open={dialogOpen}
         onOpenChange={(open) => {
           if (!open) {
             if (isUploading) {
-              setShowCancelUploadDialog(true);
+              setDialogOpen(false);
               return;
             }
             closeDialog();
@@ -528,7 +664,11 @@ export function VideoDragDropUploader({
         <DialogContent className="border-2 border-border bg-background text-foreground sm:max-w-xl">
           <DialogHeader className="space-y-1">
             <DialogTitle className="text-2xl font-bold">
-              {needsProjectSelection ? 'Choose a project' : 'Uploading videos'}
+              {isUploading
+                ? 'Uploading videos'
+                : needsProjectSelection
+                  ? 'Choose a project'
+                  : 'Upload results'}
             </DialogTitle>
             <DialogDescription>
               {hasQueue
@@ -586,7 +726,7 @@ export function VideoDragDropUploader({
               </div>
             )}
 
-            {!fixedProjectId && (
+            {!fixedProjectId && !isUploading && pendingCount > 0 && (
               <div className="space-y-2">
                 {isLoadingProjects ? (
                   <p className="text-sm text-muted-foreground">Loading projects...</p>
@@ -650,6 +790,15 @@ export function VideoDragDropUploader({
 
             {isUploading && (
               <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  You can keep editing while these files upload. Keep this tab open.
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={() => setDialogOpen(false)}>Continue editing</Button>
+                  <Button variant="ghost" onClick={() => setShowCancelUploadDialog(true)}>
+                    Cancel upload
+                  </Button>
+                </div>
                 <p className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   {uploadStatus || 'Uploading...'}

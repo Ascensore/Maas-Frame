@@ -1565,3 +1565,59 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     expect(stored.status).toBe('PENDING');
   });
 });
+
+describe('script snapshot', () => {
+  it('stores the saved project script with a run and preserves it after later edits', async () => {
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editScript: 'Original dialogue for this cut.' },
+    });
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null } }),
+      { projectId: scenario.project.id }
+    );
+    expect(response.status).toBe(201);
+    await db.project.update({
+      where: { id: scenario.project.id },
+      data: { editScript: 'New dialogue for the next cut.' },
+    });
+    const run = await db.roughCut.findFirstOrThrow({ where: { projectId: scenario.project.id } });
+    expect(run.script).toBe('Original dialogue for this cut.');
+    expect(run.briefSnapshot).toMatchObject({ script: 'Original dialogue for this cut.' });
+  });
+});
+
+describe('project script overrides', () => {
+  it.each([
+    ['  Custom dialogue.  ', 'Custom dialogue.'],
+    [null, null],
+    ['   ', null],
+  ])(
+    'uses the explicit request script %j instead of the project default',
+    async (script, expected) => {
+      vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+      const scenario = await seedMulticam();
+      signedInAs(scenario.owner);
+      await db.project.update({
+        where: { id: scenario.project.id },
+        data: { editScript: 'Saved project dialogue.' },
+      });
+      const response = await callRoute(
+        createRoughCutRoute,
+        apiRequest(cutsUrl(scenario.project.id), { body: { folderId: null, script } }),
+        { projectId: scenario.project.id }
+      );
+      expect(response.status).toBe(201);
+      const payload = await readData<{ roughCut: { id: string; hasScript: boolean } }>(response);
+      expect(payload.roughCut.hasScript).toBe(expected !== null);
+      const run = await db.roughCut.findUniqueOrThrow({ where: { id: payload.roughCut.id } });
+      expect(run.script).toBe(expected);
+      if (expected === null) expect(run.briefSnapshot).not.toHaveProperty('script');
+      else expect(run.briefSnapshot).toMatchObject({ script: expected });
+    }
+  );
+});

@@ -173,15 +173,15 @@ export function sortClipsChronologically<T extends LayoutGuessClip>(
   rate: FrameRate = DEFAULT_RATE
 ): T[] {
   return [...clips].sort((left, right) => {
-    const leftTc = timecodeSeconds(left, rate);
-    const rightTc = timecodeSeconds(right, rate);
-    if (leftTc !== null && rightTc !== null && leftTc !== rightTc) return leftTc - rightTc;
-
     const leftRecorded = recordedAtMs(left);
     const rightRecorded = recordedAtMs(right);
     if (leftRecorded !== null && rightRecorded !== null && leftRecorded !== rightRecorded) {
       return leftRecorded - rightRecorded;
     }
+
+    const leftTc = timecodeSeconds(left, rate);
+    const rightTc = timecodeSeconds(right, rate);
+    if (leftTc !== null && rightTc !== null && leftTc !== rightTc) return leftTc - rightTc;
 
     const byName = naturalCompare(left.title, right.title);
     if (byName !== 0) return byName;

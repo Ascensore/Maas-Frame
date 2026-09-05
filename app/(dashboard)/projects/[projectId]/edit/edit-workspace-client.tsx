@@ -25,6 +25,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { EditScriptCard } from '@/components/edit-script-card';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { VideoDragDropUploader } from '@/components/video-drag-drop-uploader';
 import { useRoughCutHistory } from '@/components/video-page/hooks/use-rough-cut';
 import type { DirectUploadProvider } from '@/components/video-page/types';
@@ -59,6 +70,7 @@ export type EditBinClip = {
   durationSeconds: number | null;
   startTimecode: string | null;
   recordedAt: string | null;
+  probeStatus?: 'PENDING' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | null;
   createdAt: string;
   position: number;
   providerId: string | null;
@@ -115,7 +127,7 @@ function guessCopy(
   ) {
     return 'These clips look like overlapping cameras. Single camera still concatenates them in chronological order.';
   }
-  return 'Assembled in chronological order from timecode, recorded-at, or numbered names.';
+  return 'Assembled in chronological order from recorded date and time, timecode, or numbered names.';
 }
 
 function sessionFolderName(): string {
@@ -153,6 +165,7 @@ interface EditWorkspaceClientProps {
   workspaceId: string;
   /** The project's own brief binding, used for cuts at the project root. */
   projectBriefId: string | null;
+  editScript: string | null;
   folders: EditFolder[];
   currentFolderId: string | null;
   clips: EditBinClip[];
@@ -170,6 +183,7 @@ export function EditWorkspaceClient({
   projectName,
   workspaceId,
   projectBriefId,
+  editScript,
   folders,
   currentFolderId,
   clips,
@@ -182,6 +196,68 @@ export function EditWorkspaceClient({
   driveImportEnabled,
 }: EditWorkspaceClientProps) {
   const router = useRouter();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleteIds, setDeleteIds] = useState<string[]>([]);
+  const [deletedIds, setDeletedIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [refreshingMetadata, setRefreshingMetadata] = useState(false);
+  const [scriptDirty, setScriptDirty] = useState(false);
+  const processing = clips.some(
+    (clip) =>
+      clip.importStatus === 'pending' ||
+      ['PENDING', 'QUEUED', 'RUNNING'].includes(clip.probeStatus ?? '')
+  );
+  useEffect(() => {
+    if (!processing) return;
+    const timer = setInterval(() => router.refresh(), 4000);
+    return () => clearInterval(timer);
+  }, [processing, router]);
+  const removeClips = async () => {
+    if (isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/videos/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoIds: deleteIds }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          typeof payload?.error === 'string' ? payload.error : 'Failed to remove clips'
+        );
+      setDeletedIds((current) => [...current, ...deleteIds]);
+      setSelectedIds((current) => current.filter((id) => !deleteIds.includes(id)));
+      setDeleteIds([]);
+      router.refresh();
+      toast.success('Clips removed');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to remove clips');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+  const refreshMetadata = async (ids: string[]) => {
+    setRefreshingMetadata(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/videos/probe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoIds: ids }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          typeof payload?.error === 'string' ? payload.error : 'Failed to refresh metadata'
+        );
+      router.refresh();
+      toast.success('Metadata extraction queued. Keep editing while it runs.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to refresh metadata');
+    } finally {
+      setRefreshingMetadata(false);
+    }
+  };
   const [modeOverride, setModeOverride] = useState<EditWorkspaceMode | null>(null);
   const mode = modeOverride ?? guessedMode;
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
@@ -269,7 +345,7 @@ export function EditWorkspaceClient({
   );
 
   const readyClips = useMemo(() => {
-    const ready = clips.filter((clip) => clip.fileBacked);
+    const ready = clips.filter((clip) => clip.fileBacked && !deletedIds.includes(clip.id));
     const byId = new Map(ready.map((clip) => [clip.id, clip]));
     const readyIds = ready.map((clip) => clip.id);
     const base = orderOverride ?? guessedOrderedIds;
@@ -287,7 +363,7 @@ export function EditWorkspaceClient({
       ordered.push(clip);
     }
     return ordered;
-  }, [clips, guessedOrderedIds, orderOverride]);
+  }, [clips, deletedIds, guessedOrderedIds, orderOverride]);
   const cameraNames = useMemo(() => {
     return { ...defaultCameraNames(readyClips), ...cameraOverride };
   }, [cameraOverride, readyClips]);
@@ -295,9 +371,9 @@ export function EditWorkspaceClient({
     focusOverride && readyClips.some((clip) => clip.id === focusOverride)
       ? focusOverride
       : defaultFocusVideoId(readyClips, cameraNames);
-  const pendingClips = clips.filter(
-    (clip) => clip.importStatus === 'pending' || clip.importStatus === 'failed'
-  );
+  const pendingClips = clips
+    .filter((clip) => !deletedIds.includes(clip.id))
+    .filter((clip) => clip.importStatus === 'pending' || clip.importStatus === 'failed');
   const hiddenEmbeds = clips.filter((clip) => clip.embedOnly).length;
   const canLaunch = mode === 'multicam' ? readyClips.length >= 2 : readyClips.length >= 1;
   const recordingDataMissing =
@@ -416,6 +492,10 @@ export function EditWorkspaceClient({
         : focusVideoId
           ? cameraNames[focusVideoId]
           : undefined;
+    if (scriptDirty) {
+      toast.error('Save your script before starting a cut');
+      return;
+    }
     const message = await history.start(layout, {
       clipOrder: layout === 'SEQUENTIAL' ? readyClips.map((clip) => clip.id) : undefined,
       cameraRoles: layout === 'MULTICAM' ? cameraRoles : undefined,
@@ -446,6 +526,9 @@ export function EditWorkspaceClient({
               multicam cut.
             </p>
           </div>
+          <Button variant="outline" asChild>
+            <a href="#script">{editScript ? 'View project script' : 'Add a script'}</a>
+          </Button>
         </div>
       </div>
 
@@ -600,11 +683,42 @@ export function EditWorkspaceClient({
           <CardDescription>
             Only file-backed masters can launch a cut. YouTube and Drive embeds stay in the library.
             {recordingDataMissing
-              ? ' These files have no embedded timecode or recorded date — set the cut order or name cameras below.'
+              ? ' Recording metadata is read after upload. Refresh metadata for older files; you can also set the order below.'
               : ''}
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={selectedIds.length === 0 || isDeleting || selectedIds.length > 50}
+              onClick={() => setDeleteIds(selectedIds)}
+            >
+              Remove selected{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={
+                refreshingMetadata ||
+                readyClips.length === 0 ||
+                (selectedIds.length || readyClips.length) > 50
+              }
+              onClick={() =>
+                void refreshMetadata(
+                  selectedIds.length ? selectedIds : readyClips.map((clip) => clip.id)
+                )
+              }
+            >
+              {refreshingMetadata ? 'Queuing…' : 'Refresh metadata'}
+            </Button>
+            {selectedIds.length > 50 && (
+              <span className="text-xs text-muted-foreground">
+                Select up to 50 clips at a time.
+              </span>
+            )}
+          </div>
           {readyClips.length === 0 && pendingClips.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No file-backed clips in this folder yet.
@@ -617,14 +731,36 @@ export function EditWorkspaceClient({
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-2 pr-3">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all clips"
+                        checked={
+                          readyClips.length + pendingClips.length > 0 &&
+                          [...readyClips, ...pendingClips].every((clip) =>
+                            selectedIds.includes(clip.id)
+                          )
+                        }
+                        onChange={(event) =>
+                          setSelectedIds(
+                            event.target.checked
+                              ? [...readyClips, ...pendingClips].map((clip) => clip.id)
+                              : []
+                          )
+                        }
+                      />
+                    </th>
                     {canReorder ? <th className="py-2 pr-3 font-medium">Order</th> : null}
                     <th className="py-2 pr-3 font-medium">Clip</th>
                     <th className="py-2 pr-3 font-medium">Duration</th>
                     <th className="py-2 pr-3 font-medium">Timecode</th>
-                    <th className="py-2 pr-3 font-medium">Recorded</th>
+                    <th className="py-2 pr-3 font-medium">Recorded at</th>
                     <th className="py-2 pr-3 font-medium">Camera</th>
                     {canNameCameras ? <th className="py-2 pr-3 font-medium">Focus</th> : null}
                     <th className="py-2 font-medium">Status</th>
+                    <th className="py-2 font-medium">
+                      <span className="sr-only">Clip actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -635,6 +771,20 @@ export function EditWorkspaceClient({
                       : -1;
                     return (
                       <tr key={clip.id} className="border-b last:border-0">
+                        <td className="py-2 pr-3">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${clip.title}`}
+                            checked={selectedIds.includes(clip.id)}
+                            onChange={(event) =>
+                              setSelectedIds((current) =>
+                                event.target.checked
+                                  ? [...current, clip.id]
+                                  : current.filter((id) => id !== clip.id)
+                              )
+                            }
+                          />
+                        </td>
                         {canReorder ? (
                           <td className="py-2 pr-3">
                             {isReady ? (
@@ -671,7 +821,13 @@ export function EditWorkspaceClient({
                         <td className="py-2 pr-3 font-medium">{clip.title}</td>
                         <td className="py-2 pr-3">{formatDuration(clip.durationSeconds)}</td>
                         <td className="py-2 pr-3 font-mono text-xs">{clip.startTimecode ?? '—'}</td>
-                        <td className="py-2 pr-3">{formatTimestamp(clip.recordedAt)}</td>
+                        <td className="py-2 pr-3">
+                          {clip.recordedAt
+                            ? formatTimestamp(clip.recordedAt)
+                            : ['PENDING', 'QUEUED', 'RUNNING'].includes(clip.probeStatus ?? '')
+                              ? 'Reading metadata…'
+                              : 'Unavailable'}
+                        </td>
                         <td className="py-2 pr-3">
                           {canNameCameras && isReady ? (
                             <Input
@@ -712,9 +868,26 @@ export function EditWorkspaceClient({
                             ? 'Importing…'
                             : clip.importStatus === 'failed'
                               ? 'Import failed'
-                              : clip.durationSeconds
-                                ? 'Probed'
-                                : 'Waiting for probe'}
+                              : clip.probeStatus === 'SUCCEEDED'
+                                ? 'Ready'
+                                : clip.probeStatus === 'FAILED'
+                                  ? 'Metadata extraction failed'
+                                  : ['PENDING', 'QUEUED', 'RUNNING'].includes(
+                                        clip.probeStatus ?? ''
+                                      )
+                                    ? 'Reading metadata…'
+                                    : 'Metadata not yet read'}
+                        </td>
+                        <td className="py-2 pl-3">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Remove ${clip.title}`}
+                            disabled={isDeleting}
+                            onClick={() => setDeleteIds([clip.id])}
+                          >
+                            Remove
+                          </Button>
                         </td>
                       </tr>
                     );
@@ -730,7 +903,8 @@ export function EditWorkspaceClient({
           ) : null}
           {canReorder ? (
             <p className="mt-3 text-xs text-muted-foreground">
-              Order is the sequence the cut concatenates when timecode or recorded-at is missing.
+              Suggested order uses recorded date and time, then timecode and numbered names. Move
+              clips to override it for this cut.
             </p>
           ) : null}
           {hiddenEmbeds > 0 && (readyClips.length > 0 || pendingClips.length > 0) ? (
@@ -742,6 +916,45 @@ export function EditWorkspaceClient({
         </CardContent>
       </Card>
 
+      <div id="script">
+        <EditScriptCard
+          projectId={projectId}
+          initialScript={editScript}
+          onDirtyChange={setScriptDirty}
+        />
+      </div>
+      <AlertDialog
+        open={deleteIds.length > 0}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) setDeleteIds([]);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {deleteIds.length === 1 ? 'this clip' : `${deleteIds.length} clips`}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes the selected clips and their versions, comments, and stored media from
+              the project library as well as this edit. Existing cuts may reference these sources.
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Keep clips</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={isDeleting}
+              onClick={(event) => {
+                event.preventDefault();
+                void removeClips();
+              }}
+            >
+              {isDeleting ? 'Removing…' : 'Remove clips'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Card>
         <CardHeader>
           <CardTitle>Layout</CardTitle>
@@ -777,7 +990,7 @@ export function EditWorkspaceClient({
           <Button
             type="button"
             onClick={() => void launch()}
-            disabled={!canLaunch || history.isStarting}
+            disabled={!canLaunch || history.isStarting || scriptDirty || isDeleting}
           >
             {history.isStarting ? (
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />

@@ -73,7 +73,10 @@ const APP_ENV: Record<string, string> = {
 
   NEXTAUTH_URL: BASE_URL,
   NEXT_PUBLIC_APP_URL: BASE_URL,
-  NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET ?? 'test-secret-not-used-for-anything-real',
+  NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || 'test-secret-not-used-for-anything-real',
+  // Auth.js prefers AUTH_SECRET even when blank; the dev-env scrub below must
+  // not let that alias mask the test secret.
+  AUTH_SECRET: process.env.NEXTAUTH_SECRET || 'test-secret-not-used-for-anything-real',
   // Required. NextAuth v5 refuses every /api/auth/* request with
   // `UntrustedHost` in production builds unless the host is trusted, which is
   // why .env.docker.example sets the same variable for real deployments.
@@ -110,6 +113,7 @@ const APP_ENV: Record<string, string> = {
   // connect-src automatically by lib/content-security-policy.ts.
   OPENFRAME_ENABLE_S3_VIDEO_UPLOADS: 'true',
   OPENFRAME_ENABLE_BUNNY_UPLOADS: 'false',
+  OPENFRAME_ENABLE_ROUGH_CUT: 'true',
   R2_ENDPOINT: process.env.R2_ENDPOINT ?? 'http://minio-test:9000',
   R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID ?? 'openframe',
   R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY ?? 'openframe-test-secret',
