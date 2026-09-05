@@ -49,6 +49,8 @@ export type RoughCutDialogBrief = {
   name: string;
   projectType: EditorialProjectType;
   isDefault: boolean;
+  /** Only the part the dialog reads; the endpoint returns the whole config. */
+  config?: { takeSelection?: { enabled?: boolean } };
 };
 
 export type RoughCutDialogProfile = {
@@ -279,6 +281,12 @@ export function RoughCutDialog({
   }, [cameras, videos]);
 
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
+  // An ASCENSORE brief keeps a single take, so a script typed under it is
+  // stored but never used to choose one. Say so before the run rather than
+  // through a `script-ignored` warning after it.
+  const selectedBrief =
+    briefId === 'inherit' ? null : (briefs.find((brief) => brief.id === briefId) ?? null);
+  const briefKeepsOneTake = selectedBrief?.config?.takeSelection?.enabled === false;
   const status = roughCut?.status ?? null;
   const busy = isStarting || status === 'PENDING' || status === 'RUNNING';
 
@@ -541,8 +549,9 @@ export function RoughCutDialog({
               disabled={busy || !!status}
             />
             <p className="text-xs text-muted-foreground">
-              Takes are matched against the script: the take closest to each line is kept, and lines
-              with no clean take are flagged after assembly.
+              {briefKeepsOneTake
+                ? 'This brief keeps a single take, so the script is recorded but not used to pick takes.'
+                : 'Takes are matched against the script: the take closest to each line is kept, and lines with no clean take are flagged after assembly.'}
             </p>
           </div>
 

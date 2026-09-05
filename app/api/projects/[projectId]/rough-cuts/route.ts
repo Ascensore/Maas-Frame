@@ -275,10 +275,15 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // camera's, with the other angles only as a fallback (`slotCandidates` in
     // lib/rough-cut/assemble-job.ts) — so only that camera needs one. Linear
     // and sequential layouts cut every clip against its own transcript.
+    //
+    // `cameras` rather than `orderedCameras`: the assembler's `pickWideClip`
+    // ranks by position then video id, which is the order `loadFolderVideos`
+    // already returns, so searching it here picks the same camera the run
+    // will read. A clip-order override moves `orderedCameras` but not the
+    // positions `pickWideClip` sorts by.
     const wideRole = (wideRoleParsed.value ?? profile.wideCameraRole).trim().toUpperCase();
     const wideCamera =
-      orderedCameras.find((camera) => camera.role.trim().toUpperCase() === wideRole) ??
-      orderedCameras[0];
+      cameras.find((camera) => camera.role.toUpperCase() === wideRole) ?? cameras[0];
     const transcriptCameras =
       layout === 'MULTICAM' ? (wideCamera ? [wideCamera] : []) : orderedCameras;
     const transcriptTargets = transcriptCameras.flatMap((camera) =>

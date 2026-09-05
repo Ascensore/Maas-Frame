@@ -36,11 +36,13 @@ async function seedMulticam() {
     projectId: scenario.project.id,
     title: 'ISO 1',
     metadata: { camera: 'A' },
+    position: 0,
   });
   const camB = await createVideo({
     projectId: scenario.project.id,
     title: 'ISO 2',
     metadata: { camera: 'B' },
+    position: 1,
   });
   const versionA = await createVersion({
     videoParentId: camA.id,
@@ -733,6 +735,65 @@ describe('POST /api/projects/[projectId]/rough-cuts', () => {
     expect(payload.roughCut.warnings).toBeNull();
     expect(await db.transcript.count()).toBe(0);
     expect(vi.mocked(scheduleVersionTranscription)).not.toHaveBeenCalled();
+  });
+
+  it('ensures the wide camera when the wide role is the second camera in position order', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    // ISO 2 carries `camera: 'B'` and sits second by position.
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: { folderId: null, layout: 'MULTICAM', wideCameraRole: 'B' },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 1, enqueued: 1, failed: 0 });
+
+    const rows = await db.transcript.findMany({});
+    expect(rows.map((row) => row.versionId)).toEqual([scenario.versionB.id]);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionB.id);
+  });
+
+  it('falls back to the first camera in position order when no camera holds the wide role', async () => {
+    const scenario = await seedMulticam();
+    signedInAs(scenario.owner);
+    vi.stubEnv('OPENFRAME_ENABLE_ROUGH_CUT', 'true');
+
+    // No camera is named WIDE, so pickWideClip infers the first clip by
+    // position. The reversed clipOrder moves the cut's ordering but not the
+    // positions the assembler ranks by, so the route must ignore it here.
+    const response = await callRoute(
+      createRoughCutRoute,
+      apiRequest(cutsUrl(scenario.project.id), {
+        body: {
+          folderId: null,
+          layout: 'MULTICAM',
+          wideCameraRole: 'WIDE',
+          clipOrder: [scenario.camB.id, scenario.camA.id],
+        },
+      }),
+      { projectId: scenario.project.id }
+    );
+
+    expect(response.status).toBe(201);
+    const payload = await readData<{
+      transcripts: { ready: number; pending: number; enqueued: number; failed: number };
+    }>(response);
+    expect(payload.transcripts).toEqual({ ready: 0, pending: 1, enqueued: 1, failed: 0 });
+
+    const rows = await db.transcript.findMany({});
+    expect(rows.map((row) => row.versionId)).toEqual([scenario.versionA.id]);
+    expect(vi.mocked(scheduleVersionTranscription)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(scheduleVersionTranscription).mock.calls[0]?.[0]).toBe(scenario.versionA.id);
   });
 
   it('stores a trimmed script and refuses one that is too long', async () => {
