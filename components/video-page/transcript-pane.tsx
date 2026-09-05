@@ -374,12 +374,19 @@ export const TranscriptPane = memo(function TranscriptPane({
 
   useEffect(() => {
     setShowTranslated(false);
-    // The note is about the line that was just saved on the version being left,
-    // so it has to go with it: left standing it reads as a claim about the
-    // version now on screen, whose captions nobody has touched.
-    setCaptionNote(null);
     void fetchTranscript();
   }, [fetchTranscript]);
+
+  // The note is about the line that was just saved on the version being left,
+  // so it has to go with it: left standing it reads as a claim about the
+  // version now on screen, whose captions nobody has touched. Its own effect
+  // rather than a line in the one above, because it depends on `versionId`
+  // alone — `fetchTranscript` is a callback that could gain another dependency
+  // and start clearing the note for reasons that have nothing to do with the
+  // version changing.
+  useEffect(() => {
+    setCaptionNote(null);
+  }, [versionId]);
 
   useEffect(() => {
     if (!versionId) return;
@@ -589,13 +596,19 @@ export const TranscriptPane = memo(function TranscriptPane({
       // "could not be rebuilt" would read as a failure to look into.
       setCaptionNote('Line saved. There is no caption track to build: this transcript is untimed.');
     } else if (result.captions === 'skipped') {
+      // Only reachable when this language has no track yet and the version is
+      // already at its limit, so nothing was left behind to be stale: there is
+      // no track here at all, and the way out is to free a slot.
       setCaptionNote(
-        'Line saved. The caption track was left alone: this version already has as many subtitle tracks as it can hold.'
+        'Line saved. No caption track was created: this version already holds the maximum number of subtitle tracks. Delete one and rebuild.'
       );
+    } else if (result.captions === 'quota') {
+      setCaptionNote('Line saved. The captions were not rebuilt: the account is out of storage.');
     } else {
-      // Not an error the operator caused: the correction is stored. The
-      // subtitles are the part that is behind, and saying so beats leaving the
-      // operator to discover it.
+      // The correction is stored; only the subtitles are behind. Nothing here
+      // says whose fault that is — a full account is reported as `quota` above,
+      // and what is left is a storage or database failure the operator cannot
+      // clear themselves — so it says what is true and stops there.
       setCaptionNote('Line saved, but the caption track could not be rebuilt.');
     }
   };

@@ -51,6 +51,11 @@ export function apiRequestError(
  * normally the string a route wrote with `apiErrors`; an object with a
  * `message` is what a validation library's own error looks like when one
  * reaches the client unwrapped, and reading it beats showing the fallback.
+ *
+ * Deliberately not `messageOf` below, which reads a thrown `Error` and a
+ * top-level `{ error }` string but not that nested object: these callers only
+ * ever hold a parsed response body, never a thrown one, and they are the ones
+ * that hit routes answering with a nested error.
  */
 export function readClientApiError(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object') return fallback;

@@ -773,9 +773,12 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     // reviewer took out is.
     expect(programMarkers(await reviewed.text())).toEqual([['Cut: flubbed the line', 'RED']]);
 
-    // The same for the other export. The two serializers each build their own
-    // marker list, so an FCP7 export left on the assembled decisions would hand
-    // the editor the opposite pair of markers and nothing here would have said so.
+    // The same for the other export. Both writers share the marker list
+    // lib/rough-cut/export-markers.ts builds, and the route computes the
+    // effective decisions once, so this is not two rules that could diverge.
+    // What it pins is that the XML branch — which assembles its own argument
+    // object — is handed those effective decisions rather than the stored
+    // ones, and that FCP7 emits the markers at all.
     const xml = await callRoute(
       downloadRoughCut,
       apiRequest(`/api/rough-cuts/${seeded.cut.id}/download?format=xml&cuts=1`),

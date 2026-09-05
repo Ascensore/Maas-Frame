@@ -271,12 +271,21 @@ export async function persistDerivedTranscript(
     client.release();
   }
 
+  // The transcript rows keep every line, including one nobody timed — it is
+  // still text to read and search. The caption track cannot: a cue written
+  // `00:00:00.000 --> 00:00:00.000` is one a player never shows and some
+  // parsers refuse outright. A burn-in carrying a partly-timed transcript
+  // forward is where these arrive. The predicate is spelled out here rather
+  // than imported: nothing under lib/rough-cut may reach for `@/` or for
+  // lib/transcript-import.ts, because the worker image copies this directory
+  // on its own.
+  const cues = options.segments.filter((segment) => segment.endSec > segment.startSec);
   try {
     await upsertCaptionTrack(deps, {
       versionId: options.versionId,
       language: options.language,
       vtt: serializeWebVtt(
-        options.segments.map((segment) => ({
+        cues.map((segment) => ({
           start: segment.startSec,
           end: segment.endSec,
           text: segment.text,

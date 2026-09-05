@@ -25,8 +25,11 @@ export function resolveEditableSegment(
   return sourceSegments?.find((row) => row.id === segment.id) ?? segment;
 }
 
-/** What the route rebuilt, or why it did not. */
-export type CaptionOutcome = 'updated' | 'skipped' | 'empty' | 'failed';
+/**
+ * What the route rebuilt, or why it did not. `quota` is a full account, which
+ * the operator can clear; `failed` is anything else, which they cannot.
+ */
+export type CaptionOutcome = 'updated' | 'skipped' | 'empty' | 'quota' | 'failed';
 
 export interface SegmentEditResult {
   segment: TranscriptSegment;
@@ -76,10 +79,9 @@ export function useTranscriptSegmentEdit(versionId: string | null) {
         }
         // An unrecognised value is treated as "not rebuilt", so a caller that
         // trusts 'updated' never skips a refresh it needed.
-        const captions: CaptionOutcome =
-          data?.captions === 'updated' || data?.captions === 'skipped' || data?.captions === 'empty'
-            ? data.captions
-            : 'failed';
+        const known: readonly CaptionOutcome[] = ['updated', 'skipped', 'empty', 'quota'];
+        const reported = data?.captions as CaptionOutcome | undefined;
+        const captions: CaptionOutcome = reported && known.includes(reported) ? reported : 'failed';
         return { segment, captions };
       } catch {
         setError('Failed to save the line');

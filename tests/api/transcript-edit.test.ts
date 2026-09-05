@@ -53,10 +53,12 @@ vi.mock('@/lib/r2', async (importOriginal) => {
   };
 });
 
-// Everything in this module stays real except when a test arms `failNext`, so
-// the 'failed' branch is reachable without stubbing the caption pipeline for the
-// whole file.
-const captionSync = vi.hoisted(() => ({ failNext: false }));
+// Everything in this module stays real except when a test arms one of these, so
+// the 'failed' and 'quota' branches are reachable without stubbing the caption
+// pipeline for the whole file. `StorageQuotaError` is spread through from the
+// real module, so the route's `instanceof` is testing the same class the app
+// throws rather than a copy of it.
+const captionSync = vi.hoisted(() => ({ failNext: false, quotaNext: false }));
 
 vi.mock('@/lib/transcript-caption', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/transcript-caption')>();
@@ -65,6 +67,7 @@ vi.mock('@/lib/transcript-caption', async (importOriginal) => {
     syncCaptionTrackFromTranscript: async (
       input: Parameters<typeof actual.syncCaptionTrackFromTranscript>[0]
     ) => {
+      if (captionSync.quotaNext) throw new actual.StorageQuotaError();
       if (captionSync.failNext) throw new Error('R2 is unreachable');
       return actual.syncCaptionTrackFromTranscript(input);
     },
@@ -75,6 +78,7 @@ beforeEach(() => {
   r2.puts.length = 0;
   r2.deletedKeys.length = 0;
   captionSync.failNext = false;
+  captionSync.quotaNext = false;
 });
 
 const MISHEARD_WORDS = [
@@ -284,7 +288,11 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
     // every sibling. Two writes outside a transaction would leave a corrected
     // line that search cannot find, so the failure has to be injected into the
     // second write of the route's own transaction — hence the wrapped `tx`
-    // rather than a stubbed route.
+    // rather than a stubbed route. The stub assumes the callback form of
+    // `$transaction`; a route that switched to the array form would arrive here
+    // with a list instead of a function, and `injected` below is what catches
+    // the stub quietly never firing.
+    let injected = false;
     const realTransaction = db.$transaction.bind(db);
     const spy = vi.spyOn(db, '$transaction').mockImplementation((async (
       run: (tx: Prisma.TransactionClient) => Promise<unknown>
@@ -302,6 +310,7 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
                 get(model, name) {
                   if (name === 'update') {
                     return async () => {
+                      injected = true;
                       throw new Error('search text write failed');
                     };
                   }
@@ -312,7 +321,7 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
             },
           }) as Prisma.TransactionClient
         )
-      )) as never);
+      )) as unknown as typeof db.$transaction);
 
     let response: Response;
     try {
@@ -325,6 +334,10 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
       spy.mockRestore();
     }
 
+    // Without this the test would also pass against a route that never opened a
+    // transaction at all: the 500 would have to come from somewhere, but a
+    // refusal earlier in the handler would produce one just as well.
+    expect(injected).toBe(true);
     expect(response.status).toBe(500);
     expect(await readError(response)).toContain('Failed to update the transcript line');
 
@@ -337,6 +350,31 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
     const stored = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
     expect(stored.searchText).toBe('we held founders every week');
     expect(r2.puts).toHaveLength(0);
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
+  });
+
+  it('reports captions: quota when the account is full, and still saves the line', async () => {
+    // A full account is the one cause of a missed rebuild the operator can
+    // clear themselves. Reported as a plain 'failed' it reads as a bug to file,
+    // so the route has to tell `StorageQuotaError` apart from a storage outage.
+    const scenario = await seedVersion();
+    const { segment } = await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+    captionSync.quotaNext = true;
+
+    const response = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await readData<{ captions: string; subtitle: unknown }>(response);
+    expect(body.captions).toBe('quota');
+    expect(body.subtitle).toBeNull();
+    // The correction is not lost because there was no room for the subtitles.
+    const row = await db.transcriptSegment.findUniqueOrThrow({ where: { id: segment.id } });
+    expect(row.text).toBe('we help founders');
     expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 

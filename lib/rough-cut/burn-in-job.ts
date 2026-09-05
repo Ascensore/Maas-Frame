@@ -234,18 +234,34 @@ async function transcriptMaterial(
   }));
   // No duration to clamp against here: the words are the whole of what the
   // transcript timed, and the burn keeps the picture end to end.
-  const timed = wordsFromSegments(segments, 0);
-  // Zero-length words go before the guard rather than into the cues: a
-  // transcript that timed only part of itself — an imported file appended to a
-  // recognised one, say — would otherwise scatter instant-long cues through
-  // the picture, and what it did time is still worth burning.
-  const words = timed.filter((word) => word.end > word.start);
+  //
+  // Untimed material is dropped a segment at a time, never a word at a time.
+  // Whisper and Deepgram both emit `start === end` for a very short token, and
+  // `retimeSegmentWords` can round two words of an edited line onto the same
+  // instant; throwing every zero-length word away would quietly take real
+  // words out of the burned text. A line nobody timed at all is the thing
+  // worth losing — an imported paragraph appended to a recognised transcript
+  // would otherwise scatter instant-long cues through the picture.
+  const usable = segments.filter(
+    (segment) =>
+      segment.endSec > segment.startSec ||
+      // Through the same reader, so a line whose row is untimed but whose words
+      // are not still counts. A line with no word timings synthesises one word
+      // spanning the row, which this rejects for exactly the same reason.
+      wordsFromSegments([segment], 0).some((word) => word.end > word.start)
+  );
+  if (usable.length < segments.length) {
+    console.warn(
+      `burn-in on version ${versionId}: ${segments.length - usable.length} of ${segments.length} transcript lines have no timings and will not be drawn`
+    );
+  }
+  const words = wordsFromSegments(usable, 0);
   // A .txt or .docx transcript is stored READY with every segment 0-0 and no
   // word timings, so that filter takes all of them: every cue would start and
   // end at the same instant, libass would draw nothing, and the job would
   // report a successful render of an unchanged picture. Refuse it while the
   // operator can still be told why.
-  if (timed.length > 0 && words.length === 0) {
+  if (segments.length > 0 && words.length === 0) {
     throw new Error("This version's transcript has no timings to burn in");
   }
   return {

@@ -528,6 +528,42 @@ describe('burnInSubtitles', () => {
       number[],
     ];
     expect(texts).toEqual(['one two', 'A pasted paragraph.']);
+    // ...but the caption file cannot carry it, because a 0-0 cue is one no
+    // player shows and some parsers refuse.
+    const vtt = h.uploads.find((upload) => upload.key.startsWith('subtitles/'));
+    expect(vtt?.body).not.toContain('00:00:00.000 --> 00:00:00.000');
+  });
+
+  it('keeps a zero-length word inside a line the provider did time', async () => {
+    // ASR emits `start === end` for a very short token, and an edited line can
+    // round two words onto the same instant. Dropping zero-length words one at
+    // a time would take "uh" out of the burned text of a line that is timed
+    // perfectly well; only a line with no timings anywhere is dropped.
+    const h = harness({
+      segments: [
+        {
+          start_sec: 0,
+          end_sec: 3,
+          speaker: null,
+          text: 'one uh two',
+          words: [
+            { start: 0, end: 0.5, text: 'one' },
+            { start: 1, end: 1, text: 'uh' },
+            { start: 1.5, end: 2.5, text: 'two' },
+          ],
+        },
+      ],
+    });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({ maxWordsPerCue: 8 }, { kind: 'transcript', transcriptId: 't-1' })
+    );
+
+    expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
+      'Dialogue: 0,0:00:00.00,0:00:02.50,Default,,0,0,0,,one uh two',
+    ]);
   });
 
   it('takes WebVTT markup and entities out of a track before drawing it', async () => {

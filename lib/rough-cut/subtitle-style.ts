@@ -214,8 +214,14 @@ function assText(text: string): string {
   // backslash escape, so libass draws the first one and then reads the second
   // together with what follows, leaving `\\N` a hard break with a backslash in
   // front of it. The only way out is to stop it being a backslash: U+2216 SET
-  // MINUS draws the same stroke and controls nothing. Braces would open an
-  // override block.
+  // MINUS draws the same stroke and controls nothing. Where the chosen family
+  // has no glyph for it — Liberation, Roboto and Open Sans most likely do,
+  // DejaVu certainly does — libass falls back per glyph through fontconfig and
+  // draws it from another face, so the worst case is one character in a
+  // different typeface rather than a tofu box. The Dockerfile's `fc-match`
+  // loop does not cover this: it asserts that each family resolves, not that
+  // any of them covers a particular codepoint. Braces would open an override
+  // block.
   return text.replace(/\\/g, '∖').replace(/\{/g, '(').replace(/\}/g, ')').replace(/\r?\n/g, '\\N');
 }
 

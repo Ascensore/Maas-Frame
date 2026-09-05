@@ -3,6 +3,8 @@ import {
   DERIVED_SEGMENT_MAX_SECONDS,
   DERIVED_SEGMENT_MAX_WORDS,
   deriveProgramTranscript,
+  persistDerivedTranscript,
+  type DerivedTranscriptDeps,
 } from '@/lib/rough-cut/derived-transcript';
 import type { TranscriptSegmentRow } from '@/lib/rough-cut/transcript-source';
 import type { EditDecision } from '@/lib/rough-cut/types';
@@ -234,5 +236,58 @@ describe('deriveProgramTranscript', () => {
     expect(
       deriveProgramTranscript([edit(0, 0, 2, 'de-1'), edit(2, 0, 2, 'en-1')], transcripts).language
     ).toBe('de');
+  });
+});
+
+describe('persistDerivedTranscript', () => {
+  /** A pool that answers the four statements this function and the caption writer issue. */
+  function fakePool() {
+    const uploads: Array<{ key: string; body: string }> = [];
+    const query = async (sql: string) => {
+      if (sql.includes('INSERT INTO transcripts')) return { rows: [{ id: 'transcript-1' }] };
+      if (sql.includes('SELECT p."ownerId"')) return { rows: [{ owner_id: 'owner-1' }] };
+      return { rows: [] };
+    };
+    const deps = {
+      pool: {
+        query,
+        connect: async () => ({ query, release: () => {} }),
+      },
+      uploadObject: async (key: string, body: Buffer) => {
+        uploads.push({ key, body: body.toString('utf8') });
+      },
+    } as unknown as DerivedTranscriptDeps;
+    return { deps, uploads };
+  }
+
+  it('carries an untimed line into the transcript but never into the caption file', async () => {
+    // What a burn-in of a partly-timed transcript hands over: one line the
+    // provider timed and one pasted paragraph left at 0-0. The rows keep both,
+    // because an untimed line is still text to read and search. A cue written
+    // `00:00:00.000 --> 00:00:00.000` is one no player shows and some parsers
+    // refuse outright, so the caption file keeps only the timed line.
+    const { deps, uploads } = fakePool();
+
+    await persistDerivedTranscript(deps, {
+      versionId: 'version-1',
+      language: 'en',
+      provider: 'burn-in',
+      segments: [
+        {
+          startSec: 1,
+          endSec: 3,
+          speaker: null,
+          text: 'one two',
+          words: [
+            { start: 1, end: 2, text: 'one' },
+            { start: 2, end: 3, text: 'two' },
+          ],
+        },
+        { startSec: 0, endSec: 0, speaker: null, text: 'A pasted paragraph.', words: [] },
+      ],
+    });
+
+    const vtt = uploads.find((upload) => upload.key.startsWith('subtitles/'));
+    expect(vtt?.body).toBe('WEBVTT\n\n00:00:01.000 --> 00:00:03.000\none two\n');
   });
 });

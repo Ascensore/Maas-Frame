@@ -84,20 +84,7 @@ describe('TranscriptPane line editing', () => {
   }
 
   function renderPane(canManage = true) {
-    return render(
-      <TranscriptPane
-        versionId="version-1"
-        getCurrentTime={() => 0}
-        canManage={canManage}
-        canTranscribe={false}
-        comments={[]}
-        onSeek={() => {}}
-        onCommentRange={() => {}}
-        onOpenThread={() => {}}
-        onCaptionsChanged={onCaptionsChanged}
-        draftRange={null}
-      />
-    );
+    return render(pane('version-1', canManage));
   }
 
   async function renderReadyPane(canManage = true) {
@@ -201,7 +188,20 @@ describe('TranscriptPane line editing', () => {
     expect(screen.getByLabelText('Text')).toHaveValue('kuruculari bulduk');
   });
 
-  it('warns without blocking when the caption track could not be rebuilt', async () => {
+  // Every outcome that is not 'updated' saves the line and leaves the subtitles
+  // behind, but for different reasons, and the reason is the whole value of the
+  // note: a full account and a version at its track limit are both things the
+  // operator can clear, and neither reads that way as "could not be rebuilt".
+  // The expected strings share no distinguishing phrase, so a branch collapsed
+  // into its neighbour fails here rather than passing on a substring.
+  it.each([
+    ['failed', 'Line saved, but the caption track could not be rebuilt.'],
+    ['quota', 'Line saved. The captions were not rebuilt: the account is out of storage.'],
+    [
+      'skipped',
+      'Line saved. No caption track was created: this version already holds the maximum number of subtitle tracks. Delete one and rebuild.',
+    ],
+  ] as const)('warns without blocking when the rebuild reported %s', async (outcome, note) => {
     const user = userEvent.setup();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -209,7 +209,7 @@ describe('TranscriptPane line editing', () => {
         return jsonResponse({
           data: {
             segment: { ...SOURCE_SEGMENT, text: 'kuruculari bulduk', words: SAVED_WORDS },
-            captions: 'failed',
+            captions: outcome,
             subtitle: null,
           },
         });
@@ -234,11 +234,9 @@ describe('TranscriptPane line editing', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
-    // The edit stuck; only the subtitles are behind, and the pane says so.
+    // The edit stuck; only the subtitles are behind, and the pane says why.
     expect(screen.getByText('kuruculari')).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Line saved, but the caption track could not be rebuilt.'
-    );
+    expect(screen.getByRole('status')).toHaveTextContent(note);
     expect(onCaptionsChanged).not.toHaveBeenCalled();
   });
 
@@ -263,7 +261,7 @@ describe('TranscriptPane line editing', () => {
       }
       return jsonResponse({ data: {} });
     });
-    const view = render(pane('version-1', true));
+    const view = renderPane();
     await waitFor(() => {
       expect(screen.getByText('kurucularla')).toBeInTheDocument();
     });

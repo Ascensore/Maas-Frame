@@ -5,7 +5,11 @@ import { auth, checkProjectAccess } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { logError } from '@/lib/logger';
-import { type CaptionTrack, syncCaptionTrackFromTranscript } from '@/lib/transcript-caption';
+import {
+  StorageQuotaError,
+  type CaptionTrack,
+  syncCaptionTrackFromTranscript,
+} from '@/lib/transcript-caption';
 import { parseSegmentPatch, retimeSegmentWords } from '@/lib/transcript-edit';
 
 type RouteParams = { params: Promise<{ versionId: string; segmentId: string }> };
@@ -92,7 +96,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       return row;
     });
 
-    let captions: 'updated' | 'skipped' | 'empty' | 'failed' = 'failed';
+    let captions: 'updated' | 'skipped' | 'empty' | 'quota' | 'failed' = 'failed';
     let subtitle: CaptionTrack | null = null;
     try {
       const synced = await syncCaptionTrackFromTranscript({
@@ -106,6 +110,11 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       // The edit is saved either way: a caption track we could not rebuild is
       // worth reporting, not worth losing the correction over. The client shows
       // the `captions` value so the operator knows the subtitles are behind.
+      //
+      // A full account is told apart from a broken one. It is the one cause the
+      // operator can actually clear, and reported as a plain failure it reads as
+      // something to raise a bug about instead.
+      captions = captionError instanceof StorageQuotaError ? 'quota' : 'failed';
       logError('Failed to rebuild caption track after a transcript edit:', captionError);
     }
 
