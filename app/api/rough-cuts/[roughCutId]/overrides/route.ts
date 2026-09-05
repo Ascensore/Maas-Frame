@@ -1,17 +1,19 @@
 import { NextRequest } from 'next/server';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
-import { auth, checkProjectAccess } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { logError } from '@/lib/logger';
 import { rateLimit } from '@/lib/rate-limit';
-import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import {
+  emptyOverrides,
+  needsRender,
   overrideSummary,
   overridesEqual,
   parseRoughCutOverrides,
   validateOverridesForDecisions,
 } from '@/lib/rough-cut/overrides';
+import { loadRoughCutForEditor } from '@/lib/rough-cut/review';
 
 type RouteParams = { params: Promise<{ roughCutId: string }> };
 
@@ -30,45 +32,31 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!session?.user?.id) return apiErrors.unauthorized();
 
     const { roughCutId } = await params;
-    const row = await db.roughCut.findUnique({
-      where: { id: roughCutId },
-      include: {
-        project: {
-          select: { id: true, ownerId: true, workspaceId: true, visibility: true },
-        },
-      },
-    });
-    if (!row) return apiErrors.notFound('Rough cut');
-
-    const access = await checkProjectAccess(row.project, session.user.id);
-    if (!access.canEdit) return apiErrors.forbidden('Access denied');
-
-    if (row.status !== 'READY') {
-      return apiErrors.badRequest('Rough cut is not ready to review');
-    }
-
-    const decisions = parseRoughCutDecisionList(row.decisions);
-    if (!decisions) {
-      return apiErrors.badRequest('Rough cut has no decisions to review');
-    }
+    const loaded = await loadRoughCutForEditor(roughCutId, session.user.id, 'review');
+    if ('error' in loaded) return loaded.error;
+    const { row, decisions } = loaded;
 
     const body = await request.json().catch(() => null);
     const validated = validateOverridesForDecisions(body ?? {}, decisions);
     if (!validated.ok) return apiErrors.badRequest(validated.error);
 
+    // A review that decided nothing is no review: stored as SQL NULL rather
+    // than as an empty object, so `hasOverrides` and every "has this been
+    // looked at" check read the same answer as they did before the save.
+    const decided = !overridesEqual(validated.value, emptyOverrides());
     await db.roughCut.update({
       where: { id: roughCutId },
-      data: { overrides: validated.value as unknown as Prisma.InputJsonValue },
+      data: {
+        overrides: decided ? (validated.value as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+      },
     });
 
+    const stored = decided ? validated.value : null;
     return withCacheControl(
       successResponse({
-        overrides: validated.value,
-        summary: overrideSummary(decisions, validated.value),
-        needsRender: !overridesEqual(
-          validated.value,
-          parseRoughCutOverrides(row.renderedOverrides)
-        ),
+        overrides: stored,
+        summary: overrideSummary(decisions, stored),
+        needsRender: needsRender(decisions, stored, parseRoughCutOverrides(row.renderedOverrides)),
       }),
       'private, no-store'
     );

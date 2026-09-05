@@ -1,10 +1,13 @@
 import { MediaJobKind, MediaJobStatus, type Prisma, type RoughCut } from '@prisma/client';
+import type { NextResponse } from 'next/server';
+import { apiErrors } from '@/lib/api-response';
+import { checkProjectAccess } from '@/lib/auth';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { db } from '@/lib/db';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import {
   applyOverridesWithReport,
-  overridesEqual,
+  needsRender,
   parseRoughCutOverrides,
   type RoughCutOverrides,
 } from '@/lib/rough-cut/overrides';
@@ -27,6 +30,8 @@ export type RoughCutReviewSource = {
   durationSeconds: number;
   playbackUrl: string | null;
   playbackKind: 'file' | 'hls' | null;
+  /** The version this clip was cut from is gone, so there is nothing to scrub. */
+  missing: boolean;
 };
 
 export type RoughCutRenderState = {
@@ -35,16 +40,18 @@ export type RoughCutRenderState = {
   updatedAt: string | null;
 };
 
+/** What the saved overrides actually did to the program. Editors only. */
+export type AppliedOverridesReport = {
+  restoredKeys: string[];
+  staleCutKeys: string[];
+  skippedIslands: string[];
+  extraCutsApplied: number;
+};
+
 export type RoughCutReview = {
   decisions: RoughCutDecisionList;
   effective: RoughCutDecisionList;
-  /** What the saved overrides actually did to the program. */
-  applied: {
-    restoredKeys: string[];
-    staleCutKeys: string[];
-    skippedIslands: string[];
-    extraCutsApplied: number;
-  };
+  applied: AppliedOverridesReport | null;
   overrides: RoughCutOverrides | null;
   renderedOverrides: RoughCutOverrides | null;
   renderedDecisions: RoughCutDecisionList | null;
@@ -72,8 +79,16 @@ export function materializeJobWhere(roughCutId: string): Prisma.MediaJobWhereInp
   };
 }
 
-export async function findActiveMaterializeJob(roughCutId: string) {
-  return db.mediaJob.findFirst({
+/**
+ * Takes the client so the render route can ask inside the transaction that
+ * holds its advisory lock; outside one, two callers a millisecond apart both
+ * see no active job.
+ */
+export async function findActiveMaterializeJob(
+  roughCutId: string,
+  client: Pick<typeof db, 'mediaJob'> = db
+) {
+  return client.mediaJob.findFirst({
     where: { ...materializeJobWhere(roughCutId), status: { in: ACTIVE_JOB } },
     select: { id: true, status: true },
   });
@@ -146,12 +161,26 @@ async function loadSources(decisions: RoughCutDecisionList): Promise<RoughCutRev
       durationSeconds: clip.durationSeconds || version?.duration || 0,
       playbackUrl,
       playbackKind,
+      // A deleted source is a decision list the run can no longer be re-rendered
+      // from. The pane says so rather than showing a player that cannot load.
+      missing: !version,
     };
   });
 }
 
-/** Everything the review pane needs about a READY run, or null when it has no decisions yet. */
-export async function loadRoughCutReview(row: RoughCut): Promise<RoughCutReview | null> {
+/**
+ * Everything the review pane needs about a READY run, or null when it has no
+ * decisions yet.
+ *
+ * `canEdit` is what the caller may see, not only what they may do: the script,
+ * the reviewer's own decisions and the report of what those decisions did are
+ * an editor's working notes, so a commenter gets the program, the clips and the
+ * render state without them.
+ */
+export async function loadRoughCutReview(
+  row: RoughCut,
+  options: { canEdit: boolean }
+): Promise<RoughCutReview | null> {
   const decisions = parseRoughCutDecisionList(row.decisions);
   if (!decisions) return null;
   const overrides = parseRoughCutOverrides(row.overrides);
@@ -161,18 +190,65 @@ export async function loadRoughCutReview(row: RoughCut): Promise<RoughCutReview 
   return {
     decisions,
     effective: applied.decisions,
-    applied: {
-      restoredKeys: applied.restoredKeys,
-      staleCutKeys: applied.staleCutKeys,
-      skippedIslands: applied.skippedIslands,
-      extraCutsApplied: applied.extraCutsApplied,
-    },
-    overrides,
-    renderedOverrides,
+    applied: options.canEdit
+      ? {
+          restoredKeys: applied.restoredKeys,
+          staleCutKeys: applied.staleCutKeys,
+          skippedIslands: applied.skippedIslands,
+          extraCutsApplied: applied.extraCutsApplied,
+        }
+      : null,
+    overrides: options.canEdit ? overrides : null,
+    renderedOverrides: options.canEdit ? renderedOverrides : null,
     renderedDecisions: parseRoughCutDecisionList(row.renderedDecisions),
-    needsRender: !overridesEqual(overrides, renderedOverrides),
-    script: row.script ?? null,
+    needsRender: needsRender(decisions, overrides, renderedOverrides),
+    script: options.canEdit ? (row.script ?? null) : null,
     sources,
     render,
   };
+}
+
+type RoughCutForEditor = RoughCut & {
+  project: { id: string; ownerId: string; workspaceId: string; visibility: string };
+};
+
+type ProjectAccess = Awaited<ReturnType<typeof checkProjectAccess>>;
+
+export type EditorLoad =
+  | { row: RoughCutForEditor; access: ProjectAccess; decisions: RoughCutDecisionList }
+  | { error: NextResponse };
+
+/**
+ * The run behind a review mutation, refused the same way for both of them:
+ * missing, not yours to edit, not finished, or finished with nothing to act on.
+ * `action` only names the verb in those refusals.
+ */
+export async function loadRoughCutForEditor(
+  roughCutId: string,
+  userId: string,
+  action: 'review' | 'render'
+): Promise<EditorLoad> {
+  const row = await db.roughCut.findUnique({
+    where: { id: roughCutId },
+    include: {
+      project: {
+        select: { id: true, ownerId: true, workspaceId: true, visibility: true },
+      },
+    },
+  });
+  if (!row) return { error: apiErrors.notFound('Rough cut') };
+
+  const access = await checkProjectAccess(row.project, userId);
+  if (!access.canEdit) return { error: apiErrors.forbidden('Access denied') };
+
+  if (row.status !== 'READY') {
+    return { error: apiErrors.badRequest(`Rough cut is not ready to ${action}`) };
+  }
+
+  const decisions = parseRoughCutDecisionList(row.decisions);
+  if (!decisions) {
+    return { error: apiErrors.badRequest(`Rough cut has no decisions to ${action}`) };
+  }
+
+  return { row, access, decisions };
 }

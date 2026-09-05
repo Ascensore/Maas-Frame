@@ -31,6 +31,9 @@ async function loadCutForUser(roughCutId: string, userId: string | undefined) {
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
+    const limited = await rateLimit(request, 'transcript-read');
+    if (limited) return limited;
+
     const session = await auth();
     if (!session?.user?.id) return apiErrors.unauthorized();
 
@@ -40,13 +43,16 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!loaded.access.hasAccess) return apiErrors.forbidden('Access denied');
 
     // The review payload is several joins wider than the row, so the pane asks
-    // for it and every other caller keeps the cheap answer.
+    // for it and every other caller keeps the cheap answer. The script is the
+    // editor's brief rather than part of the cut, so it travels with the same
+    // permission as the reviewer's decisions do.
     const includeReview = request.nextUrl.searchParams.get('include') === 'review';
+    const canEdit = loaded.access.canEdit;
 
     return withCacheControl(
       successResponse({
-        roughCut: shapeRoughCut(loaded.row, { includeScript: true }),
-        ...(includeReview ? { review: await loadRoughCutReview(loaded.row) } : {}),
+        roughCut: shapeRoughCut(loaded.row, { includeScript: canEdit }),
+        ...(includeReview ? { review: await loadRoughCutReview(loaded.row, { canEdit }) } : {}),
       }),
       'private, no-store'
     );

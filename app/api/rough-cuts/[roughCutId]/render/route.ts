@@ -1,13 +1,12 @@
 import { NextRequest } from 'next/server';
 import { MediaJobKind } from '@prisma/client';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
-import { auth, checkProjectAccess } from '@/lib/auth';
+import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { logError } from '@/lib/logger';
-import { enqueueMediaJob } from '@/lib/media-jobs';
 import { rateLimit } from '@/lib/rate-limit';
-import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
-import { findActiveMaterializeJob } from '@/lib/rough-cut/review';
+import { applyOverrides, parseRoughCutOverrides } from '@/lib/rough-cut/overrides';
+import { findActiveMaterializeJob, loadRoughCutForEditor } from '@/lib/rough-cut/review';
 
 type RouteParams = { params: Promise<{ roughCutId: string }> };
 
@@ -26,44 +25,49 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     if (!session?.user?.id) return apiErrors.unauthorized();
 
     const { roughCutId } = await params;
-    const row = await db.roughCut.findUnique({
-      where: { id: roughCutId },
-      include: {
-        project: {
-          select: { id: true, ownerId: true, workspaceId: true, visibility: true },
-        },
-      },
-    });
-    if (!row) return apiErrors.notFound('Rough cut');
+    const loaded = await loadRoughCutForEditor(roughCutId, session.user.id, 'render');
+    if ('error' in loaded) return loaded.error;
+    const { row, decisions } = loaded;
 
-    const access = await checkProjectAccess(row.project, session.user.id);
-    if (!access.canEdit) return apiErrors.forbidden('Access denied');
-
-    if (row.status !== 'READY') {
-      return apiErrors.badRequest('Rough cut is not ready to render');
-    }
-
-    const decisions = parseRoughCutDecisionList(row.decisions);
-    const firstEdit = decisions?.edits[0];
-    if (!firstEdit) {
+    if (decisions.edits.length === 0) {
       return apiErrors.badRequest('Rough cut has nothing to render');
     }
 
-    const active = await findActiveMaterializeJob(roughCutId);
-    if (active) {
-      return apiErrors.conflict('A render is already running for this cut');
+    // What the worker will actually cut. A reviewer can cut the last of the
+    // program away, and the job would then fail on the same check deep inside
+    // ffmpeg's temp directory; refuse it here, where they can undo it.
+    const effective = applyOverrides(decisions, parseRoughCutOverrides(row.overrides));
+    const firstEdit = effective.edits[0];
+    if (!firstEdit) {
+      return apiErrors.badRequest('Nothing is left in the program after the reviewer’s cuts');
     }
 
-    // The job is leased through a version, and every clip of the run belongs to
-    // the same project, so the first edit's source is as good an anchor as any.
-    const jobId = await enqueueMediaJob(
-      firstEdit.sourceVersionId,
-      MediaJobKind.MATERIALIZE_ROUGH_CUT,
-      { roughCutId }
-    );
+    // Checking for a running render and queueing one has to be one step, or two
+    // clicks a moment apart both see an idle cut and queue a job each. The lock
+    // is per rough cut, so renders of different cuts never wait on each other.
+    const job = await db.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(
+          ('x' || left(md5(${roughCutId}), 16))::bit(64)::bigint
+        )
+      `;
+      const active = await findActiveMaterializeJob(roughCutId, tx);
+      if (active) return null;
+      // Created here rather than through enqueueMediaJob so the insert shares
+      // the transaction that holds the lock.
+      return tx.mediaJob.create({
+        data: {
+          versionId: firstEdit.sourceVersionId,
+          kind: MediaJobKind.MATERIALIZE_ROUGH_CUT,
+          payload: { roughCutId },
+        },
+        select: { id: true, status: true },
+      });
+    });
+    if (!job) return apiErrors.conflict('A render is already running for this cut');
 
     return withCacheControl(
-      successResponse({ job: { id: jobId, status: 'PENDING' } }, 202),
+      successResponse({ job: { id: job.id, status: job.status } }, 202),
       'private, no-store'
     );
   } catch (error) {

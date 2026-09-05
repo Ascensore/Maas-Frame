@@ -33,11 +33,12 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return withCacheControl(successResponse({ roughCut: null }), 'private, no-store');
     }
 
+    const canEdit = context.canManageAssets;
     return withCacheControl(
       successResponse({
         roughCut: shapeRoughCut(row),
-        review: await loadRoughCutReview(row),
-        canEdit: context.canManageAssets,
+        review: await loadRoughCutReview(row, { canEdit }),
+        canEdit,
       }),
       'private, no-store'
     );

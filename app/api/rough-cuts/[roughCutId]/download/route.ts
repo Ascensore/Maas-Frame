@@ -7,7 +7,7 @@ import { canDownloadProjectMedia } from '@/lib/project-download';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import { buildFcp7Xml } from '@/lib/rough-cut/fcp7-xml';
 import { buildOtioFile } from '@/lib/rough-cut/otio';
-import { applyOverrides, parseRoughCutOverrides } from '@/lib/rough-cut/overrides';
+import { effectiveDecisions, parseRoughCutOverrides } from '@/lib/rough-cut/overrides';
 import { profileFromSnapshot } from '@/lib/rough-cut/profile';
 import { rateLimit } from '@/lib/rate-limit';
 import type { CameraClip } from '@/lib/rough-cut/types';
@@ -71,9 +71,12 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return apiErrors.internalError('Rough cut decisions are missing or invalid');
     }
 
-    // What the editor opens is what the reviewer approved: the same program the
-    // render produces, rather than the one assembly first proposed.
-    const decisions = applyOverrides(stored, parseRoughCutOverrides(row.overrides));
+    // What the editor opens is the program the reviewer has approved so far:
+    // the saved overrides, which is what the next render will produce and not
+    // necessarily what the last one did. The cut markers follow the same
+    // decisions, so a restored island is no longer marked as removed and a
+    // range the reviewer cut by hand is.
+    const decisions = effectiveDecisions(stored, parseRoughCutOverrides(row.overrides));
 
     const clips: CameraClip[] = decisions.clips.map((clip) => ({
       videoId: clip.videoId,

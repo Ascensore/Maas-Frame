@@ -3,9 +3,11 @@ import { assembleDecisionList } from '@/lib/rough-cut/decision-list';
 import {
   applyOverrides,
   applyOverridesWithReport,
+  effectiveDecisions,
   emptyOverrides,
   extraCutKey,
   hasProgramChanges,
+  needsRender,
   overrideSummary,
   overridesEqual,
   parseRoughCutOverrides,
@@ -593,5 +595,125 @@ describe('overrideSummary / overridesEqual', () => {
     expect(
       overridesEqual(a, overrides(a.cuts, [...a.extraCuts, cut('manual:v1:50-75', 2, 'again')]))
     ).toBe(true);
+  });
+});
+
+describe('needsRender', () => {
+  const decisions = linearDecisions();
+  const overrides = (cuts: RoughCutOverrides['cuts'], extraCuts: ExtraCut[] = []) => ({
+    version: 1 as const,
+    cuts,
+    extraCuts,
+  });
+  const manual = (inSeconds: number): ExtraCut => ({
+    key: extraCutKey('v1', inSeconds, inSeconds + 1, RATE),
+    sourceVersionId: 'v1',
+    inSeconds,
+    outSeconds: inSeconds + 1,
+    note: null,
+  });
+
+  it('does not ask for a render for decisions that cannot change a frame', () => {
+    // Keeping a cut is agreeing with the render that already happened.
+    expect(needsRender(decisions, overrides({ [ISLAND]: 'keep' }), null)).toBe(false);
+    expect(needsRender(decisions, null, overrides({ [ISLAND]: 'keep' }))).toBe(false);
+    // And an island this run no longer has is a decision nothing can apply.
+    expect(needsRender(decisions, overrides({ 'v1:900-950': 'restore' }), null)).toBe(false);
+    expect(needsRender(decisions, null, null)).toBe(false);
+    expect(needsRender(decisions, emptyOverrides(), null)).toBe(false);
+  });
+
+  it('asks for a render when the program would come out different', () => {
+    expect(needsRender(decisions, overrides({ [ISLAND]: 'restore' }), null)).toBe(true);
+    expect(needsRender(decisions, overrides({}, [manual(2)]), null)).toBe(true);
+    // Undoing a restore that was rendered is a change too.
+    expect(needsRender(decisions, null, overrides({ [ISLAND]: 'restore' }))).toBe(true);
+  });
+
+  it('does not ask for a render when the rendered decisions already match', () => {
+    const saved = overrides({ [ISLAND]: 'restore' }, [manual(2)]);
+    expect(needsRender(decisions, saved, saved)).toBe(false);
+    // Key order, notes and a keep added on one side change nothing.
+    expect(
+      needsRender(decisions, { ...saved, cuts: { ...saved.cuts, 'v1:900-950': 'keep' } }, saved)
+    ).toBe(false);
+    expect(needsRender(decisions, saved, overrides(saved.cuts, [manual(2)]))).toBe(false);
+    // A different extra cut is a different program.
+    expect(needsRender(decisions, saved, overrides(saved.cuts, [manual(3)]))).toBe(true);
+  });
+});
+
+describe('effectiveDecisions', () => {
+  it('leaves a run with no overrides exactly as it was', () => {
+    const decisions = linearDecisions();
+    expect(effectiveDecisions(decisions, null)).toEqual(decisions);
+  });
+
+  it('drops a restored island from the cut list and adds the cuts the reviewer drew', () => {
+    const decisions = linearDecisions();
+    const effective = effectiveDecisions(decisions, {
+      version: 1,
+      cuts: { [ISLAND]: 'restore' },
+      extraCuts: [
+        {
+          key: extraCutKey('v1', 2, 3, RATE),
+          sourceVersionId: 'v1',
+          inSeconds: 2,
+          outSeconds: 3,
+          note: 'fluffed the line',
+        },
+      ],
+    });
+
+    expect(effective.cuts).toEqual([
+      {
+        key: extraCutKey('v1', 2, 3, RATE),
+        sourceVersionId: 'v1',
+        inSeconds: 2,
+        outSeconds: 3,
+        reason: { code: 'REVIEWER', summary: 'fluffed the line' },
+        transcriptText: null,
+      },
+    ]);
+    // The program is the applied one: the island back in, the manual cut out.
+    expect(ranges(effective.edits)).toEqual([
+      [0, 1, 1, 2],
+      [1, 8, 3, 10],
+    ]);
+  });
+
+  it('describes an unexplained cut, and leaves out an empty cut list altogether', () => {
+    const decisions = linearDecisions();
+    const effective = effectiveDecisions(decisions, {
+      version: 1,
+      cuts: {},
+      extraCuts: [
+        {
+          key: extraCutKey('v1', 2, 3, RATE),
+          sourceVersionId: 'v1',
+          inSeconds: 2,
+          outSeconds: 3,
+          note: null,
+        },
+      ],
+    });
+    expect(effective.cuts?.map((cut) => [cut.key, cut.reason.summary])).toEqual([
+      [ISLAND, '2.0s of dead air'],
+      [extraCutKey('v1', 2, 3, RATE), 'Removed by the reviewer'],
+    ]);
+
+    const noIslands = assembleDecisionList({
+      edits: [edit(0, 1, 4)],
+      clips: [clip('v1')],
+      fileNames: new Map([['v1', '01-v1.mp4']]),
+      mediaPathPrefix: './media/',
+      rate: RATE,
+    });
+    expect('cuts' in effectiveDecisions(noIslands, emptyOverrides())).toBe(false);
+    // A run whose only island the reviewer put back has nothing left to mark.
+    expect(
+      'cuts' in
+        effectiveDecisions(decisions, { ...emptyOverrides(), cuts: { [ISLAND]: 'restore' } })
+    ).toBe(false);
   });
 });

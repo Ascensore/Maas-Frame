@@ -1,7 +1,14 @@
 import { z } from 'zod';
 import { framesToSeconds, secondsToFrames, type FrameRate } from '../timecode';
 import { cutIslandKey, packTimeline } from './program';
-import type { EditDecision, EditReason, Marker, RoughCutDecisionList } from './types';
+import type {
+  CutIsland,
+  CutReasonCode,
+  EditDecision,
+  EditReason,
+  Marker,
+  RoughCutDecisionList,
+} from './types';
 
 /**
  * The reviewer's decisions on a run, stored on the RoughCut row and applied
@@ -410,12 +417,51 @@ export function applyOverridesWithReport(
   };
 }
 
-/** The program alone. The same object back when the decisions change nothing. */
+/**
+ * The program alone, with the run's own cut list left as it was. Anything that
+ * shows or exports the cuts wants `effectiveDecisions` instead.
+ */
 export function applyOverrides(
   decisions: RoughCutDecisionList,
   overrides: RoughCutOverrides | null
 ): RoughCutDecisionList {
   return applyOverridesWithReport(decisions, overrides).decisions;
+}
+
+const REVIEWER_CUT: CutReasonCode = 'REVIEWER';
+
+/**
+ * The program *and* a cut list that agrees with it: an island the reviewer put
+ * back is no longer a cut, and a range they cut by hand now is. Exports read
+ * `cuts` to mark what was removed, so handing them the run's original list
+ * would mark restored material as missing and say nothing about the reviewer's
+ * own cuts. The reviewer's ranges wear the island shape, so the exporters need
+ * to know nothing about overrides.
+ */
+export function effectiveDecisions(
+  decisions: RoughCutDecisionList,
+  overrides: RoughCutOverrides | null
+): RoughCutDecisionList {
+  const applied = applyOverridesWithReport(decisions, overrides);
+  const restored = new Set(applied.restoredKeys);
+  const cuts: CutIsland[] = [
+    ...(decisions.cuts ?? []).filter((island) => !restored.has(island.key)),
+    ...(overrides?.extraCuts ?? []).map((cut) => ({
+      key: cut.key,
+      sourceVersionId: cut.sourceVersionId,
+      inSeconds: cut.inSeconds,
+      outSeconds: cut.outSeconds,
+      reason: { code: REVIEWER_CUT, summary: cut.note ?? 'Removed by the reviewer' },
+      transcriptText: null,
+    })),
+  ];
+  if (cuts.length === 0) {
+    // Absent rather than empty, the way assembly writes a run with no cuts.
+    const bare = { ...applied.decisions };
+    delete bare.cuts;
+    return bare;
+  }
+  return { ...applied.decisions, cuts };
 }
 
 export type OverrideSummary = {
@@ -469,4 +515,37 @@ function canonical(overrides: RoughCutOverrides | null): string {
 /** Same decisions, whatever the key order; notes do not count. */
 export function overridesEqual(a: RoughCutOverrides | null, b: RoughCutOverrides | null): boolean {
   return canonical(a) === canonical(b);
+}
+
+/**
+ * Only what would come out different next time. A `keep` is a decision to
+ * leave a cut where the assembler put it, which every render has already done,
+ * and a decision on an island this run no longer has cannot be applied at all;
+ * neither can change a frame, so neither counts. Without this, ticking through
+ * a review and keeping every cut left the pane asking for a render that would
+ * produce the file it already had.
+ */
+function programAffecting(
+  decisions: RoughCutDecisionList,
+  overrides: RoughCutOverrides | null
+): RoughCutOverrides | null {
+  if (!overrides) return null;
+  const islandKeys = new Set((decisions.cuts ?? []).map((cut) => cut.key));
+  const cuts: Record<string, CutOverrideAction> = {};
+  for (const [key, action] of Object.entries(overrides.cuts)) {
+    if (action === 'restore' && islandKeys.has(key)) cuts[key] = action;
+  }
+  return { version: 1, cuts, extraCuts: overrides.extraCuts };
+}
+
+/** Whether the saved decisions would change the file the last render produced. */
+export function needsRender(
+  decisions: RoughCutDecisionList,
+  overrides: RoughCutOverrides | null,
+  renderedOverrides: RoughCutOverrides | null
+): boolean {
+  return !overridesEqual(
+    programAffecting(decisions, overrides),
+    programAffecting(decisions, renderedOverrides)
+  );
 }

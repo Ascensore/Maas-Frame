@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { db } from '@/lib/db';
 import { assembleDecisionList } from '@/lib/rough-cut/decision-list';
+import { extraCutKey } from '@/lib/rough-cut/overrides';
 import { cutIslandKey } from '@/lib/rough-cut/program';
 import { PUT as putOverrides } from '@/app/api/rough-cuts/[roughCutId]/overrides/route';
 import { POST as postRender } from '@/app/api/rough-cuts/[roughCutId]/render/route';
@@ -19,6 +20,7 @@ import {
 } from '../factories';
 
 const RATE = { num: 24, den: 1, dropFrame: false };
+const SCRIPT = 'INTRO: the editor wrote this';
 
 async function seedReviewableCut() {
   const scenario = await seedProject();
@@ -97,6 +99,7 @@ async function seedReviewableCut() {
     status: 'READY',
     layout: 'LINEAR',
     decisions,
+    script: SCRIPT,
     outputVideoId: output.id,
   });
   return { ...scenario, source, sourceVersion, output, outputVersion, cut, islandKey };
@@ -109,6 +112,10 @@ async function addCommenter(projectId: string) {
   return commenter;
 }
 
+function putBody(cutId: string, body: unknown) {
+  return apiRequest(`/api/rough-cuts/${cutId}/overrides`, { method: 'PUT', body });
+}
+
 describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
   it('returns 401 to an anonymous caller and stores nothing', async () => {
     const seeded = await seedReviewableCut();
@@ -116,10 +123,7 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
 
     const response = await callRoute(
       putOverrides,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/overrides`, {
-        method: 'PUT',
-        body: { version: 1, cuts: { [seeded.islandKey]: 'restore' } },
-      }),
+      putBody(seeded.cut.id, { version: 1, cuts: { [seeded.islandKey]: 'restore' } }),
       { roughCutId: seeded.cut.id }
     );
 
@@ -135,10 +139,7 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
 
     const response = await callRoute(
       putOverrides,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/overrides`, {
-        method: 'PUT',
-        body: { version: 1, cuts: { [seeded.islandKey]: 'restore' } },
-      }),
+      putBody(seeded.cut.id, { version: 1, cuts: { [seeded.islandKey]: 'restore' } }),
       { roughCutId: seeded.cut.id }
     );
 
@@ -154,13 +155,14 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
 
     const response = await callRoute(
       putOverrides,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/overrides`, {
-        method: 'PUT',
-        body: {
-          version: 1,
-          cuts: { [seeded.islandKey]: 'restore' },
-          extraCuts: [{ sourceVersionId: seeded.sourceVersion.id, inSeconds: 7, outSeconds: 8 }],
-        },
+      putBody(seeded.cut.id, {
+        version: 1,
+        cuts: { [seeded.islandKey]: 'restore' },
+        // Drawn between frames on a 24fps timeline: what is stored is the
+        // frames the key names, not what the pointer reported.
+        extraCuts: [
+          { sourceVersionId: seeded.sourceVersion.id, inSeconds: 7.01, outSeconds: 8.02 },
+        ],
       }),
       { roughCutId: seeded.cut.id }
     );
@@ -173,9 +175,90 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
     }>(response);
     expect(payload.summary).toMatchObject({ restored: 1, extraCuts: 1, programSeconds: 8 });
     expect(payload.needsRender).toBe(true);
-    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: seeded.cut.id } });
-    expect(stored.overrides).toMatchObject({ version: 1, cuts: { [seeded.islandKey]: 'restore' } });
     expect(payload.overrides.extraCuts[0]?.key).toMatch(/^manual:/);
+
+    const stored = await db.roughCut.findUniqueOrThrow({ where: { id: seeded.cut.id } });
+    expect(stored.overrides).toEqual({
+      version: 1,
+      cuts: { [seeded.islandKey]: 'restore' },
+      extraCuts: [
+        {
+          key: extraCutKey(seeded.sourceVersion.id, 7.01, 8.02, RATE),
+          sourceVersionId: seeded.sourceVersion.id,
+          inSeconds: 7,
+          outSeconds: 8,
+          note: null,
+        },
+      ],
+    });
+  });
+
+  it('stores no overrides at all when the reviewer clears every decision', async () => {
+    const seeded = await seedReviewableCut();
+    signedInAs(seeded.owner);
+    await callRoute(
+      putOverrides,
+      putBody(seeded.cut.id, { version: 1, cuts: { [seeded.islandKey]: 'restore' } }),
+      { roughCutId: seeded.cut.id }
+    );
+
+    const response = await callRoute(
+      putOverrides,
+      putBody(seeded.cut.id, { version: 1, cuts: {}, extraCuts: [] }),
+      { roughCutId: seeded.cut.id }
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await readData<{ overrides: unknown; needsRender: boolean }>(response);
+    expect(payload.overrides).toBeNull();
+    expect(payload.needsRender).toBe(false);
+    expect(
+      (await db.roughCut.findUniqueOrThrow({ where: { id: seeded.cut.id } })).overrides
+    ).toBeNull();
+
+    const shaped = await callRoute(getRoughCut, apiRequest(`/api/rough-cuts/${seeded.cut.id}`), {
+      roughCutId: seeded.cut.id,
+    });
+    expect(await readData<{ roughCut: { hasOverrides: boolean } }>(shaped)).toMatchObject({
+      roughCut: { hasOverrides: false },
+    });
+  });
+
+  it('asks for a render only when the decisions would change the file', async () => {
+    const seeded = await seedReviewableCut();
+    signedInAs(seeded.owner);
+
+    // Nothing rendered yet, and keeping a cut is agreeing with the program as
+    // the assembler left it: a decision, but not one that changes a frame.
+    const kept = await callRoute(
+      putOverrides,
+      putBody(seeded.cut.id, { version: 1, cuts: { [seeded.islandKey]: 'keep' } }),
+      { roughCutId: seeded.cut.id }
+    );
+    expect(kept.status).toBe(200);
+    expect((await readData<{ needsRender: boolean }>(kept)).needsRender).toBe(false);
+    expect(
+      (await db.roughCut.findUniqueOrThrow({ where: { id: seeded.cut.id } })).overrides
+    ).toMatchObject({ cuts: { [seeded.islandKey]: 'keep' } });
+
+    const rendered = { version: 1, cuts: { [seeded.islandKey]: 'restore' }, extraCuts: [] };
+    await db.roughCut.update({
+      where: { id: seeded.cut.id },
+      data: { renderedOverrides: rendered },
+    });
+
+    const same = await callRoute(putOverrides, putBody(seeded.cut.id, rendered), {
+      roughCutId: seeded.cut.id,
+    });
+    expect((await readData<{ needsRender: boolean }>(same)).needsRender).toBe(false);
+
+    // Undoing a restore that was rendered does change the file.
+    const undone = await callRoute(
+      putOverrides,
+      putBody(seeded.cut.id, { version: 1, cuts: { [seeded.islandKey]: 'keep' } }),
+      { roughCutId: seeded.cut.id }
+    );
+    expect((await readData<{ needsRender: boolean }>(undone)).needsRender).toBe(true);
   });
 
   it('rejects an unknown island key with 400 and stores nothing', async () => {
@@ -184,10 +267,7 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
 
     const response = await callRoute(
       putOverrides,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/overrides`, {
-        method: 'PUT',
-        body: { version: 1, cuts: { 'nope:1-2': 'restore' } },
-      }),
+      putBody(seeded.cut.id, { version: 1, cuts: { 'nope:1-2': 'restore' } }),
       { roughCutId: seeded.cut.id }
     );
 
@@ -207,14 +287,9 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
     });
     signedInAs(scenario.owner);
 
-    const response = await callRoute(
-      putOverrides,
-      apiRequest(`/api/rough-cuts/${cut.id}/overrides`, {
-        method: 'PUT',
-        body: { version: 1, cuts: {} },
-      }),
-      { roughCutId: cut.id }
-    );
+    const response = await callRoute(putOverrides, putBody(cut.id, { version: 1, cuts: {} }), {
+      roughCutId: cut.id,
+    });
 
     expect(response.status).toBe(400);
     expect(await readError(response)).toBe('Rough cut is not ready to review');
@@ -223,30 +298,23 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
 });
 
 describe('POST /api/rough-cuts/[roughCutId]/render', () => {
+  const renderRequest = (cutId: string) =>
+    apiRequest(`/api/rough-cuts/${cutId}/render`, { method: 'POST' });
+
   it('returns 401 anonymously and 403 to a commenting member, enqueuing nothing', async () => {
     const seeded = await seedReviewableCut();
     signedOut();
 
     expect(
-      (
-        await callRoute(
-          postRender,
-          apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-          { roughCutId: seeded.cut.id }
-        )
-      ).status
+      (await callRoute(postRender, renderRequest(seeded.cut.id), { roughCutId: seeded.cut.id }))
+        .status
     ).toBe(401);
 
     signedInAs(await addCommenter(seeded.project.id));
 
     expect(
-      (
-        await callRoute(
-          postRender,
-          apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-          { roughCutId: seeded.cut.id }
-        )
-      ).status
+      (await callRoute(postRender, renderRequest(seeded.cut.id), { roughCutId: seeded.cut.id }))
+        .status
     ).toBe(403);
     expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(0);
   });
@@ -255,23 +323,22 @@ describe('POST /api/rough-cuts/[roughCutId]/render', () => {
     const seeded = await seedReviewableCut();
     signedInAs(seeded.owner);
 
-    const first = await callRoute(
-      postRender,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-      { roughCutId: seeded.cut.id }
-    );
+    const first = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
     expect(first.status).toBe(202);
+    expect(await readData<{ job: { status: string } }>(first)).toMatchObject({
+      job: { status: 'PENDING' },
+    });
 
     const jobs = await db.mediaJob.findMany({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } });
     expect(jobs).toHaveLength(1);
     expect(jobs[0]?.versionId).toBe(seeded.sourceVersion.id);
     expect(jobs[0]?.payload).toEqual({ roughCutId: seeded.cut.id });
 
-    const second = await callRoute(
-      postRender,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-      { roughCutId: seeded.cut.id }
-    );
+    const second = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
     expect(second.status).toBe(409);
     expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(1);
   });
@@ -280,21 +347,15 @@ describe('POST /api/rough-cuts/[roughCutId]/render', () => {
     const seeded = await seedReviewableCut();
     signedInAs(seeded.owner);
 
-    await callRoute(
-      postRender,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-      { roughCutId: seeded.cut.id }
-    );
+    await callRoute(postRender, renderRequest(seeded.cut.id), { roughCutId: seeded.cut.id });
     await db.mediaJob.updateMany({
       where: { kind: 'MATERIALIZE_ROUGH_CUT' },
       data: { status: 'SUCCEEDED' },
     });
 
-    const again = await callRoute(
-      postRender,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-      { roughCutId: seeded.cut.id }
-    );
+    const again = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
 
     expect(again.status).toBe(202);
     expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(2);
@@ -316,14 +377,54 @@ describe('POST /api/rough-cuts/[roughCutId]/render', () => {
     });
     signedInAs(seeded.owner);
 
-    const response = await callRoute(
-      postRender,
-      apiRequest(`/api/rough-cuts/${seeded.cut.id}/render`, { method: 'POST' }),
-      { roughCutId: seeded.cut.id }
-    );
+    const response = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
 
     expect(response.status).toBe(202);
     expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(2);
+  });
+
+  it('refuses a run that never finished assembling, and queues nothing', async () => {
+    const seeded = await seedReviewableCut();
+    await db.roughCut.update({ where: { id: seeded.cut.id }, data: { status: 'FAILED' } });
+    signedInAs(seeded.owner);
+
+    const response = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toBe('Rough cut is not ready to render');
+    expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(0);
+  });
+
+  it('refuses a render the reviewer has cut away entirely, and queues nothing', async () => {
+    const seeded = await seedReviewableCut();
+    await db.roughCut.update({
+      where: { id: seeded.cut.id },
+      data: {
+        overrides: {
+          version: 1,
+          cuts: {},
+          extraCuts: [
+            { sourceVersionId: seeded.sourceVersion.id, inSeconds: 1, outSeconds: 4 },
+            { sourceVersionId: seeded.sourceVersion.id, inSeconds: 6, outSeconds: 10 },
+          ],
+        },
+      },
+    });
+    signedInAs(seeded.owner);
+
+    const response = await callRoute(postRender, renderRequest(seeded.cut.id), {
+      roughCutId: seeded.cut.id,
+    });
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toBe(
+      'Nothing is left in the program after the reviewer’s cuts'
+    );
+    expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(0);
   });
 });
 
@@ -380,11 +481,13 @@ describe('GET /api/videos/[videoId]/rough-cut', () => {
         overrides: { cuts: Record<string, string> } | null;
         renderedOverrides: unknown;
         needsRender: boolean;
+        script: string | null;
         sources: Array<{
           versionId: string;
           title: string;
           playbackUrl: string | null;
           playbackKind: string | null;
+          missing: boolean;
         }>;
         render: { status: string };
       };
@@ -395,19 +498,94 @@ describe('GET /api/videos/[videoId]/rough-cut', () => {
     expect(payload.review.effective.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual(
       [[1, 10]]
     );
-    expect(payload.review.applied.restoredKeys).toEqual([seeded.islandKey]);
+    expect(payload.review.applied?.restoredKeys).toEqual([seeded.islandKey]);
     expect(payload.review.overrides?.cuts).toEqual({ [seeded.islandKey]: 'restore' });
     expect(payload.review.renderedOverrides).toBeNull();
     expect(payload.review.needsRender).toBe(true);
+    expect(payload.review.script).toBe(SCRIPT);
     expect(payload.review.sources).toEqual([
       expect.objectContaining({
         versionId: seeded.sourceVersion.id,
         title: 'Cam A',
         playbackUrl: seeded.sourceVersion.originalUrl,
         playbackKind: 'file',
+        missing: false,
       }),
     ]);
     expect(payload.review.render.status).toBe('idle');
+  });
+
+  it('keeps the editor’s working notes out of a commenter’s payload', async () => {
+    const seeded = await seedReviewableCut();
+    await db.roughCut.update({
+      where: { id: seeded.cut.id },
+      data: { overrides: { version: 1, cuts: { [seeded.islandKey]: 'restore' }, extraCuts: [] } },
+    });
+    signedInAs(await addCommenter(seeded.project.id));
+
+    const response = await callRoute(
+      getVideoRoughCut,
+      apiRequest(`/api/videos/${seeded.output.id}/rough-cut`),
+      { videoId: seeded.output.id }
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await readData<{
+      roughCut: { script?: string; hasScript: boolean };
+      canEdit: boolean;
+      review: {
+        script: string | null;
+        overrides: unknown;
+        renderedOverrides: unknown;
+        applied: unknown;
+        decisions: { edits: unknown[] };
+        effective: { edits: Array<{ inSeconds: number; outSeconds: number }> };
+        sources: unknown[];
+        render: { status: string };
+        needsRender: boolean;
+      };
+    }>(response);
+
+    expect(payload.canEdit).toBe(false);
+    expect(payload.review.script).toBeNull();
+    expect(payload.review.overrides).toBeNull();
+    expect(payload.review.renderedOverrides).toBeNull();
+    expect(payload.review.applied).toBeNull();
+    expect(payload.roughCut.script).toBeUndefined();
+    expect(payload.roughCut.hasScript).toBe(true);
+    // What a commenter is there for still arrives: the cut they are watching.
+    expect(payload.review.effective.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual(
+      [[1, 10]]
+    );
+    expect(payload.review.sources).toHaveLength(1);
+    expect(payload.review.render.status).toBe('idle');
+    expect(payload.review.needsRender).toBe(true);
+  });
+
+  it('says so when a source the cut was made from has been deleted', async () => {
+    const seeded = await seedReviewableCut();
+    await db.videoVersion.delete({ where: { id: seeded.sourceVersion.id } });
+    signedInAs(seeded.owner);
+
+    const response = await callRoute(
+      getVideoRoughCut,
+      apiRequest(`/api/videos/${seeded.output.id}/rough-cut`),
+      { videoId: seeded.output.id }
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await readData<{
+      review: {
+        sources: Array<{
+          missing: boolean;
+          playbackUrl: string | null;
+          playbackKind: string | null;
+        }>;
+      };
+    }>(response);
+    expect(payload.review.sources).toEqual([
+      expect.objectContaining({ missing: true, playbackUrl: null, playbackKind: null }),
+    ]);
   });
 
   it('reports a queued render and stops asking for one once the saved cuts are the rendered ones', async () => {
@@ -439,6 +617,51 @@ describe('GET /api/videos/[videoId]/rough-cut', () => {
     expect(payload.review.needsRender).toBe(false);
     expect(payload.review.render.status).toBe('queued');
   });
+
+  it('follows the job through running, failed and finished', async () => {
+    const seeded = await seedReviewableCut();
+    const job = await db.mediaJob.create({
+      data: {
+        versionId: seeded.sourceVersion.id,
+        kind: 'MATERIALIZE_ROUGH_CUT',
+        payload: { roughCutId: seeded.cut.id },
+      },
+    });
+    signedInAs(seeded.owner);
+
+    const renderState = async () => {
+      const response = await callRoute(
+        getVideoRoughCut,
+        apiRequest(`/api/videos/${seeded.output.id}/rough-cut`),
+        { videoId: seeded.output.id }
+      );
+      expect(response.status).toBe(200);
+      const payload = await readData<{
+        review: { render: { status: string; error: string | null; updatedAt: string | null } };
+      }>(response);
+      return payload.review.render;
+    };
+
+    await db.mediaJob.update({ where: { id: job.id }, data: { status: 'RUNNING' } });
+    expect(await renderState()).toMatchObject({ status: 'running', error: null });
+
+    await db.mediaJob.update({
+      where: { id: job.id },
+      data: { status: 'FAILED', error: 'ffmpeg exited 1' },
+    });
+    const failed = await renderState();
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toBe('ffmpeg exited 1');
+    expect(Number.isNaN(Date.parse(failed.updatedAt ?? ''))).toBe(false);
+
+    // A finished render is not something to wait for: the file it made is the
+    // one on the video already.
+    await db.mediaJob.update({
+      where: { id: job.id },
+      data: { status: 'SUCCEEDED', error: null },
+    });
+    expect(await renderState()).toMatchObject({ status: 'idle' });
+  });
 });
 
 describe('GET /api/rough-cuts/[roughCutId]?include=review', () => {
@@ -459,10 +682,38 @@ describe('GET /api/rough-cuts/[roughCutId]?include=review', () => {
     );
     expect(withReview.status).toBe(200);
     const payload = await readData<{
+      roughCut: { script?: string };
       review: { decisions: { cuts: Array<{ key: string }> }; needsRender: boolean };
     }>(withReview);
+    expect(payload.roughCut.script).toBe(SCRIPT);
     expect(payload.review.decisions.cuts.map((cut) => cut.key)).toEqual([seeded.islandKey]);
     expect(payload.review.needsRender).toBe(false);
+  });
+
+  it('withholds the script and the reviewer’s decisions from a commenter', async () => {
+    const seeded = await seedReviewableCut();
+    await db.roughCut.update({
+      where: { id: seeded.cut.id },
+      data: { overrides: { version: 1, cuts: { [seeded.islandKey]: 'restore' }, extraCuts: [] } },
+    });
+    signedInAs(await addCommenter(seeded.project.id));
+
+    const response = await callRoute(
+      getRoughCut,
+      apiRequest(`/api/rough-cuts/${seeded.cut.id}?include=review`),
+      { roughCutId: seeded.cut.id }
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await readData<{
+      roughCut: { script?: string; hasScript: boolean };
+      review: { script: string | null; overrides: unknown; effective: { edits: unknown[] } };
+    }>(response);
+    expect(payload.roughCut.script).toBeUndefined();
+    expect(payload.roughCut.hasScript).toBe(true);
+    expect(payload.review.script).toBeNull();
+    expect(payload.review.overrides).toBeNull();
+    expect(payload.review.effective.edits).toHaveLength(1);
   });
 });
 
@@ -497,24 +748,78 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     // 24 frames in and 216 frames long at 24fps.
     expect(programClipRanges(await after.text())).toEqual([[24, 216]]);
   });
+
+  it('marks the cuts that are still cuts, and the ones the reviewer made', async () => {
+    const seeded = await seedReviewableCut();
+    signedInAs(seeded.owner);
+
+    const assembled = await callRoute(
+      downloadRoughCut,
+      apiRequest(`/api/rough-cuts/${seeded.cut.id}/download?format=otio&cuts=1`),
+      { roughCutId: seeded.cut.id }
+    );
+    expect(programMarkers(await assembled.text())).toEqual([['Cut: 2.0s of dead air', 'RED']]);
+
+    await db.roughCut.update({
+      where: { id: seeded.cut.id },
+      data: {
+        overrides: {
+          version: 1,
+          cuts: { [seeded.islandKey]: 'restore' },
+          extraCuts: [
+            {
+              key: extraCutKey(seeded.sourceVersion.id, 7, 8, RATE),
+              sourceVersionId: seeded.sourceVersion.id,
+              inSeconds: 7,
+              outSeconds: 8,
+              note: 'flubbed the line',
+            },
+          ],
+        },
+      },
+    });
+
+    const reviewed = await callRoute(
+      downloadRoughCut,
+      apiRequest(`/api/rough-cuts/${seeded.cut.id}/download?format=otio&cuts=1`),
+      { roughCutId: seeded.cut.id }
+    );
+    expect(reviewed.status).toBe(200);
+    // The island is back in the program, so it is no longer a cut; the range the
+    // reviewer took out is.
+    expect(programMarkers(await reviewed.text())).toEqual([['Cut: flubbed the line', 'RED']]);
+  });
 });
 
-/** [start frame, duration in frames] of every clip on the program track of an OTIO file. */
-function programClipRanges(body: string): Array<[number, number]> {
-  const timeline = JSON.parse(body) as {
-    tracks: {
+type OtioBody = {
+  tracks: {
+    children: Array<{
+      name: string;
+      markers?: Array<{ name: string; color: string }>;
       children: Array<{
-        name: string;
-        children: Array<{
-          OTIO_SCHEMA: string;
-          source_range: { start_time: { value: number }; duration: { value: number } };
-        }>;
+        OTIO_SCHEMA: string;
+        source_range: { start_time: { value: number }; duration: { value: number } };
       }>;
-    };
+    }>;
   };
-  const program = timeline.tracks.children[0];
-  expect(program?.name).toBe('Program');
-  return (program?.children ?? [])
-    .filter((child) => child.OTIO_SCHEMA === 'Clip.1')
+};
+
+/** The program track of an OTIO file, which is always the first one. */
+function programTrack(body: string): OtioBody['tracks']['children'][number] {
+  const timeline = JSON.parse(body) as OtioBody;
+  const program = timeline.tracks.children[0]!;
+  expect(program.name).toBe('Program');
+  return program;
+}
+
+/** [start frame, duration in frames] of every clip on the program track. */
+function programClipRanges(body: string): Array<[number, number]> {
+  return programTrack(body)
+    .children.filter((child) => child.OTIO_SCHEMA === 'Clip.1')
     .map((child) => [child.source_range.start_time.value, child.source_range.duration.value]);
+}
+
+/** [name, colour] of every marker on the program track. */
+function programMarkers(body: string): Array<[string, string]> {
+  return (programTrack(body).markers ?? []).map((marker) => [marker.name, marker.color]);
 }
