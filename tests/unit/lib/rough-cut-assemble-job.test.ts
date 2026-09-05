@@ -105,6 +105,8 @@ function harness(options: {
   briefSnapshot?: unknown;
   /** The copy the speaker read, stored on the run. */
   script?: string | null;
+  /** The run's shortest kept shot, as the stored profile snapshot carries it. */
+  minShotSeconds?: number;
   /** Rows the dedupe guard sees, i.e. a transcription already on its way. */
   queuedTranscribeJobs?: Array<{ id: string }>;
 }) {
@@ -121,7 +123,10 @@ function harness(options: {
             id: 'cut-1',
             project_id: 'proj-1',
             folder_id: null,
-            profile_snapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
+            profile_snapshot: snapshotFromProfile({
+              ...BUILTIN_ROUGH_CUT_PROFILE,
+              minShotSeconds: options.minShotSeconds ?? BUILTIN_ROUGH_CUT_PROFILE.minShotSeconds,
+            }),
             layout: options.layout,
             brief_snapshot: options.briefSnapshot ?? null,
             script: options.script ?? null,
@@ -1159,6 +1164,89 @@ describe('assembleRoughCut editorial pass', () => {
     // segment, which the helper starts at 1 + 6 × 0.4.
     const firstOut = result?.decisions?.edits[0]?.outSeconds ?? 0;
     expect(firstOut).toBeLessThanOrEqual(1 + 6 * 0.4);
+  });
+
+  it('will not splice a take down to less than the run keeps', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      // Three-second shots: the 1.9 s remainder a splice would leave would be
+      // dropped from the program without a word, so the pickup goes instead.
+      minShotSeconds: 3,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 40 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+          spokenSegment(
+            20,
+            'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa'
+          ),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected?.map((cut) => [cut.inSeconds, cut.reason.summary])).toEqual([
+      [1, expect.stringContaining('Take 1 of 2; kept take 2')],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([20]);
+  });
+
+  it('names the right take on each of the two spans spliced out of one beat', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 80 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+          spokenSegment(
+            20,
+            'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee'
+          ),
+          spokenSegment(60, 'quebec romeo sierra tango uniform victor whiskey xray yankee'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The long take gives its head to the pickup before it and its tail to the
+    // one after it; each removed span has to name its own replacement.
+    const replaced = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(
+      replaced?.map((cut) => [
+        Number(cut.inSeconds.toFixed(1)),
+        cut.transcriptText,
+        cut.reason.summary,
+      ])
+    ).toEqual([
+      [
+        20,
+        'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo',
+        expect.stringContaining('Replaced by the take at 1.0s'),
+      ],
+      [
+        26.8,
+        'quebec romeo sierra tango uniform victor whiskey xray yankee',
+        expect.stringContaining('Replaced by the take at 60.0s'),
+      ],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => Number(edit.inSeconds.toFixed(1)))).toEqual([
+      1, 24.8, 60,
+    ]);
   });
 
   it('judges the script by what survived the trim, not by what was recorded', async () => {

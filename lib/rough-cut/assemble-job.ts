@@ -501,6 +501,8 @@ async function editorialPass(
     warnings: RoughCutWarning[];
     wavFor: (versionId: string) => Promise<string>;
     script: string | null;
+    /** The run's shortest kept shot, so take splicing never leaves less behind. */
+    minShotSeconds: number;
   }
 ): Promise<EditorialResult> {
   const { editorial, warnings } = options;
@@ -587,6 +589,7 @@ async function editorialPass(
       ...options_,
       scriptLines: useScript ? scriptLines : undefined,
       alignments: useScript ? alignments : undefined,
+      minShotSeconds: options.minShotSeconds,
     })) {
       for (const entry of resolution.rejected) {
         cuts.push(rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution));
@@ -739,6 +742,7 @@ async function assembleLinearLayout(
     warnings,
     wavFor: options.wavFor,
     script: options.script,
+    minShotSeconds: profile.minShotSeconds,
   });
 
   const turns: AttributedTurn[] = [];
@@ -1139,6 +1143,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         warnings,
         wavFor,
         script: readScript(cut.script),
+        minShotSeconds: profile.minShotSeconds,
       });
       sourceCuts = result.cuts;
       sourceMarkers = result.markers;

@@ -256,11 +256,12 @@ describe('take ranking', () => {
       ['cleanliness', 'energy']
     );
     expect(byCleanliness[0]?.kept).toEqual([{ index: 1, cuts: [] }]);
-    // Order-insensitive: the two rejected takes are equally clean, and which
-    // of them is weighed first is float noise in the per-minute rate.
-    expect([...(byCleanliness[0]?.rejected ?? [])].sort((a, b) => a.index - b.index)).toEqual([
-      { index: 0, coveredBy: 1 },
+    // The two losers are equally clean, so recency breaks the tie and the more
+    // recent one is weighed first: a filler earlier in the beat than in another
+    // must not order them by a rounding difference in the per-minute rate.
+    expect(byCleanliness[0]?.rejected).toEqual([
       { index: 2, coveredBy: 1 },
+      { index: 0, coveredBy: 1 },
     ]);
 
     const byEnergy = rank(
@@ -604,6 +605,27 @@ describe('resolveTakes', () => {
       { index: 2, cuts: [] },
     ]);
     expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+
+  it("refuses a splice the run's own minimum shot would not keep", () => {
+    const takes = [
+      candidate(0, 'alpha bravo charlie delta echo foxtrot'),
+      candidate(20, 'um alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo'),
+    ];
+    const resolve = (minShotSeconds?: number) =>
+      resolveTakes(takes, { ...options, ranking: [...options.ranking], minShotSeconds })[0];
+
+    // Five tokens over 1.9 s survive the splice, which the default floor keeps.
+    expect(resolve()?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [{ wordStart: 0, wordEnd: 7, coveredBy: 0 }] },
+    ]);
+    expect(resolve()?.rejected).toEqual([]);
+
+    // An operator asking for three-second shots would never see that remainder,
+    // so the pickup goes instead of quietly emptying the take.
+    expect(resolve(3)?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolve(3)?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
   });
 
   it('refuses a splice that would leave too few content tokens however long they last', () => {

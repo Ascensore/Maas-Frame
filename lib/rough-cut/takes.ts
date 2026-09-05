@@ -155,6 +155,9 @@ export function cleanlinessScore(
   return penalty === 0 ? 0 : -penalty;
 }
 
+/** Cleanliness is a rate over a float duration; below this two takes are equally clean. */
+const CLEANLINESS_EPSILON = 1e-9;
+
 function compareBy(
   ranking: BriefRankingCriterion[],
   scores: Map<number, TakeScores>
@@ -169,7 +172,10 @@ function compareBy(
         const r = right.scriptMatch ?? -1;
         if (l !== r) return r - l;
       }
-      if (criterion === 'cleanliness' && left.cleanliness !== right.cleanliness) {
+      if (
+        criterion === 'cleanliness' &&
+        Math.abs(left.cleanliness - right.cleanliness) > CLEANLINESS_EPSILON
+      ) {
         return right.cleanliness - left.cleanliness;
       }
       if (criterion === 'energy') {
@@ -223,9 +229,11 @@ export const TAKE_COVERED_WHOLE = 0.8;
 /** Below this share of a beat, an overlap is noise, not a shared line. */
 export const TAKE_COVERED_NONE = 0.2;
 /**
- * What a spliced take has to be left with. The assembler drops a shot shorter
- * than its `minShotSeconds` (1.5 by default) without saying so, so a splice
- * that would leave a fragment that short is refused instead.
+ * What a spliced take has to be left with when the caller does not say. The
+ * assembler drops a shot shorter than its `minShotSeconds` without saying so,
+ * so a splice that would leave a fragment that short is refused instead; pass
+ * the run's own `minShotSeconds` whenever there is one, since an operator can
+ * raise it well past this default.
  */
 export const TAKE_MIN_SURVIVING_SECONDS = 1.5;
 
@@ -249,6 +257,8 @@ export type ResolveTakesOptions = {
   /** The operator's script, when there is one; index-aligned alignments come with it. */
   scriptLines?: ScriptLine[];
   alignments?: ScriptAlignment[];
+  /** The run's shortest kept shot; a splice may not leave less than this behind. */
+  minShotSeconds?: number;
 };
 
 /**
@@ -378,7 +388,7 @@ export function resolveTakes(
         (longest, run) => Math.max(longest, run.end - run.start),
         0
       );
-      if (longestRun < TAKE_MIN_SURVIVING_SECONDS) return null;
+      if (longestRun < (options.minShotSeconds ?? TAKE_MIN_SURVIVING_SECONDS)) return null;
       return span;
     };
     const spliceInto = (target: number, span: SpliceCut) => {
