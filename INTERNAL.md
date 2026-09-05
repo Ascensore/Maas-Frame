@@ -98,6 +98,73 @@ review proxy when the master will not play in a browser (and burns a
 watermark is on), and, when transcription is enabled, extracts audio and
 transcribes it.
 
+## Media worker host
+
+The production media worker does not run on Vercel. It is a Docker container
+on the Ascensore VPS (`srv1637595`, log in as root), started from a checkout
+of this repository at `/opt/maas-frame/app`. Other unrelated services live in
+`/docker/*` on the same box; leave them alone.
+
+How it is wired:
+
+- The compose file is `docker-compose.worker.yml` in that checkout, untracked
+  by git. It defines one service, `worker`, built from `worker/Dockerfile`
+  with `env_file: .env.worker`. The container is named `app-worker-1` (Docker
+  Compose derives the `app` prefix from the directory name).
+- The committed `docker-compose.yml` is the self-hosting bundle (app, Postgres,
+  MinIO, workers) and expects `.env.docker`, which does not exist there. Any
+  `docker compose` command on that host must pass
+  `-f docker-compose.worker.yml`.
+- `DATABASE_URL` in `.env.worker` points at the production Supabase Postgres,
+  the same database Vercel migrates on deploy. The worker has no migrations of
+  its own.
+- `worker/Dockerfile` copies `lib/rough-cut`, `lib/media-job-queue.ts`,
+  `lib/timecode.ts`, `lib/folders.ts` and `lib/export-file-names.ts` into the
+  image at build time. A change to any of those files, or to `worker/`, is
+  not live until the image is rebuilt. Merging to master updates Vercel only.
+- `OPENFRAME_ENABLE_ROUGH_CUT` is read by the app, not the worker; set it in
+  Vercel (Settings -> Environment Variables, Production) and redeploy. The
+  worker processes whatever jobs the app enqueues.
+- Storage region: the worker reads `AWS_REGION` or `S3_REGION`. Cloudflare R2
+  accepts `auto`; Supabase or MinIO storage need a real region (`eu-west-1`).
+  Set it in `.env.worker` rather than editing `worker/src/index.ts` on the
+  server, which blocks the next `git pull`.
+- Diarization stays optional. With `OPENFRAME_ENABLE_DIARIZATION=false` the
+  multicam assembler attributes speakers by per-camera loudness; turning it on
+  needs `HUGGINGFACE_TOKEN` and the pyannote licence acceptance.
+
+Update after merging to master:
+
+```bash
+ssh root@srv1637595
+cd /opt/maas-frame/app
+git status --short --branch          # expect "## master...origin/master", no " M" lines
+git pull --ff-only origin master
+docker compose -f docker-compose.worker.yml up -d --build
+docker compose -f docker-compose.worker.yml logs --tail=30 worker
+```
+
+If `git status` shows a modified tracked file, inspect it with `git diff`;
+if master already covers the change, `git checkout -- <file>` before pulling,
+otherwise `git stash push <file>` and port the change into a PR.
+
+The first rebuild after a base-image change takes about five minutes
+(ffmpeg, PyTorch and the Whisper packages); later rebuilds reuse those
+layers. `restart: unless-stopped` brings the container back after a reboot.
+
+Verify the running image is current:
+
+```bash
+docker compose -f docker-compose.worker.yml exec worker ls lib/rough-cut/markers.ts
+```
+
+That file only exists in images built from master at or after September
+2026; a `No such file` answer means the container was not rebuilt. In the
+log, a healthy worker prints `job <id> <TYPE> succeeded` lines and no Python
+tracebacks. Then start a rough cut from the app: a run made by the current
+worker stores `brief_snapshot` on `rough_cuts` and, once its transcript is
+in, `cuts` and `markers` inside `decisions`.
+
 ## After pulling master
 
 If you are not on the already-bootstrapped Maas-Frame database, apply schema
