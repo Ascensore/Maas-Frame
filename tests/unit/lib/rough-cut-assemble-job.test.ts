@@ -103,6 +103,8 @@ function harness(options: {
   audioUnavailable?: boolean;
   /** The run's stored brief, as the create route writes it. */
   briefSnapshot?: unknown;
+  /** The copy the speaker read, stored on the run. */
+  script?: string | null;
 }) {
   const queries: Query[] = [];
   const runs: string[][] = [];
@@ -120,6 +122,7 @@ function harness(options: {
             profile_snapshot: snapshotFromProfile(BUILTIN_ROUGH_CUT_PROFILE),
             layout: options.layout,
             brief_snapshot: options.briefSnapshot ?? null,
+            script: options.script ?? null,
             created_at: options.createdAt,
           },
         ],
@@ -132,6 +135,11 @@ function harness(options: {
     }
     if (sql.includes('FROM transcript_segments')) {
       return { rows: options.segments?.[params[0] as string] ?? [] };
+    }
+    // The upsert the job runs when it starts a transcription itself; the
+    // TRANSCRIBE job it queues next carries the id this returns.
+    if (sql.includes('INSERT INTO transcripts')) {
+      return { rows: [{ id: `t-${params[0] as string}` }] };
     }
     return { rows: [] };
   };
@@ -186,10 +194,22 @@ function harness(options: {
   };
   const mediaJobInserts = () =>
     queries.filter((entry) => entry.sql.includes('INSERT INTO media_jobs'));
+  const transcriptInserts = () =>
+    queries.filter((entry) => entry.sql.includes('INSERT INTO transcripts'));
   const vadRuns = () => runs.filter((args) => args[1] === '--vad-only');
   const failed = () => queries.find((entry) => entry.sql.includes("status = 'FAILED'"));
 
-  return { deps, queries, runs, downloads, persisted, mediaJobInserts, vadRuns, failed };
+  return {
+    deps,
+    queries,
+    runs,
+    downloads,
+    persisted,
+    mediaJobInserts,
+    transcriptInserts,
+    vadRuns,
+    failed,
+  };
 }
 
 describe('assembleRoughCut with a transcript', () => {
@@ -284,6 +304,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back to voice activity once a run has waited past the limit', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: TWENTY_MINUTES_AGO,
@@ -321,6 +343,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back when a READY transcript has no segments', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -368,6 +392,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('decides per clip in a sequential cut and downloads audio only for the fallback', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,
@@ -512,6 +538,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('keeps the diarization path for multicam when no transcript exists', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'MULTICAM',
       createdAt: ONE_MINUTE_AGO,
@@ -536,6 +564,8 @@ describe('assembleRoughCut with a transcript', () => {
     expect(h.vadRuns().map((args) => versionIdFromWav(args[2]))).toEqual(['ver-wide']);
   });
   it('names a failed transcription and uses voice activity for multicam', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'MULTICAM',
       createdAt: ONE_MINUTE_AGO,
@@ -564,6 +594,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('falls back when every transcript segment is blank', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -586,6 +618,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('keeps each clip in full when neither transcript nor voice activity finds speech', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -701,6 +735,8 @@ describe('assembleRoughCut with a transcript', () => {
   });
 
   it('marks the run FAILED with the error when the fallback cannot get audio', async () => {
+    // The VAD fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'LINEAR',
       createdAt: ONE_MINUTE_AGO,
@@ -726,6 +762,118 @@ describe('assembleRoughCut with a transcript', () => {
       'cut-1',
       'A rough cut needs at least one file-backed video in this folder',
     ]);
+  });
+});
+
+describe('assembleRoughCut requires the transcript when transcription is on', () => {
+  beforeEach(() => {
+    vi.stubEnv('OPENFRAME_ENABLE_DIARIZATION', 'false');
+  });
+
+  it('fails the run instead of falling back when transcription failed', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'FAILED', created_at: NOW_DATE() }],
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(
+      /Transcription failed for Cam A/
+    );
+
+    expect(h.failed()?.params[1]).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(h.persisted()).toBeNull();
+    expect(h.vadRuns()).toHaveLength(0);
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('starts a transcription and parks the run when a clip has none', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.transcriptInserts()).toHaveLength(1);
+    expect(h.transcriptInserts()[0]!.params[0]).toBe('ver-a');
+    const kinds = h.mediaJobInserts().map((entry) => /'(\w+)'/.exec(entry.sql)?.[1]);
+    expect(kinds).toEqual(['EXTRACT_AUDIO', 'TRANSCRIBE', 'ASSEMBLE_ROUGH_CUT']);
+    const transcribe = h.mediaJobInserts()[1]!;
+    expect(JSON.parse(transcribe.params[1] as string)).toEqual({
+      language: 'und',
+      transcriptId: 't-ver-a',
+    });
+    expect(h.persisted()).toBeNull();
+    expect(h.failed()).toBeUndefined();
+    expect(h.downloads).toHaveLength(0);
+  });
+
+  it('keeps waiting for a transcript that is still running after fifteen minutes', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: TWENTY_MINUTES_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'RUNNING', created_at: NOW_DATE() }],
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.mediaJobInserts()).toHaveLength(1);
+    expect(h.mediaJobInserts()[0]!.sql).toContain("'ASSEMBLE_ROUGH_CUT'");
+    expect(h.vadRuns()).toHaveLength(0);
+    expect(h.persisted()).toBeNull();
+  });
+
+  it('fails a run that waited two hours for a transcript that never came', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: new Date(NOW - 3 * 60 * 60_000),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'PENDING', created_at: NOW_DATE() }],
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(/2 hours/);
+    expect(h.failed()?.params[1]).toContain('was still not ready after 2 hours');
+    expect(h.transcriptInserts()).toHaveLength(0);
+  });
+
+  it('fails a run whose only transcript has no spoken words', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE() }],
+      segments: { 't-a': [segment(1, 2, '   ')] },
+      vad: { 'ver-a': [{ start: 1, end: 5 }] },
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(/no spoken words/);
+    expect(h.vadRuns()).toHaveLength(0);
+  });
+
+  it('enqueues the wide camera\u2019s transcript for a multicam run with none', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'WIDE' }),
+        video({ version_id: 'ver-a', title: 'Cam A' }),
+      ],
+      transcripts: [],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.transcriptInserts().map((entry) => entry.params[0])).toEqual(['ver-wide']);
+    expect(h.downloads).toHaveLength(0);
   });
 });
 
@@ -1001,6 +1149,8 @@ describe('assembleRoughCut editorial pass', () => {
   it('places placeholder markers on the kept program across a sequential cut', async () => {
     // Clip 2 is Italian, so its cue list differs; clip 3 has an empty
     // transcript and falls back to voice activity, which has no words.
+    // That fallback only exists on a host with transcription switched off.
+    vi.stubEnv('OPENFRAME_ENABLE_TRANSCRIPTION', 'false');
     const h = harness({
       layout: 'SEQUENTIAL',
       createdAt: ONE_MINUTE_AGO,

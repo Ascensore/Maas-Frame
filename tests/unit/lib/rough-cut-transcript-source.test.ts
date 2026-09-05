@@ -4,6 +4,7 @@ import {
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
+  transcriptRequiredError,
   WAITING_FOR_TRANSCRIPT_WARNING,
   waitingForTranscriptWarning,
   WEAK_TRANSCRIPT_WARNING,
@@ -122,6 +123,18 @@ describe('decideTranscriptSource', () => {
         now: NOW,
       })
     ).toEqual({ kind: 'wait', transcriptId: 't-wide', versionId: WIDE });
+  });
+
+  it('waits past fifteen minutes when a longer limit is given', () => {
+    const decision = decideTranscriptSource({
+      rows: [row({ id: 't1', versionId: 'v1', status: 'RUNNING' })],
+      candidateVersionIds: ['v1'],
+      roughCutCreatedAt: new Date(NOW.getTime() - 20 * 60_000),
+      now: NOW,
+      waitLimitSeconds: 2 * 60 * 60,
+    });
+
+    expect(decision).toEqual({ kind: 'wait', transcriptId: 't1', versionId: 'v1' });
   });
 
   it('stops waiting once the run reaches the limit', () => {
@@ -287,6 +300,23 @@ describe('warnings', () => {
     expect(warning.message).toContain('for Cam A');
     expect(warning.message).toContain('7.3 words/s');
     expect(warning.message).toContain('40% empty segments');
+  });
+});
+
+describe('transcriptRequiredError', () => {
+  it('tells the operator what to do for each reason', () => {
+    expect(transcriptRequiredError('failed', 'Cam A')).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(transcriptRequiredError('timed-out', 'Cam A', 7200)).toBe(
+      'The transcript for Cam A was still not ready after 2 hours; check the media worker, then generate the cut again'
+    );
+    expect(transcriptRequiredError('missing', null)).toBe(
+      'No transcript exists; transcribe the clip, then generate the cut again'
+    );
+    expect(transcriptRequiredError('empty', 'Cam A')).toBe(
+      'The transcript for Cam A has no spoken words; check the audio or upload a transcript, then generate the cut again'
+    );
   });
 });
 

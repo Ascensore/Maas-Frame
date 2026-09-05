@@ -15,8 +15,9 @@ describe('isWaitingForMediaWorker', () => {
 });
 
 describe('isWaitingForTranscript', () => {
-  it('is true only for a RUNNING cut carrying the waiting warning', () => {
+  it('reports a PENDING or RUNNING run that carries the waiting warning', () => {
     const waiting = [{ code: 'waiting-for-transcript' }];
+    expect(isWaitingForTranscript('PENDING', waiting)).toBe(true);
     expect(isWaitingForTranscript('RUNNING', waiting)).toBe(true);
     expect(
       isWaitingForTranscript('RUNNING', [
@@ -26,7 +27,8 @@ describe('isWaitingForTranscript', () => {
     ).toBe(true);
     expect(isWaitingForTranscript('RUNNING', [{ code: 'weak-transcript' }])).toBe(false);
     expect(isWaitingForTranscript('RUNNING', null)).toBe(false);
-    expect(isWaitingForTranscript('PENDING', waiting)).toBe(false);
+    expect(isWaitingForTranscript('PENDING', null)).toBe(false);
     expect(isWaitingForTranscript('READY', waiting)).toBe(false);
+    expect(isWaitingForTranscript('FAILED', waiting)).toBe(false);
   });
 });

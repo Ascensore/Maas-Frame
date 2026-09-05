@@ -23,7 +23,7 @@ import { applyCameraGrammar } from './camera-grammar';
 import { inferCameraRole, metadataStringRecord, pickWideClip } from './camera-roles';
 import { assembleDecisionList, parseRoughCutDecisionList } from './decision-list';
 import { computeLinearDecisions, computeRoughCutDecisions } from './decisions';
-import { isDiarizationEnvEnabled } from './env';
+import { isDiarizationEnvEnabled, isTranscriptionEnvEnabled } from './env';
 import {
   applySequentialOffsets,
   cameraClipToLayoutGuess,
@@ -47,7 +47,10 @@ import {
   decideTranscriptSource,
   parseTranscriptRowStatus,
   transcriptFallbackWarning,
+  transcriptRequiredError,
+  TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS,
   TRANSCRIPT_RETRY_DELAY_SECONDS,
+  TRANSCRIPT_WAIT_LIMIT_SECONDS,
   waitingForTranscriptWarning,
   weakTranscriptWarning,
   type TranscriptFallbackReason,
@@ -252,6 +255,37 @@ async function deferForTranscript(
   );
 }
 
+/**
+ * Start a transcription for a clip that has none, the way an upload does:
+ * a PENDING transcript row, audio extraction, then the transcribe job. The
+ * worker that runs this job is the worker that will transcribe, so the
+ * run parks itself and comes back when the row is READY.
+ */
+async function enqueueTranscription(deps: AssembleDeps, versionId: string): Promise<void> {
+  const provider = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local')
+    .trim()
+    .toLowerCase();
+  const upsert = await deps.pool.query(
+    `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, $1, 'und', $2, 'PENDING', '', NULL, NOW(), NOW())
+     ON CONFLICT (version_id, language)
+     DO UPDATE SET status = 'PENDING', error = NULL, provider = EXCLUDED.provider, updated_at = NOW()
+     RETURNING id`,
+    [versionId, provider]
+  );
+  const transcriptId = upsert.rows[0]?.id;
+  await deps.pool.query(
+    `INSERT INTO media_jobs (id, kind, status, version_id, attempts, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, 'EXTRACT_AUDIO', 'PENDING', $1, 0, NOW(), NOW())`,
+    [versionId]
+  );
+  await deps.pool.query(
+    `INSERT INTO media_jobs (id, kind, status, version_id, payload, attempts, created_at, updated_at)
+     VALUES (gen_random_uuid()::text, 'TRANSCRIBE', 'PENDING', $1, $2::jsonb, 0, NOW(), NOW())`,
+    [versionId, JSON.stringify({ language: 'und', transcriptId: transcriptId ?? null })]
+  );
+}
+
 async function loadTranscriptRows(
   deps: AssembleDeps,
   versionIds: string[]
@@ -331,6 +365,9 @@ async function vadTurnsForClip(
  * Speech for one clip: the transcript analysed under the brief's silence
  * policy when it has one, voice activity otherwise. A transcript whose
  * words produce no speech at all counts as empty and falls back too.
+ *
+ * With transcription on there is nothing to fall back to, so the same two
+ * cases fail the run instead.
  */
 async function materialFor(
   deps: AssembleDeps,
@@ -342,6 +379,10 @@ async function materialFor(
     wavFor: (versionId: string) => Promise<string>;
     /** Multicam names the clip on the fallback warning as well; linear names it always. */
     label: string | null;
+    /** Transcription is on for this host, so the transcript is not optional. */
+    required: boolean;
+    /** How long this run was willing to wait, for the timed-out wording. */
+    waitLimitSeconds: number;
   }
 ): Promise<ClipMaterial> {
   const { clip, slot, editorial, warnings } = options;
@@ -357,11 +398,17 @@ async function materialFor(
       if (quality.weak) warnings.push(weakTranscriptWarning(quality, options.label));
       return { kind: 'transcript', clip, analysis, language: slot.language };
     }
+    if (options.required) throw new Error(transcriptRequiredError('empty', options.label));
     fallbackReason = 'empty';
   } else {
+    if (options.required) {
+      throw new Error(
+        transcriptRequiredError(slot.reason, options.label, options.waitLimitSeconds)
+      );
+    }
     fallbackReason = slot.reason;
   }
-  warnings.push(transcriptFallbackWarning(fallbackReason, options.label));
+  warnings.push(transcriptFallbackWarning(fallbackReason, options.label, options.waitLimitSeconds));
   const wav = await options.wavFor(clip.versionId);
   const islands = await vadTurnsForClip(deps, wav);
   return {
@@ -505,6 +552,8 @@ async function assembleLinearLayout(
     slotByVersion: Map<string, TranscriptSlot>;
     editorial: Editorial;
     wavFor: (versionId: string) => Promise<string>;
+    required: boolean;
+    waitLimitSeconds: number;
   }
 ): Promise<void> {
   const { profile, clips, warnings, editorial } = options;
@@ -542,6 +591,8 @@ async function assembleLinearLayout(
         warnings,
         wavFor: options.wavFor,
         label: clip.title,
+        required: options.required,
+        waitLimitSeconds: options.waitLimitSeconds,
       })
     );
   }
@@ -617,7 +668,7 @@ async function assembleLinearLayout(
 /** The run's row, its resolved settings, and the folder's file-backed videos. */
 async function loadRun(deps: AssembleDeps, roughCutId: string) {
   const cutRes = await deps.pool.query(
-    `SELECT id, project_id, folder_id, profile_snapshot, brief_snapshot, layout, created_at
+    `SELECT id, project_id, folder_id, profile_snapshot, brief_snapshot, layout, script, created_at
      FROM rough_cuts WHERE id = $1`,
     [roughCutId]
   );
@@ -732,34 +783,68 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       deps,
       clips.map((clip) => clip.versionId)
     );
+    // With transcription on, the transcript is not an optimisation: voice
+    // activity knows nothing about takes, so a run without one is wrong
+    // rather than rough. It waits far longer, starts the transcription
+    // itself, and fails with something the operator can act on.
+    const required = isTranscriptionEnvEnabled();
+    const waitLimitSeconds = required
+      ? TRANSCRIPT_REQUIRED_WAIT_LIMIT_SECONDS
+      : TRANSCRIPT_WAIT_LIMIT_SECONDS;
     const now = new Date();
+    const ageSeconds = (now.getTime() - new Date(cut.created_at).getTime()) / 1000;
     const transcriptDecisions = slotCandidates.map((candidateVersionIds) =>
       decideTranscriptSource({
         rows: transcriptRows,
         candidateVersionIds,
         roughCutCreatedAt: cut.created_at,
         now,
+        waitLimitSeconds,
       })
     );
-    const waitingFor = transcriptDecisions.filter(
-      (decision): decision is Extract<TranscriptSourceDecision, { kind: 'wait' }> =>
-        decision.kind === 'wait'
-    );
-    if (waitingFor.length > 0) {
-      const titles = waitingFor.map(
-        (decision) => clips.find((clip) => clip.versionId === decision.versionId)?.title ?? ''
-      );
+    const titleOf = (versionId: string) =>
+      clips.find((clip) => clip.versionId === versionId)?.title ?? '';
+    const waitingTitles: string[] = [];
+    for (let index = 0; index < transcriptDecisions.length; index += 1) {
+      const decision = transcriptDecisions[index]!;
+      if (decision.kind === 'wait') {
+        waitingTitles.push(titleOf(decision.versionId));
+        continue;
+      }
+      if (!required || decision.kind !== 'fallback') continue;
+      // Transcription is on, so a clip without a transcript gets one now and
+      // the run waits; anything else the operator has to look at.
+      const first = slotCandidates[index]![0]!;
+      if (decision.reason === 'missing' && ageSeconds < waitLimitSeconds) {
+        await enqueueTranscription(deps, first);
+        waitingTitles.push(titleOf(first));
+        continue;
+      }
+      throw new Error(transcriptRequiredError(decision.reason, titleOf(first), waitLimitSeconds));
+    }
+    if (waitingTitles.length > 0) {
       await deferForTranscript(deps, {
         roughCutId,
         versionId: clips[0]!.versionId,
-        warnings: [...warnings, waitingForTranscriptWarning(titles)],
+        warnings: [...warnings, waitingForTranscriptWarning(waitingTitles)],
       });
       return;
     }
     const slots: TranscriptSlot[] = [];
-    for (const decision of transcriptDecisions) {
+    for (let index = 0; index < transcriptDecisions.length; index += 1) {
+      const decision = transcriptDecisions[index]!;
       if (decision.kind === 'wait') continue;
-      slots.push(await resolveTranscriptSlot(deps, decision, transcriptRows));
+      const slot = await resolveTranscriptSlot(deps, decision, transcriptRows);
+      if (required && slot.kind === 'fallback') {
+        throw new Error(
+          transcriptRequiredError(
+            slot.reason,
+            titleOf(slotCandidates[index]![0]!),
+            waitLimitSeconds
+          )
+        );
+      }
+      slots.push(slot);
     }
 
     tmp = await mkdtemp(join(tmpdir(), 'of-rough-'));
@@ -781,6 +866,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         slotByVersion,
         editorial,
         wavFor,
+        required,
+        waitLimitSeconds,
       });
       return;
     }
@@ -886,6 +973,8 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
             warnings,
             wavFor,
             label: source.title,
+            required,
+            waitLimitSeconds,
           })
         : null;
     if (material && material.kind === 'vad') {
@@ -911,7 +1000,10 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         source.offsetSeconds
       ).map((turn) => ({ start: turn.start, end: turn.end, speaker: turn.speaker }));
     } else {
-      if (slot.kind === 'fallback') warnings.push(transcriptFallbackWarning(slot.reason));
+      // Unreachable when `required`: the decision loop above already threw.
+      if (slot.kind === 'fallback') {
+        warnings.push(transcriptFallbackWarning(slot.reason, null, waitLimitSeconds));
+      }
       // No usable transcript: diarize the reference audio as before. These
       // turns are local to the wide camera's file.
       const diarizeArgs = isDiarizationEnabled()

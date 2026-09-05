@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isDiarizationEnvEnabled, isTruthyEnvFlag } from '@/lib/rough-cut/env';
+import {
+  isDiarizationEnvEnabled,
+  isTranscriptionEnvEnabled,
+  isTruthyEnvFlag,
+} from '@/lib/rough-cut/env';
 
 describe('isTruthyEnvFlag', () => {
   it('is true only for the string true, ignoring case and padding', () => {
@@ -21,5 +25,15 @@ describe('isDiarizationEnvEnabled', () => {
   it('reads OPENFRAME_ENABLE_DIARIZATION from the given env object', () => {
     expect(isDiarizationEnvEnabled({ OPENFRAME_ENABLE_DIARIZATION: 'true' })).toBe(true);
     expect(isDiarizationEnvEnabled({ OPENFRAME_ENABLE_DIARIZATION: 'false' })).toBe(false);
+  });
+});
+
+describe('isTranscriptionEnvEnabled', () => {
+  it('is on unless the flag is literally false', () => {
+    expect(isTranscriptionEnvEnabled({})).toBe(true);
+    expect(isTranscriptionEnvEnabled({ OPENFRAME_ENABLE_TRANSCRIPTION: 'true' })).toBe(true);
+    expect(isTranscriptionEnvEnabled({ OPENFRAME_ENABLE_TRANSCRIPTION: 'FALSE' })).toBe(false);
+    expect(isTranscriptionEnvEnabled({ OPENFRAME_ENABLE_TRANSCRIPTION: ' false ' })).toBe(false);
+    expect(isTranscriptionEnvEnabled({ OPENFRAME_ENABLE_TRANSCRIPTION: '0' })).toBe(true);
   });
 });
