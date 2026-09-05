@@ -41,7 +41,12 @@ export type SyncPlan = {
  */
 export type TimelineResolveDecision =
   | { ok: true; ids: string[] }
-  | { ok: false; reason: 'timeline-not-bound' | 'over-cap'; ids: string[]; cap: number };
+  | {
+      ok: false;
+      reason: 'timeline-not-bound' | 'over-cap';
+      refusedIds: string[];
+      cap: number;
+    };
 
 /** Above this many resolves in one pass, ask a human instead. */
 export const DEFAULT_AUTO_RESOLVE_CAP = 5;
@@ -106,6 +111,23 @@ export function commentsRemovedFromTimeline(
   return removed;
 }
 
+/**
+ * Whether the markers in front of us plausibly belong to the version being
+ * synced: at least one marker this version placed is still on the timeline.
+ *
+ * "Does the timeline hold any review marker at all" is too weak — a timeline
+ * carrying another version's markers passes that. A first sync (nothing synced
+ * yet) has nothing to contradict, so it counts as bound.
+ */
+export function timelineLooksBound(
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[]
+): boolean {
+  if (previouslySyncedIds.length === 0) return true;
+  const present = new Set(collectSyncedMarkerIds(local));
+  return previouslySyncedIds.some((id) => present.has(id));
+}
+
 /** True when a sync would change nothing, so the host never opens a transaction. */
 export function planIsEmpty(plan: SyncPlan): boolean {
   return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
@@ -133,20 +155,29 @@ export function planTimelineResolves(
 ): TimelineResolveDecision {
   const cap = options.cap ?? DEFAULT_AUTO_RESOLVE_CAP;
   const ids = commentsRemovedFromTimeline(remote, local, previouslySyncedIds);
+  // ids is a subset of previouslySyncedIds, so reaching here means both are
+  // non-empty and the binding check below is the only thing left to decide.
   if (ids.length === 0) return { ok: true, ids: [] };
-  const present = new Set(collectSyncedMarkerIds(local));
-  const anyOfOursPresent = previouslySyncedIds.some((id) => present.has(id));
-  if (previouslySyncedIds.length > 0 && !anyOfOursPresent) {
-    return { ok: false, reason: 'timeline-not-bound', ids, cap };
+  if (!timelineLooksBound(local, previouslySyncedIds)) {
+    return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap };
   }
-  if (ids.length > cap) return { ok: false, reason: 'over-cap', ids, cap };
+  if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap };
   return { ok: true, ids };
+}
+
+/**
+ * The ids a caller may actually resolve. Read a decision through this rather
+ * than reaching for a field: a refusal's ids are the set that was refused, and
+ * iterating them is the exact bug this whole guard exists to prevent.
+ */
+export function resolvableIds(decision: TimelineResolveDecision): string[] {
+  return decision.ok ? decision.ids : [];
 }
 
 /** Explains a refusal in the panel status line. */
 export function describeResolveRefusal(decision: TimelineResolveDecision): string | null {
   if (decision.ok) return null;
-  const count = decision.ids.length;
+  const count = decision.refusedIds.length;
   if (decision.reason === 'timeline-not-bound') {
     return `Did not resolve ${count} comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.`;
   }

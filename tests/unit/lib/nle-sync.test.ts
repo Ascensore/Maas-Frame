@@ -9,6 +9,8 @@ import {
   commentsRemovedFromTimeline,
   describeResolveRefusal,
   fpsToRational,
+  resolvableIds,
+  timelineLooksBound,
   nearestResolveColor,
   nextPollDelayMs,
   parseSentinel,
@@ -231,6 +233,17 @@ describe('sequenceOffsetSeconds', () => {
     expect(sequenceOffsetSeconds('00:00:01;12', 24)).toBe(1.5);
   });
 
+  it('divides the frame field by the actual frame rate', () => {
+    // Only ever asserting at 24fps would let a hardcoded rate survive.
+    expect(sequenceOffsetSeconds('00:00:00:05', 25)).toBe(0.2);
+    expect(sequenceOffsetSeconds('00:00:10:15', 30)).toBe(10.5);
+  });
+
+  it('survives a missing timecode instead of throwing', () => {
+    expect(sequenceOffsetSeconds(null as unknown as string, 24)).toBeNull();
+    expect(sequenceOffsetSeconds(undefined as unknown as string, 24)).toBeNull();
+  });
+
   it('returns null rather than 0 when the timecode does not parse', () => {
     // 0 is a legitimate offset, so a parse failure must not be reported as one:
     // that silently placed every marker an hour off on a 01:00:00:00 sequence.
@@ -308,7 +321,7 @@ describe('planTimelineResolves', () => {
     expect(decision).toEqual({
       ok: false,
       reason: 'timeline-not-bound',
-      ids: ['c1', 'c2'],
+      refusedIds: ['c1', 'c2'],
       cap: 5,
     });
   });
@@ -321,7 +334,7 @@ describe('planTimelineResolves', () => {
     expect(decision).toEqual({
       ok: false,
       reason: 'over-cap',
-      ids: ['c1', 'c2', 'c3'],
+      refusedIds: ['c1', 'c2', 'c3'],
       cap: 2,
     });
   });
@@ -337,7 +350,7 @@ describe('planTimelineResolves', () => {
     expect(decision).toEqual({
       ok: false,
       reason: 'timeline-not-bound',
-      ids: ['c1', 'c2'],
+      refusedIds: ['c1', 'c2'],
       cap: 5,
     });
   });
@@ -351,6 +364,54 @@ describe('planTimelineResolves', () => {
     expect(decision).toEqual({ ok: true, ids: ['c1'] });
   });
 
+  it('allows exactly the cap and refuses one more', () => {
+    // Pins the boundary: `>` vs `>=` is otherwise invisible.
+    const four = [comment('c1'), comment('c2'), comment('c3'), comment('c4')];
+    expect(
+      planTimelineResolves(four, [marker('c4')], ['c1', 'c2', 'c3', 'c4'], { cap: 3 })
+    ).toEqual({ ok: true, ids: ['c1', 'c2', 'c3'] });
+    expect(
+      planTimelineResolves(four, [marker('c4')], ['c1', 'c2', 'c3', 'c4'], { cap: 2 })
+    ).toEqual({ ok: false, reason: 'over-cap', refusedIds: ['c1', 'c2', 'c3'], cap: 2 });
+  });
+
+  it('reports an unbound timeline ahead of the cap when both would apply', () => {
+    // The unbound message is the actionable one; "too many" would send the
+    // editor looking for a deletion they never made.
+    const many = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'];
+    const decision = planTimelineResolves(many.map(comment), [], many);
+    expect(decision).toEqual({
+      ok: false,
+      reason: 'timeline-not-bound',
+      refusedIds: many,
+      cap: 5,
+    });
+  });
+
+  it('stays quiet on an unbound timeline when there is nothing to resolve', () => {
+    // Everything already resolved on the web. Without the empty-plan shortcut
+    // this refuses, and the panel reports "did not resolve 0 comments".
+    const resolved = [{ ...comment('c1'), isResolved: true }];
+    expect(planTimelineResolves(resolved, [], ['c1'])).toEqual({ ok: true, ids: [] });
+  });
+
+  it('honours a cap of zero rather than falling back to the default', () => {
+    expect(planTimelineResolves(comments, [marker('c2')], ['c1', 'c2'], { cap: 0 })).toEqual({
+      ok: false,
+      reason: 'over-cap',
+      refusedIds: ['c1'],
+      cap: 0,
+    });
+  });
+
+  it('never resolves a reply or an already-resolved comment', () => {
+    const reply = { ...comment('r1'), parentId: 'c1' };
+    const done = { ...comment('c2'), isResolved: true };
+    expect(
+      planTimelineResolves([comment('c1'), reply, done], [marker('c1')], ['r1', 'c2'])
+    ).toEqual({ ok: true, ids: [] });
+  });
+
   it('does not count a marker that carries no sentinel as a review marker', () => {
     const plain = {
       id: 'm-plain',
@@ -360,7 +421,53 @@ describe('planTimelineResolves', () => {
       name: 'editor note',
       comments: 'just a note',
     };
-    expect(planTimelineResolves(comments, [plain], ['c1', 'c2']).ok).toBe(false);
+    expect(planTimelineResolves(comments, [plain], ['c1', 'c2'])).toEqual({
+      ok: false,
+      reason: 'timeline-not-bound',
+      refusedIds: ['c1', 'c2'],
+      cap: 5,
+    });
+  });
+});
+
+describe('resolvableIds', () => {
+  it('yields the ids on an allowed decision', () => {
+    expect(resolvableIds({ ok: true, ids: ['c1', 'c2'] })).toEqual(['c1', 'c2']);
+  });
+
+  it('yields nothing on a refusal, whichever reason', () => {
+    // A refusal's ids are the set that was refused. A caller that resolved them
+    // would perform exactly the irreversible write the guard exists to prevent.
+    expect(
+      resolvableIds({
+        ok: false,
+        reason: 'timeline-not-bound',
+        refusedIds: ['c1', 'c2'],
+        cap: 5,
+      })
+    ).toEqual([]);
+    expect(resolvableIds({ ok: false, reason: 'over-cap', refusedIds: ['c1'], cap: 0 })).toEqual(
+      []
+    );
+  });
+});
+
+describe('timelineLooksBound', () => {
+  it('treats a first sync as bound, since nothing contradicts it', () => {
+    expect(timelineLooksBound([], [])).toBe(true);
+    expect(timelineLooksBound([marker('c1')], [])).toBe(true);
+  });
+
+  it('is bound when one of our own markers survives', () => {
+    expect(timelineLooksBound([marker('c2')], ['c1', 'c2'])).toBe(true);
+  });
+
+  it('is not bound when the timeline is empty', () => {
+    expect(timelineLooksBound([], ['c1'])).toBe(false);
+  });
+
+  it('is not bound when only another version\u2019s markers are present', () => {
+    expect(timelineLooksBound([marker('x1'), marker('x2')], ['c1', 'c2'])).toBe(false);
   });
 });
 
@@ -373,7 +480,7 @@ describe('describeResolveRefusal', () => {
     const message = describeResolveRefusal({
       ok: false,
       reason: 'timeline-not-bound',
-      ids: ['c1', 'c2'],
+      refusedIds: ['c1', 'c2'],
       cap: 5,
     });
     expect(message).toContain('2 comment(s)');
@@ -384,7 +491,7 @@ describe('describeResolveRefusal', () => {
     const message = describeResolveRefusal({
       ok: false,
       reason: 'over-cap',
-      ids: ['c1', 'c2', 'c3'],
+      refusedIds: ['c1', 'c2', 'c3'],
       cap: 2,
     });
     expect(message).toContain('3 comment(s)');
@@ -409,6 +516,10 @@ describe('nextPollDelayMs', () => {
     expect(nextPollDelayMs(500)).toBe(300000);
   });
 
+  it('treats a non-numeric failure count as healthy', () => {
+    expect(nextPollDelayMs(Number.NaN)).toBe(10000);
+  });
+
   it('honours explicit base and ceiling', () => {
     expect(nextPollDelayMs(2, 1000, 3000)).toBe(3000);
     expect(nextPollDelayMs(1, 1000, 9000)).toBe(2000);
@@ -421,6 +532,9 @@ describe('nle-core.cjs UMD', () => {
   const premierePath = join(here, '../../../nle/premiere/nle-core.cjs');
   const resolvePath = join(here, '../../../nle/resolve/nle-core.cjs');
 
+  // These compare the twin against hand-written expectations at sampled inputs.
+  // They are not a proof of equivalence with index.ts — nothing generates one
+  // from the other — so a behaviour worth relying on needs a case here too.
   it('matches the TypeScript mapping for sentinels, two-way resolve, and offset', () => {
     const require = createRequire(import.meta.url);
     const umd = require(corePath) as {
@@ -479,6 +593,9 @@ describe('nle-core.cjs UMD', () => {
       planTimelineResolves: typeof planTimelineResolves;
       describeResolveRefusal: typeof describeResolveRefusal;
       nextPollDelayMs: typeof nextPollDelayMs;
+      timelineLooksBound: typeof timelineLooksBound;
+      resolvableIds: typeof resolvableIds;
+      commentsRemovedFromTimeline: typeof commentsRemovedFromTimeline;
       DEFAULT_AUTO_RESOLVE_CAP: number;
       AUTO_SYNC_BASE_MS: number;
     };
@@ -487,8 +604,46 @@ describe('nle-core.cjs UMD', () => {
     expect(umd.sequenceOffsetSeconds('01:00:00:00', 24)).toBe(3600);
     expect(umd.sequenceOffsetSeconds('00:00:00:00', 24)).toBe(0);
 
+    const anyMarker = {
+      id: 'm1',
+      commentId: 'c1',
+      startSeconds: 0,
+      durationSeconds: 0,
+      name: 'n',
+      comments: commentSentinel('c1'),
+    };
     expect(umd.planIsEmpty({ add: [], move: [], remove: [] })).toBe(true);
     expect(umd.planIsEmpty({ add: [remote[0]], move: [], remove: [] })).toBe(false);
+    expect(umd.planIsEmpty({ add: [], move: [], remove: [anyMarker] })).toBe(false);
+    expect(
+      umd.planIsEmpty({ add: [], move: [{ comment: remote[0], marker: anyMarker }], remove: [] })
+    ).toBe(false);
+
+    // The twin must apply the same open/top-level filter as the source.
+    expect(
+      umd.commentsRemovedFromTimeline([{ ...remote[0], isResolved: true }], [], ['c1'])
+    ).toEqual([]);
+    expect(umd.sequenceOffsetSeconds('00:00:00:05', 25)).toBe(0.2);
+
+    expect(umd.timelineLooksBound([], [])).toBe(true);
+    expect(umd.timelineLooksBound([], ['c1'])).toBe(false);
+    expect(umd.timelineLooksBound([anyMarker], ['c1'])).toBe(true);
+    expect(
+      umd.timelineLooksBound(
+        [{ ...anyMarker, commentId: 'x9', comments: commentSentinel('x9') }],
+        ['c1']
+      )
+    ).toBe(false);
+
+    expect(umd.resolvableIds({ ok: true, ids: ['c1'] })).toEqual(['c1']);
+    expect(
+      umd.resolvableIds({
+        ok: false,
+        reason: 'timeline-not-bound',
+        refusedIds: ['c1', 'c2'],
+        cap: 5,
+      })
+    ).toEqual([]);
 
     const two = [remote[0], { ...remote[0], id: 'c2' }];
     const stillThere = {
@@ -506,7 +661,7 @@ describe('nle-core.cjs UMD', () => {
     expect(umd.planTimelineResolves(two, [], ['c1', 'c2'])).toEqual({
       ok: false,
       reason: 'timeline-not-bound',
-      ids: ['c1', 'c2'],
+      refusedIds: ['c1', 'c2'],
       cap: 5,
     });
     const foreign = {
@@ -520,14 +675,20 @@ describe('nle-core.cjs UMD', () => {
     expect(umd.planTimelineResolves(two, [foreign], ['c1', 'c2'])).toEqual({
       ok: false,
       reason: 'timeline-not-bound',
-      ids: ['c1', 'c2'],
+      refusedIds: ['c1', 'c2'],
       cap: 5,
     });
     expect(umd.planTimelineResolves(two, [stillThere], ['c1', 'c2'], { cap: 0 })).toEqual({
       ok: false,
       reason: 'over-cap',
-      ids: ['c1'],
+      refusedIds: ['c1'],
       cap: 0,
+    });
+    // Boundary: exactly at the cap is allowed, one more is not. Without both
+    // halves the twin could drift to `>=` unnoticed.
+    expect(umd.planTimelineResolves(two, [stillThere], ['c1', 'c2'], { cap: 1 })).toEqual({
+      ok: true,
+      ids: ['c1'],
     });
 
     expect(umd.describeResolveRefusal({ ok: true, ids: [] })).toBeNull();
@@ -535,7 +696,7 @@ describe('nle-core.cjs UMD', () => {
       umd.describeResolveRefusal({
         ok: false,
         reason: 'over-cap',
-        ids: ['c1', 'c2'],
+        refusedIds: ['c1', 'c2'],
         cap: 1,
       })
     ).toContain('than the 1 allowed');

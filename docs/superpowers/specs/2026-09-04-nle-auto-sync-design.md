@@ -8,9 +8,9 @@ Status: Phases 0 and 1 shipped. Phases 2 and 3 not started.
   the read direction only; write-back stays on the Sync button, per the open
   question answered below.
 - **Phase 2 (not started)** — automatic binding of the open sequence to a version.
-  Until it lands, auto-sync follows whichever version is selected in the panel,
-  and the `timeline-not-bound` refusal is what keeps a switched timeline from
-  doing damage.
+  Until it lands, auto-sync follows whichever version is selected in the panel.
+  `timelineLooksBound` is a proxy for identity, not identity itself; see
+  "Residual risk" below for what it still does not catch.
 - **Phase 3 (not started)** — push accelerator.
 
 ## The short version
@@ -226,6 +226,24 @@ rebind on `SequenceEvent.ACTIVATED` (Premiere) and on timeline-identity change
 **Phase 3 — push accelerator, optional.**
 v1 live endpoint under `withApiAuth`. Self-hosted only; note the Vercel
 limitation in the panel UI rather than pretending latency is uniform.
+
+## Residual risk that Phase 2 is still needed for
+
+`timelineLooksBound` asks whether at least one marker this version placed is
+still on the timeline. That is a proxy for "this is the right sequence", and one
+case defeats it: **duplicating a sequence copies its markers**. An older
+duplicate in front of the panel therefore reads as bound, while every comment
+added since the duplicate was made reads as deleted from it:
+
+```
+planTimelineResolves(6 open comments, [marker c6], previously synced c1..c6)
+  -> { ok: true, ids: [c1..c5] }
+```
+
+The cap holds this to five per press and auto-sync never resolves at all, so the
+exposure is a manual Sync on a stale duplicate. Only the sequence-identity check
+in Phase 2 — a version sentinel written into the project — actually closes it.
+Until then this is accepted, not solved.
 
 ## Server-side changes this implies
 

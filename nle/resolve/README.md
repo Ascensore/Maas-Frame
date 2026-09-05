@@ -26,6 +26,11 @@ Auto-sync runs **one direction only**: comments from the web land on the
 timeline, and markers for comments resolved on the web are removed. It never
 resolves a comment on the web.
 
+It also pauses itself whenever the timeline in front of it holds none of this
+version's review markers. Resolve cannot tell the plugin you switched timelines,
+so this is what stops an unattended pass from writing to the wrong one. Switch
+back, or press **Sync markers** to deliberately sync the timeline you are on.
+
 So the resolve gesture stays manual: **delete a review marker and press Sync
 markers** to resolve that comment on the web. The plugin will not put that
 marker back.

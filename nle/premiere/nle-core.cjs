@@ -167,7 +167,7 @@
   function sequenceOffsetSeconds(startTimecode, fps) {
     var match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(String(startTimecode || '').trim());
     if (!match) return null;
-    var rate = Math.max(1, Number(fps) || 24);
+    var rate = Math.max(1, fps);
     return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / rate;
   }
 
@@ -209,6 +209,17 @@
     return pad(hours) + ':' + pad(minutes) + ':' + pad(secs) + sep + pad(frames);
   }
 
+  /* At least one marker this version placed is still on the timeline. See
+     timelineLooksBound in ../core/src/index.ts. */
+  function timelineLooksBound(local, previouslySyncedIds) {
+    var previous = previouslySyncedIds || [];
+    if (previous.length === 0) return true;
+    var presentIds = collectSyncedMarkerIds(local);
+    return previous.some(function (id) {
+      return presentIds.indexOf(id) !== -1;
+    });
+  }
+
   function planIsEmpty(plan) {
     return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
   }
@@ -219,20 +230,21 @@
     var previous = previouslySyncedIds || [];
     var ids = commentsRemovedFromTimeline(remote, local, previous);
     if (ids.length === 0) return { ok: true, ids: [] };
-    var presentIds = collectSyncedMarkerIds(local);
-    var anyOfOursPresent = previous.some(function (id) {
-      return presentIds.indexOf(id) !== -1;
-    });
-    if (previous.length > 0 && !anyOfOursPresent) {
-      return { ok: false, reason: 'timeline-not-bound', ids: ids, cap: cap };
+    if (!timelineLooksBound(local, previous)) {
+      return { ok: false, reason: 'timeline-not-bound', refusedIds: ids, cap: cap };
     }
-    if (ids.length > cap) return { ok: false, reason: 'over-cap', ids: ids, cap: cap };
+    if (ids.length > cap) return { ok: false, reason: 'over-cap', refusedIds: ids, cap: cap };
     return { ok: true, ids: ids };
+  }
+
+  /* Read a decision through this: a refusal's ids are the refused set. */
+  function resolvableIds(decision) {
+    return decision.ok ? decision.ids : [];
   }
 
   function describeResolveRefusal(decision) {
     if (decision.ok) return null;
-    var count = decision.ids.length;
+    var count = decision.refusedIds.length;
     if (decision.reason === 'timeline-not-bound') {
       return 'Did not resolve ' + count + ' comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.';
     }
@@ -257,6 +269,8 @@
     AUTO_SYNC_BASE_MS: AUTO_SYNC_BASE_MS,
     AUTO_SYNC_MAX_BACKOFF_MS: AUTO_SYNC_MAX_BACKOFF_MS,
     planIsEmpty: planIsEmpty,
+    timelineLooksBound: timelineLooksBound,
+    resolvableIds: resolvableIds,
     planTimelineResolves: planTimelineResolves,
     describeResolveRefusal: describeResolveRefusal,
     nextPollDelayMs: nextPollDelayMs,

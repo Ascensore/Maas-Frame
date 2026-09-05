@@ -23,6 +23,11 @@ timeline, and markers for comments resolved on the web are removed. It never
 resolves a comment on the web. Putting a note on a timeline is recoverable;
 resolving one on the review record is not.
 
+It also pauses itself whenever the sequence in front of it holds none of this
+version's review markers — after you switch sequences, say — rather than writing
+to whichever sequence happens to be open. Switch back, or press **Sync markers**
+to deliberately sync the sequence you are on.
+
 So the resolve gesture stays manual: **delete a review marker and press Sync
 markers** to resolve that comment on the web. The panel will not put that marker
 back. Comments that were never synced still land as new markers.

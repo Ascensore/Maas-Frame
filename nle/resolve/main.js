@@ -49,13 +49,6 @@ async function createWindow() {
     const timeline = project.GetCurrentTimeline();
     if (!timeline) throw new Error('No timeline open');
 
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/comments`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const comments = payload.data?.comments ?? [];
-
     const fps = Number(timeline.GetSetting('timelineFrameRate')) || 24;
     const startTc =
       timeline.GetStartTimecode?.() || timeline.GetSetting?.('timelineStartTimecode') || '00:00:00:00';
@@ -72,14 +65,6 @@ async function createWindow() {
     const offsetSeconds = parsedOffset === null ? 0 : parsedOffset;
     const sequenceName = timeline.GetName?.() || 'Untitled';
     const rational = nleCore.fpsToRational(fps);
-    const persistError = await persistSequenceLink(baseUrl, token, versionId, {
-      nle: 'resolve',
-      sequenceName: String(sequenceName).slice(0, 200),
-      startTimecode: startTc,
-      frameRateNum: rational.num,
-      frameRateDen: rational.den,
-      dropFrame,
-    });
 
     const existing = timeline.GetMarkers() || {};
     const local = [];
@@ -98,6 +83,37 @@ async function createWindow() {
       });
     }
 
+    // Everything below writes: markers onto the timeline, the sequence link on
+    // the server, and the record of which comments have markers. Resolve cannot
+    // tell us the editor switched timelines, so this check is what stops an
+    // unattended pass from acting on somebody else's timeline.
+    if (auto && !nleCore.timelineLooksBound(local, previousIds || [])) {
+      return {
+        message:
+          'Auto-sync paused: the open timeline has none of this version\u2019s review markers. Switch back, or press Sync markers to sync this timeline.',
+        syncedIds: previousIds || [],
+      };
+    }
+
+    // Auto-sync is read-only, so it does not rebind the sequence link.
+    const persistError = auto
+      ? null
+      : await persistSequenceLink(baseUrl, token, versionId, {
+          nle: 'resolve',
+          sequenceName: String(sequenceName).slice(0, 200),
+          startTimecode: startTc,
+          frameRateNum: rational.num,
+          frameRateDen: rational.den,
+          dropFrame,
+        });
+
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/versions/${versionId}/comments`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const comments = payload.data?.comments ?? [];
+
     // Auto-sync runs the read direction only: putting a comment on the timeline
     // is recoverable, resolving one on the review record is not.
     const decision = auto
@@ -105,7 +121,8 @@ async function createWindow() {
       : nleCore.planTimelineResolves(comments, local, previousIds || []);
     const refusal = nleCore.describeResolveRefusal(decision);
     const resolvedIds = [];
-    for (const commentId of decision.ids) {
+    // Read through resolvableIds: a refusal's ids are the set that was refused.
+    for (const commentId of nleCore.resolvableIds(decision)) {
       const patch = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/comments/${commentId}`, {
         method: 'PATCH',
         headers: {

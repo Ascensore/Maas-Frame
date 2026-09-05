@@ -160,7 +160,7 @@ async function syncMarkers({ auto = false } = {}) {
   const versionId = el('version').value;
   if (!token || !versionId) {
     if (!auto) setStatus('Token and version are required.');
-    return;
+    return false;
   }
 
   const ppro = require('premierepro');
@@ -173,24 +173,39 @@ async function syncMarkers({ auto = false } = {}) {
   const meta = await sequenceMeta(sequence);
 
   if (auto && !meta.offsetOk) {
-    setStatus('Auto-sync paused: could not read the sequence start timecode. Sync manually to place markers at 00:00:00:00.');
-    return;
+    setStatus(
+      'Auto-sync paused: could not read the sequence start timecode. Sync manually to place markers at 00:00:00:00.'
+    );
+    return false;
   }
 
-  const linkError = await persistSequenceLink(baseUrl, token, versionId, meta);
-  const { comments } = await api(baseUrl, token, `/api/v1/versions/${versionId}/comments`);
   const local = readMarkers(existing);
-
   const storageKey = core.syncedMarkerStorageKey(versionId);
   const storage = store();
   const previousIds = core.parseSyncedMarkerIds(storage ? storage.getItem(storageKey) : null);
 
-  let resolvedIds = [];
+  // Everything below writes: markers onto the sequence, the sequence link on the
+  // server, and the record of which comments have markers. None of it may happen
+  // unattended against a sequence that is not this version's, so the check comes
+  // before the first network call rather than in the middle of the writes.
+  if (auto && !core.timelineLooksBound(local, previousIds)) {
+    setStatus(
+      'Auto-sync paused: the open sequence has none of this version\u2019s review markers. Switch back, or press Sync markers to sync this sequence.'
+    );
+    return false;
+  }
+
+  // Auto-sync is read-only, so it neither rebinds the sequence link nor resolves.
+  const linkError = auto ? null : await persistSequenceLink(baseUrl, token, versionId, meta);
+  const { comments } = await api(baseUrl, token, `/api/v1/versions/${versionId}/comments`);
+
+  const resolvedIds = [];
   let refusal = null;
   if (!auto) {
     const decision = core.planTimelineResolves(comments, local, previousIds);
     refusal = core.describeResolveRefusal(decision);
-    for (const commentId of decision.ids) {
+    // Read through resolvableIds: a refusal's ids are the set that was refused.
+    for (const commentId of core.resolvableIds(decision)) {
       await api(baseUrl, token, `/api/v1/comments/${commentId}`, {
         method: 'PATCH',
         body: JSON.stringify({ isResolved: true }),
@@ -254,7 +269,7 @@ async function syncMarkers({ auto = false } = {}) {
 
   if (auto && added === 0 && moved === 0 && removed === 0) {
     setStatus(`Auto-sync on. No changes at ${new Date().toLocaleTimeString()}.`);
-    return;
+    return true;
   }
 
   const parts = [`Synced. Added ${added}, moved ${moved}, removed ${removed}.`];
@@ -263,6 +278,7 @@ async function syncMarkers({ auto = false } = {}) {
   if (refusal) parts.push(refusal);
   if (linkError) parts.push(`Sequence link was not saved: ${linkError}`);
   setStatus(parts.join(' '));
+  return true;
 }
 
 let autoTimer = null;
@@ -296,8 +312,9 @@ async function runAutoSync() {
   }
   syncInFlight = true;
   try {
-    await syncMarkers({ auto: true });
-    autoFailures = 0;
+    // A paused tick is not a success: if a network error preceded it, the
+    // backoff it earned has to survive.
+    if (await syncMarkers({ auto: true })) autoFailures = 0;
   } catch (error) {
     autoFailures += 1;
     setStatus(`Auto-sync error (retry ${autoFailures}): ${error.message}`);
