@@ -1,6 +1,7 @@
 import type { BriefRankingCriterion } from './brief';
 import { beatDuration, beatText, type Beat, type SourceCut } from './beats';
 import {
+  containment,
   contentTokens,
   countFillers,
   countLongPauses,
@@ -14,15 +15,21 @@ import {
  * Take selection: find beats that say the same thing, keep one, cut the rest.
  *
  * Two beats are the same take when their filler-free word trigrams overlap
- * enough and they sit within the window on the timeline. Groups are the
- * transitive closure of that relation, so take one, two and three of a line
- * end up together even if one and three are only distantly similar.
+ * enough and they sit within the window on the timeline. Overlap is Jaccard,
+ * plus containment for the retake that only re-says a piece of a longer take,
+ * which Jaccard scores far too low. Groups are the transitive closure of that
+ * relation, so take one, two and three of a line end up together even if one
+ * and three are only distantly similar.
  */
 
 export const TAKE_SIMILARITY_THRESHOLD = 0.5;
 export const TAKE_WINDOW_SECONDS = 10 * 60;
 /** Shorter phrases repeat for legitimate reasons ("thank you"); they are never takes. */
 export const TAKE_MIN_CONTENT_TOKENS = 4;
+/** Share of the shorter take's trigrams that the longer one contains before they count as the same take. */
+export const TAKE_CONTAINMENT_THRESHOLD = 0.6;
+/** A contained retake needs this many content tokens; shorter phrases repeat for other reasons. */
+export const TAKE_CONTAINMENT_MIN_TOKENS = 6;
 
 export type TakeCandidate = {
   beat: Beat;
@@ -30,12 +37,15 @@ export type TakeCandidate = {
   timelineStart: number;
   /** Mean loudness of the beat, when the ranking asks for energy and audio is available. */
   energy: number | null;
+  /** How well the beat matches the operator's script, 0–1, when there is one. */
+  scriptMatch?: number | null;
 };
 
 export type TakeScores = {
   cleanliness: number;
   energy: number | null;
   recency: number;
+  scriptMatch: number | null;
 };
 
 export type TakeDecision = {
@@ -62,17 +72,22 @@ export function groupTakes(
     fillers: ReadonlySet<string>;
     similarity?: number;
     windowSeconds?: number;
+    /** Index groups a second signal found, unioned in as if their members matched. */
+    alsoGroup?: number[][];
   }
 ): number[][] {
   const similarity = options.similarity ?? TAKE_SIMILARITY_THRESHOLD;
   const window = options.windowSeconds ?? TAKE_WINDOW_SECONDS;
-  const shingles = candidates.map((candidate) => {
+  const shingles: Array<Set<string> | null> = [];
+  const tokenCounts: number[] = [];
+  for (const candidate of candidates) {
     const tokens = contentTokens(
       candidate.beat.words.map((word) => word.text),
       options.fillers
     );
-    return tokens.length >= TAKE_MIN_CONTENT_TOKENS ? trigrams(tokens) : null;
-  });
+    tokenCounts.push(tokens.length);
+    shingles.push(tokens.length >= TAKE_MIN_CONTENT_TOKENS ? trigrams(tokens) : null);
+  }
   const parent = candidates.map((_, index) => index);
   for (let a = 0; a < candidates.length; a += 1) {
     const left = shingles[a];
@@ -81,8 +96,20 @@ export function groupTakes(
       const right = shingles[b];
       if (!right) continue;
       if (Math.abs(candidates[b]!.timelineStart - candidates[a]!.timelineStart) > window) continue;
-      if (jaccard(left, right) < similarity) continue;
+      const contained =
+        Math.min(tokenCounts[a]!, tokenCounts[b]!) >= TAKE_CONTAINMENT_MIN_TOKENS &&
+        containment(left, right) >= TAKE_CONTAINMENT_THRESHOLD;
+      if (jaccard(left, right) < similarity && !contained) continue;
       parent[find(parent, a)] = find(parent, b);
+    }
+  }
+  for (const group of options.alsoGroup ?? []) {
+    const first = group[0];
+    if (first === undefined || !candidates[first]) continue;
+    for (let index = 1; index < group.length; index += 1) {
+      const member = group[index];
+      if (member === undefined || !candidates[member]) continue;
+      parent[find(parent, first)] = find(parent, member);
     }
   }
   const groups = new Map<number, number[]>();
@@ -125,6 +152,12 @@ function compareBy(
     const left = scores.get(a)!;
     const right = scores.get(b)!;
     for (const criterion of ranking) {
+      if (criterion === 'script_match') {
+        // A take with no script match at all loses to one that has any.
+        const l = left.scriptMatch ?? -1;
+        const r = right.scriptMatch ?? -1;
+        if (l !== r) return r - l;
+      }
       if (criterion === 'cleanliness' && left.cleanliness !== right.cleanliness) {
         return right.cleanliness - left.cleanliness;
       }
@@ -147,6 +180,7 @@ export function selectTakes(
     longPauseSeconds: number;
     similarity?: number;
     windowSeconds?: number;
+    alsoGroup?: number[][];
   }
 ): TakeDecision[] {
   const groups = groupTakes(candidates, options);
@@ -158,6 +192,7 @@ export function selectTakes(
         cleanliness: cleanlinessScore(candidate.beat, options.fillers, options.longPauseSeconds),
         energy: candidate.energy,
         recency: candidate.timelineStart,
+        scriptMatch: candidate.scriptMatch ?? null,
       });
     }
     const ordered = [...group].sort(compareBy(options.ranking, scores));

@@ -1086,6 +1086,67 @@ describe('assembleRoughCut editorial pass', () => {
     ]);
   });
 
+  it('keeps the take that reads the script and flags the line nobody spoke', async () => {
+    // Without the script, recency would keep the second take: both are equally
+    // clean, and their trigrams overlap too little to group them at all.
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script:
+        'We help founders raise faster.\nOur product does the heavy lifting.\nThanks for watching.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'we help founders raise faster'),
+          spokenSegment(10, 'we help founders raise much faster'),
+          spokenSegment(20, 'thanks for watching everyone'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected?.map((cut) => [cut.inSeconds, cut.transcriptText])).toEqual([
+      [10, 'we help founders raise much faster'],
+    ]);
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([1, 20]);
+    expect(result?.warnings.map((warning) => warning.code)).toContain('script-lines-missing');
+    expect(
+      result?.warnings.find((warning) => warning.code === 'script-lines-missing')?.message
+    ).toContain('Our product does the heavy lifting.');
+  });
+
+  it('ignores the script when the brief does not select takes', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('ASCENSORE'),
+      script: 'We help founders raise faster.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(1, 'we help founders raise faster'),
+          spokenSegment(10, 'we help founders raise faster'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(result?.decisions?.edits).toHaveLength(2);
+    expect(result?.warnings.map((warning) => warning.code)).toContain('script-ignored');
+  });
+
   it('picks a take on the multicam session transcript and removes the loser from the program', async () => {
     const line = 'our revenue this year doubled to four million dollars';
     const h = harness({

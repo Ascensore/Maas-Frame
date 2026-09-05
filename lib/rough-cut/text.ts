@@ -82,6 +82,20 @@ export function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number 
   return shared / (a.size + b.size - shared);
 }
 
+/**
+ * Share of the smaller set found in the larger one. 1 when one take is a
+ * piece of the other, which Jaccard punishes because the larger take's
+ * extra shingles count against it.
+ */
+export function containment(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  const smaller = a.size <= b.size ? a : b;
+  const larger = smaller === a ? b : a;
+  if (smaller.size === 0) return 0;
+  let shared = 0;
+  for (const entry of smaller) if (larger.has(entry)) shared += 1;
+  return shared / smaller.size;
+}
+
 /** Terminal punctuation, allowing a closing quote or bracket after it. */
 export function endsSentence(text: string): boolean {
   return /[.!?…]["'»”)\]]*$/.test(text.trim());

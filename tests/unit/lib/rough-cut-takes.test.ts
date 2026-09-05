@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyseSpeech, type Beat } from '@/lib/rough-cut/beats';
 import { SILENCE_AGGRESSIVENESS } from '@/lib/rough-cut/brief';
+import { rankingWithScript } from '@/lib/rough-cut/script';
 import {
   cleanlinessScore,
   groupTakes,
@@ -9,6 +10,7 @@ import {
   type TakeCandidate,
 } from '@/lib/rough-cut/takes';
 import {
+  containment,
   contentTokens,
   countRestarts,
   endsSentence,
@@ -80,6 +82,12 @@ describe('text helpers', () => {
     expect(jaccard(new Set(), new Set())).toBe(0);
   });
 
+  it('measures containment from the smaller set', () => {
+    expect(containment(new Set(['a', 'b', 'c', 'd']), new Set(['c', 'd']))).toBe(1);
+    expect(containment(new Set(['c', 'x']), new Set(['a', 'b', 'c', 'd']))).toBe(0.5);
+    expect(containment(new Set(), new Set(['a']))).toBe(0);
+  });
+
   it('spots a sentence end and a restart within three seconds', () => {
     expect(endsSentence('done.')).toBe(true);
     expect(endsSentence('done?”')).toBe(true);
@@ -116,6 +124,48 @@ describe('groupTakes', () => {
 
     expect(groupTakes(candidates, { fillers: EN })).toEqual([[0, 1, 2]]);
     expect(groupTakes([candidates[0]!, candidates[2]!], { fillers: EN })).toEqual([]);
+  });
+
+  it('groups a retake that only repeats the tail of a longer take', () => {
+    const first = candidate(
+      0,
+      'in this video we look at how founders raise their seed round faster than before and what investors actually want to see'
+    );
+    const tail = candidate(20, 'how founders raise their seed round faster than before');
+    // Twenty trigrams against seven, all seven shared: Jaccard is 7/20, so only
+    // containment can see that the retake is a piece of the first take.
+    expect(
+      jaccard(
+        trigrams(
+          contentTokens(
+            first.beat.words.map((word) => word.text),
+            EN
+          )
+        ),
+        trigrams(
+          contentTokens(
+            tail.beat.words.map((word) => word.text),
+            EN
+          )
+        )
+      )
+    ).toBeLessThan(0.5);
+    expect(groupTakes([first, tail], { fillers: EN })).toEqual([[0, 1]]);
+  });
+
+  it('does not treat a short repeated phrase as a contained take', () => {
+    const long = candidate(0, 'thank you so much for being here with us today everyone');
+    // Five content tokens, wholly contained in the longer beat, but under the
+    // floor a contained retake has to clear.
+    const short = candidate(30, 'thank you so much for');
+    expect(groupTakes([long, short], { fillers: EN })).toEqual([]);
+  });
+
+  it('unions externally supplied groups into the take groups', () => {
+    const a = candidate(0, 'our product does the heavy lifting for you');
+    const b = candidate(15, 'the platform handles all of the boring parts');
+    expect(groupTakes([a, b], { fillers: EN })).toEqual([]);
+    expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[0, 1]] })).toEqual([[0, 1]]);
   });
 });
 
@@ -189,6 +239,20 @@ describe('selectTakes', () => {
       { fillers: EN, ranking: ['script_match', 'energy', 'cleanliness'], longPauseSeconds: 0.8 }
     );
     expect(decisions.map((decision) => decision.keptIndex)).toEqual([0]);
+  });
+
+  it('ranks by script match first when asked, then falls through to cleanliness', () => {
+    // Cleanliness alone would keep the first take; only the script says otherwise.
+    const offScript = { ...candidate(0, 'we help founders raise faster'), scriptMatch: 0.4 };
+    const onScript = { ...candidate(10, 'we help um founders raise faster'), scriptMatch: 1 };
+    const decisions = selectTakes([offScript, onScript], {
+      fillers: EN,
+      ranking: rankingWithScript(['cleanliness', 'energy']),
+      longPauseSeconds: MEDIUM.maxKeptGapInsideBeatSeconds,
+    });
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]!.keptIndex).toBe(1);
+    expect(decisions[0]!.scores.get(1)?.scriptMatch).toBe(1);
   });
 
   it('turns the losers into REJECTED_TAKE cuts that name the kept take', () => {

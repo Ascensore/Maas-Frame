@@ -39,8 +39,15 @@ import {
 import { assignClipExportFileNames } from './media-paths';
 import { profileFromSnapshot } from './profile';
 import { packTimeline, subtractTimelineRanges, toCutIsland } from './program';
+import {
+  alignBeatToScript,
+  parseScript,
+  rankingWithScript,
+  scriptCoverageWarnings,
+  scriptTakeGroups,
+} from './script';
 import { computeTimecodeOffsets } from './sync';
-import { rejectedTakeCuts, selectTakes, type TakeCandidate } from './takes';
+import { rejectedTakeCuts, selectTakes, TAKE_WINDOW_SECONDS, type TakeCandidate } from './takes';
 import { fillerWordsFor } from './text';
 import {
   assessTranscriptQuality,
@@ -188,6 +195,11 @@ function readLayout(value: unknown): RoughCutLayout {
   return 'MULTICAM';
 }
 
+/** The copy the speaker was reading, when the operator gave one. */
+function readScript(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
 async function persistReady(
   deps: AssembleDeps,
   roughCutId: string,
@@ -282,6 +294,9 @@ async function enqueueTranscription(deps: AssembleDeps, versionId: string): Prom
       [versionId, provider]
     );
     const transcriptId = upsert.rows[0]?.id;
+    // After the upsert, never before it: the unique index on (version_id,
+    // language) makes a concurrent run block there until the first commits,
+    // so this SELECT then sees the first run's TRANSCRIBE job.
     const queued = await client.query(
       `SELECT id FROM media_jobs
        WHERE version_id = $1 AND kind = 'TRANSCRIBE' AND status IN ('PENDING', 'QUEUED', 'RUNNING')
@@ -302,7 +317,13 @@ async function enqueueTranscription(deps: AssembleDeps, versionId: string): Prom
     }
     await client.query('COMMIT');
   } catch (error) {
-    await client.query('ROLLBACK');
+    // A rollback on a dead connection throws in turn; the original failure is
+    // the one worth reporting.
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignored
+    }
     throw error;
   } finally {
     client.release();
@@ -470,6 +491,7 @@ async function editorialPass(
     editorial: Editorial;
     warnings: RoughCutWarning[];
     wavFor: (versionId: string) => Promise<string>;
+    script: string | null;
   }
 ): Promise<EditorialResult> {
   const { editorial, warnings } = options;
@@ -479,6 +501,19 @@ async function editorialPass(
   );
   const language = transcripts.find((material) => material.language)?.language ?? null;
   const fillers = fillerWordsFor(language);
+  const scriptLines = options.script ? parseScript(options.script, fillers) : [];
+  if (options.script && scriptLines.length === 0) {
+    warnings.push({
+      code: 'script-unreadable',
+      message: 'The script has no line of three or more words, so it was not used',
+    });
+  }
+  if (scriptLines.length > 0 && !editorial.takeSelection) {
+    warnings.push({
+      code: 'script-ignored',
+      message: 'The brief does not select takes, so the script was not used',
+    });
+  }
   const cuts: SourceCut[] = [];
   const beatsByVersion = new Map<string, Beat[]>();
 
@@ -494,11 +529,12 @@ async function editorialPass(
   }
 
   if (editorial.takeSelection && transcripts.length > 0) {
-    if (editorial.ranking.includes('script_match')) {
+    const useScript = scriptLines.length > 0;
+    if (!useScript && editorial.ranking.includes('script_match')) {
       warnings.push({
         code: 'script-match-unavailable',
         message:
-          'The brief ranks takes by script match, which is not available yet; it was ignored',
+          'The brief ranks takes by script match, but this run has no script; it was ignored',
       });
     }
     const candidates: TakeCandidate[] = [];
@@ -508,11 +544,23 @@ async function editorialPass(
         candidates.push({ beat, timelineStart: offset + beat.start, energy: null });
       }
     }
+    // With a script, a beat is a take of the line it reads however it is
+    // worded, and the reading closest to the line wins.
+    const alignments = useScript
+      ? candidates.map((candidate) => alignBeatToScript(candidate.beat, scriptLines, fillers))
+      : [];
+    alignments.forEach((alignment, index) => {
+      candidates[index]!.scriptMatch = alignment.score;
+    });
+    const ranking = useScript ? rankingWithScript(editorial.ranking) : editorial.ranking;
+    const alsoGroup = useScript
+      ? scriptTakeGroups(candidates, alignments, TAKE_WINDOW_SECONDS)
+      : [];
     const longPauseSeconds = editorial.policy.maxKeptGapInsideBeatSeconds;
-    const options_ = { fillers, ranking: editorial.ranking, longPauseSeconds };
+    const options_ = { fillers, ranking, longPauseSeconds, alsoGroup };
     // Loudness costs a wav download and a python call per beat, so it is
     // measured only for beats that are actually in a group.
-    if (editorial.ranking.includes('energy')) {
+    if (ranking.includes('energy')) {
       const grouped = new Set(selectTakes(candidates, options_).flatMap((entry) => entry.group));
       for (const index of grouped) {
         const candidate = candidates[index]!;
@@ -532,6 +580,12 @@ async function editorialPass(
         versionId,
         beats.filter((beat) => !rejected.has(beat))
       );
+    }
+    if (useScript) {
+      const keptAlignments = alignments.filter(
+        (_, index) => !rejected.has(candidates[index]!.beat)
+      );
+      warnings.push(...scriptCoverageWarnings(scriptLines, keptAlignments));
     }
   }
 
@@ -576,6 +630,7 @@ async function assembleLinearLayout(
     clipOrder: string[] | null;
     slotByVersion: Map<string, TranscriptSlot>;
     editorial: Editorial;
+    script: string | null;
     wavFor: (versionId: string) => Promise<string>;
     required: boolean;
     waitLimitSeconds: number;
@@ -628,6 +683,7 @@ async function assembleLinearLayout(
     editorial,
     warnings,
     wavFor: options.wavFor,
+    script: options.script,
   });
 
   const turns: AttributedTurn[] = [];
@@ -901,6 +957,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         clipOrder: assembly.clipOrder,
         slotByVersion,
         editorial,
+        script: readScript(cut.script),
         wavFor,
         required,
         waitLimitSeconds,
@@ -1026,6 +1083,7 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
         editorial,
         warnings,
         wavFor,
+        script: readScript(cut.script),
       });
       sourceCuts = result.cuts;
       sourceMarkers = result.markers;
