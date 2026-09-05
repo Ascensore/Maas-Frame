@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { MediaJobKind } from '@prisma/client';
+import { lockResourceInTransaction } from '@/lib/advisory-lock';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
@@ -44,16 +45,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // Checking for a running render and queueing one has to be one step, or two
     // clicks a moment apart both see an idle cut and queue a job each. The lock
-    // is per rough cut, so renders of different cuts never wait on each other.
-    // Reading after taking the lock only sees the other click's job under READ
-    // COMMITTED, which is this database's default; under SERIALIZABLE the
-    // snapshot would predate the lock and both callers would queue.
+    // is per rough cut, so renders of different cuts never wait on each other,
+    // and the check below is inside it: under READ COMMITTED, which is this
+    // database's default, a read taken after the lock sees the other click's
+    // committed job.
     const job = await db.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        SELECT pg_advisory_xact_lock(
-          ('x' || left(md5(${roughCutId}), 16))::bit(64)::bigint
-        )
-      `;
+      await lockResourceInTransaction(tx, roughCutId);
       const active = await findActiveMaterializeJob(roughCutId, tx);
       if (active) return null;
       // Created here rather than through enqueueMediaJob so the insert shares

@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { MediaJobKind, MediaJobStatus, TranscriptStatus, type Prisma } from '@prisma/client';
+import { lockResourceInTransaction } from '@/lib/advisory-lock';
 import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response';
 import { db } from '@/lib/db';
 import { logError } from '@/lib/logger';
@@ -13,7 +14,7 @@ import { getVideoAssetAccessContext } from '@/lib/video-assets';
 type RouteParams = { params: Promise<{ videoId: string }> };
 
 /** A burn-in that has not finished yet, so a second one would race it. */
-const ACTIVE_JOB: MediaJobStatus[] = [
+const ACTIVE_JOB_STATUSES: MediaJobStatus[] = [
   MediaJobStatus.PENDING,
   MediaJobStatus.QUEUED,
   MediaJobStatus.RUNNING,
@@ -85,10 +86,21 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
  * POST /api/videos/[videoId]/burn-in — burn this version's words into the picture.
  *
  * The work is a media job, so this answers 202 and the caller polls the GET above. The
- * source is resolved here rather than in the worker: `subtitleId` names a caption track,
- * `language` names a transcript, and without either the version's oldest READY transcript
- * wins, falling back to a caption track when nothing has been transcribed. Every one of
- * those rows is checked to belong to this version before its id goes into a payload.
+ * source is resolved here rather than in the worker, and the two selectors have a
+ * precedence:
+ *
+ *  1. `subtitleId` wins outright. It names a caption track on this version, and any
+ *     `language` sent alongside it is ignored.
+ *  2. `language` selects that version's READY transcript in that language and nothing
+ *     else. It never falls back to a caption track: burning the wrong language into the
+ *     picture is worse than refusing, so a version with only caption tracks is told to
+ *     ask for one by id.
+ *  3. Neither: the oldest READY transcript, which is what the job itself resolves a null
+ *     transcriptId to, and only if there is none, the version's oldest caption track.
+ *
+ * Every one of those rows is checked to belong to this version before its id goes into a
+ * payload. `requestedById` is recorded for auditing — who asked for this render — and
+ * nothing reads it today.
  */
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
@@ -124,9 +136,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       select: { id: true, providerId: true, video: { select: { kind: true } } },
     });
     if (!version) return apiErrors.notFound('Version');
-    // A YouTube or Vimeo version has no master to re-encode, and a still or a deck has no
-    // picture to burn anything into. Refused here rather than inside ffmpeg's temp
-    // directory ten minutes later.
+    // A YouTube or Vimeo version has no master to re-encode, and an audio review, a still
+    // or a deck has no picture to burn anything into. Audio is the one most likely to get
+    // here: it is file-backed and it can hold a READY transcript, so only the kind
+    // separates it from a video. Refused here rather than inside ffmpeg's temp directory
+    // ten minutes later.
     if (version.video.kind !== 'VIDEO' || !isFileBackedProvider(version.providerId)) {
       return apiErrors.badRequest('Subtitles can only be burned into an uploaded video file');
     }
@@ -143,18 +157,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Checking for a burn already in flight and queueing one has to be a single step, or
     // two clicks a moment apart both see an idle version and queue a job each, and the two
     // renders then race for the output video's next version number. The lock is per
-    // version, so burns of different versions never wait on each other. Reading after
-    // taking the lock only sees the other click's job under READ COMMITTED, which is this
-    // database's default; under SERIALIZABLE the snapshot would predate the lock and both
-    // callers would queue.
+    // version, so burns of different versions never wait on each other, and the check
+    // below is inside it: under READ COMMITTED, which is this database's default, a read
+    // taken after the lock sees the other click's committed job.
     const job = await db.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        SELECT pg_advisory_xact_lock(
-          ('x' || left(md5(${versionId}), 16))::bit(64)::bigint
-        )
-      `;
+      await lockResourceInTransaction(tx, versionId);
       const active = await tx.mediaJob.findFirst({
-        where: { versionId, kind: MediaJobKind.BURN_SUBTITLES, status: { in: ACTIVE_JOB } },
+        where: {
+          versionId,
+          kind: MediaJobKind.BURN_SUBTITLES,
+          status: { in: ACTIVE_JOB_STATUSES },
+        },
         select: { id: true },
       });
       if (active) return null;
@@ -203,10 +216,15 @@ async function resolveSource(
       where: { versionId_language: { versionId, language } },
       select: { id: true, status: true },
     });
-    // An explicit language never falls back: burning the wrong language into the picture
-    // is worse than refusing to burn anything.
+    // An explicit language never falls back to a caption track, so the refusal has to say
+    // what to send instead; a version can hold tracks in this language and no transcript
+    // at all, and "no ready transcript" alone reads as a bug from there.
     if (!transcript || transcript.status !== TranscriptStatus.READY) {
-      return { error: apiErrors.badRequest('No ready transcript in that language') };
+      return {
+        error: apiErrors.badRequest(
+          'No ready transcript in that language. Pass subtitleId to burn a caption track.'
+        ),
+      };
     }
     return { value: { kind: 'transcript', transcriptId: transcript.id } };
   }

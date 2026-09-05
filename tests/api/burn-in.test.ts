@@ -27,6 +27,7 @@ import {
   createVersion,
   createVideo,
   nextSeq,
+  seedProject,
   seedVersion,
 } from '../factories';
 
@@ -334,6 +335,89 @@ describe('POST /api/videos/[videoId]/burn-in', () => {
     expect(await db.mediaJob.count({ where: { versionId: scenario.version.id } })).toBe(1);
   });
 
+  it('ignores the version\u2019s own probe job, both when refusing and when reporting', async () => {
+    // Every uploaded version is given a PROBE_MEDIA job the moment it lands, and it sits
+    // at PENDING until the worker picks it up. Without the kind filter on either query,
+    // that row alone would refuse every first burn-in on a fresh version with a 409, and
+    // the pane would poll it as if it were the render.
+    const scenario = await seedBurnableVersion();
+    await db.mediaJob.create({
+      data: { versionId: scenario.version.id, kind: 'PROBE_MEDIA', status: 'PENDING' },
+    });
+    const burn = await db.mediaJob.create({
+      data: { versionId: scenario.version.id, kind: 'BURN_SUBTITLES', status: 'RUNNING' },
+    });
+    const body = { versionId: scenario.version.id, style: {} };
+
+    const refused = await callRoute(postBurnIn, startRequest(scenario.video.id, body), {
+      videoId: scenario.video.id,
+    });
+    expect(refused.status).toBe(409);
+    expect(await db.mediaJob.count()).toBe(2);
+
+    // The burn is gone and only the probe is left: nothing to report, and nothing in the
+    // way of the next one.
+    await db.mediaJob.delete({ where: { id: burn.id } });
+
+    const reported = await callRoute(
+      getBurnIn,
+      jobRequest(scenario.video.id, scenario.version.id),
+      { videoId: scenario.video.id }
+    );
+    expect(reported.status).toBe(200);
+    expect(await readData<{ job: unknown }>(reported)).toEqual({ job: null });
+
+    const accepted = await callRoute(postBurnIn, startRequest(scenario.video.id, body), {
+      videoId: scenario.video.id,
+    });
+    expect(accepted.status).toBe(202);
+    expect(await db.mediaJob.count({ where: { kind: 'BURN_SUBTITLES' } })).toBe(1);
+  });
+
+  // PENDING is covered by the pair of calls above; these are the other two statuses a
+  // burn-in can sit at while the worker has it, and each has to hold the next one off.
+  it.each(['QUEUED', 'RUNNING'] as const)(
+    'refuses a burn while an earlier one is %s',
+    async (status) => {
+      const scenario = await seedBurnableVersion();
+      await db.mediaJob.create({
+        data: { versionId: scenario.version.id, kind: 'BURN_SUBTITLES', status },
+      });
+
+      const response = await callRoute(
+        postBurnIn,
+        startRequest(scenario.video.id, { versionId: scenario.version.id, style: {} }),
+        { videoId: scenario.video.id }
+      );
+
+      expect(response.status).toBe(409);
+      expect(await db.mediaJob.count()).toBe(1);
+    }
+  );
+
+  it('refuses an audio review, which is file-backed and can hold a transcript', async () => {
+    // The one case the provider check alone does not catch: an uploaded audio review is
+    // r2-backed and is transcribed like any other, so only its kind says there is no
+    // picture to burn anything into.
+    const project = await seedProject();
+    const audio = await createVideo({ projectId: project.project.id, kind: 'AUDIO' });
+    const version = await createVersion({ videoParentId: audio.id, providerId: 'r2' });
+    await createReadyTranscript({ versionId: version.id, language: 'it', segments: SEGMENTS });
+    signedInAs(project.owner);
+
+    const response = await callRoute(
+      postBurnIn,
+      startRequest(audio.id, { versionId: version.id, style: {} }),
+      { videoId: audio.id }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await readError(response)).toBe(
+      'Subtitles can only be burned into an uploaded video file'
+    );
+    expect(await db.mediaJob.count()).toBe(0);
+  });
+
   it('refuses a version that is not an uploaded file', async () => {
     // seedVersion defaults to a youtube version: there is no master to re-encode.
     const scenario = await seedVersion();
@@ -465,7 +549,9 @@ describe('POST /api/videos/[videoId]/burn-in, choosing the transcript', () => {
     );
 
     expect(response.status).toBe(400);
-    expect(await readError(response)).toBe('No ready transcript in that language');
+    expect(await readError(response)).toBe(
+      'No ready transcript in that language. Pass subtitleId to burn a caption track.'
+    );
     expect(await db.mediaJob.count()).toBe(0);
   });
 
