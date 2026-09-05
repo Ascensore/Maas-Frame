@@ -242,3 +242,68 @@ export function detectFalseStarts(
   }
   return { beats: beats.filter((_, index) => keep[index]), cuts: cuts.reverse() };
 }
+
+export type WordSpan = { wordStart: number; wordEnd: number };
+
+/**
+ * Remove word spans (index ranges, end exclusive) from a beat: the words go,
+ * the kept runs are cut around the removed time ranges, and the beat's
+ * extent shrinks to the words that remain. Each surviving run is clamped to
+ * the words still inside it, so the program stops on the last kept word
+ * rather than running into the removed span's silence. Null when nothing
+ * remains.
+ */
+export function cutWordsFromBeat(
+  beat: Beat,
+  spans: WordSpan[]
+): { beat: Beat | null; removed: Array<{ start: number; end: number; text: string }> } {
+  const drop = new Set<number>();
+  const removed: Array<{ start: number; end: number; text: string }> = [];
+  for (const span of spans) {
+    const first = Math.max(0, span.wordStart);
+    const last = Math.min(beat.words.length, span.wordEnd);
+    if (last <= first) continue;
+    for (let index = first; index < last; index += 1) drop.add(index);
+    const words = beat.words.slice(first, last);
+    removed.push({
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      text: words.map((word) => word.text.trim()).join(' '),
+    });
+  }
+  const words = beat.words.filter((_, index) => !drop.has(index));
+  if (words.length === 0) return { beat: null, removed };
+  let runs = beat.runs.map((run) => ({ ...run }));
+  for (const range of [...removed].sort((a, b) => a.start - b.start)) {
+    const next: SpeechRun[] = [];
+    for (const run of runs) {
+      if (range.end <= run.start + EPSILON || range.start >= run.end - EPSILON) {
+        next.push(run);
+        continue;
+      }
+      if (range.start > run.start + EPSILON) next.push({ start: run.start, end: range.start });
+      if (range.end < run.end - EPSILON) next.push({ start: range.end, end: run.end });
+    }
+    runs = next;
+  }
+  const kept: SpeechRun[] = [];
+  for (const run of runs) {
+    const inside = words.filter(
+      (word) => word.end > run.start + EPSILON && word.start < run.end - EPSILON
+    );
+    if (inside.length === 0) continue;
+    const start = Math.max(run.start, inside[0]!.start);
+    const end = Math.min(run.end, inside[inside.length - 1]!.end);
+    if (end - start > EPSILON) kept.push({ start, end });
+  }
+  return {
+    beat: {
+      ...beat,
+      words,
+      start: words[0]!.start,
+      end: words[words.length - 1]!.end,
+      runs: kept,
+    },
+    removed,
+  };
+}

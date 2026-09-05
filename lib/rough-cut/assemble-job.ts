@@ -6,6 +6,8 @@ import { applyCameraRole, assemblyFromSnapshot, orderClipsForLinearLayout } from
 import { LOW_ATTRIBUTION_CONFIDENCE, pickHighestRmsCamera, type RmsSample } from './attribute';
 import {
   analyseSpeech,
+  beatText,
+  cutWordsFromBeat,
   detectFalseStarts,
   type Beat,
   type SourceCut,
@@ -47,7 +49,14 @@ import {
   scriptTakeGroups,
 } from './script';
 import { computeTimecodeOffsets } from './sync';
-import { rejectedTakeCuts, selectTakes, TAKE_WINDOW_SECONDS, type TakeCandidate } from './takes';
+import {
+  rejectedTakeCut,
+  replacedTakeCut,
+  resolveTakes,
+  selectTakes,
+  TAKE_WINDOW_SECONDS,
+  type TakeCandidate,
+} from './takes';
 import { fillerWordsFor } from './text';
 import {
   assessTranscriptQuality,
@@ -501,7 +510,8 @@ async function editorialPass(
   );
   const language = transcripts.find((material) => material.language)?.language ?? null;
   const fillers = fillerWordsFor(language);
-  const scriptLines = options.script ? parseScript(options.script, fillers) : [];
+  const script = options.script ? parseScript(options.script, fillers) : null;
+  const scriptLines = script?.lines ?? [];
   if (options.script && scriptLines.length === 0) {
     warnings.push({
       code: 'script-unreadable',
@@ -546,9 +556,10 @@ async function editorialPass(
     }
     // With a script, a beat is a take of the line it reads however it is
     // worded, and the reading closest to the line wins.
-    const alignments = useScript
-      ? candidates.map((candidate) => alignBeatToScript(candidate.beat, scriptLines, fillers))
-      : [];
+    const alignments =
+      useScript && script
+        ? candidates.map((candidate) => alignBeatToScript(candidate.beat, script, fillers))
+        : [];
     alignments.forEach((alignment, index) => {
       candidates[index]!.scriptMatch = alignment.score;
     });
@@ -568,24 +579,55 @@ async function editorialPass(
         candidate.energy = await rmsAt(deps, wav, candidate.beat.start, candidate.beat.end);
       }
     }
-    const rejected = new Set<Beat>();
-    for (const decision of selectTakes(candidates, options_)) {
-      cuts.push(...rejectedTakeCuts(candidates, decision));
-      for (const index of decision.group) {
-        if (index !== decision.keptIndex) rejected.add(candidates[index]!.beat);
+    // A beat maps to the beat that replaces it: a shorter one when part of it
+    // was re-said elsewhere, or null when the whole take was rejected.
+    const replacements = new Map<Beat, Beat | null>();
+    let duplicatesKept = 0;
+    for (const resolution of resolveTakes(candidates, {
+      ...options_,
+      scriptLines: useScript ? scriptLines : undefined,
+      alignments: useScript ? alignments : undefined,
+    })) {
+      for (const entry of resolution.rejected) {
+        cuts.push(rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution));
+        replacements.set(candidates[entry.index]!.beat, null);
       }
+      for (const entry of resolution.kept) {
+        if (entry.cuts.length === 0) continue;
+        const candidate = candidates[entry.index]!;
+        const result = cutWordsFromBeat(candidate.beat, entry.cuts);
+        result.removed.forEach((removed, position) => {
+          cuts.push(
+            replacedTakeCut(candidates, entry.index, entry.cuts[position]!.coveredBy, removed)
+          );
+        });
+        replacements.set(candidate.beat, result.beat);
+      }
+      duplicatesKept += resolution.duplicatesKept;
     }
     for (const [versionId, beats] of beatsByVersion) {
       beatsByVersion.set(
         versionId,
-        beats.filter((beat) => !rejected.has(beat))
+        beats.flatMap((beat) => {
+          if (!replacements.has(beat)) return [beat];
+          const replacement = replacements.get(beat);
+          return replacement ? [replacement] : [];
+        })
       );
     }
+    if (duplicatesKept > 0) {
+      warnings.push({
+        code: 'take-overlap-kept',
+        message: `${duplicatesKept} line${duplicatesKept === 1 ? ' is' : 's are'} said twice in the cut because the takes overlap in the middle; review them`,
+      });
+    }
     if (useScript) {
-      const keptAlignments = alignments.filter(
-        (_, index) => !rejected.has(candidates[index]!.beat)
+      const kept = candidates.flatMap((candidate, index) =>
+        replacements.get(candidate.beat) === null
+          ? []
+          : [{ alignment: alignments[index]!, text: beatText(candidate.beat) }]
       );
-      warnings.push(...scriptCoverageWarnings(scriptLines, keptAlignments));
+      warnings.push(...scriptCoverageWarnings(scriptLines, kept));
     }
   }
 

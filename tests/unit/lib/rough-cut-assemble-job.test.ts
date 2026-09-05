@@ -1122,6 +1122,102 @@ describe('assembleRoughCut editorial pass', () => {
     ).toContain('Our product does the heavy lifting.');
   });
 
+  it('splices a re-said tail out of the long take and reports it as replaced', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 120 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'in this video we look at how um founders raise their seed round faster than before'
+          ),
+          spokenSegment(30, 'how founders raise their seed round faster than before'),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    const rejected = result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE');
+    expect(rejected).toHaveLength(1);
+    expect(rejected?.[0]?.reason.summary).toMatch(/replaced by the take at 30/i);
+    expect(rejected?.[0]?.transcriptText).toBe(
+      'how um founders raise their seed round faster than before'
+    );
+    expect(result?.decisions?.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual([
+      [1, expect.any(Number)],
+      [30, expect.any(Number)],
+    ]);
+    // The long take now stops before the word "how", the seventh word of the
+    // segment, which the helper starts at 1 + 6 × 0.4.
+    const firstOut = result?.decisions?.edits[0]?.outSeconds ?? 0;
+    expect(firstOut).toBeLessThanOrEqual(1 + 6 * 0.4);
+  });
+
+  it('warns when two takes overlap in the middle and both stay in the cut', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      // The script is what groups these two: they share one line and nothing else.
+      script: 'Our product does the heavy lifting.',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [
+          spokenSegment(
+            1,
+            'we help founders raise faster our product does the heavy lifting and we ship on time'
+          ),
+          spokenSegment(
+            40,
+            'the team is twelve people our product does the heavy lifting across two offices in europe'
+          ),
+        ],
+      },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The shared line sits in the middle of both takes, so neither can give it
+    // up at an edge and nothing is cut; the operator is told instead.
+    expect(result?.decisions?.cuts?.filter((cut) => cut.reason.code === 'REJECTED_TAKE')).toEqual(
+      []
+    );
+    expect(result?.decisions?.edits.map((edit) => edit.inSeconds)).toEqual([1, 40]);
+    expect(result?.warnings.find((warning) => warning.code === 'take-overlap-kept')?.message).toBe(
+      '1 line is said twice in the cut because the takes overlap in the middle; review them'
+    );
+  });
+
+  it('warns about a script it cannot read', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD'),
+      script: 'ok\nno',
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 60 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: { 't-a': [spokenSegment(1, 'we help founders raise faster')] },
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    expect(h.persisted()?.warnings.map((warning) => warning.code)).toContain('script-unreadable');
+  });
+
   it('ignores the script when the brief does not select takes', async () => {
     const h = harness({
       layout: 'LINEAR',

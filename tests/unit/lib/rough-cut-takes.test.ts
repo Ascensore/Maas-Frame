@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { analyseSpeech, type Beat } from '@/lib/rough-cut/beats';
+import { analyseSpeech, cutWordsFromBeat, type Beat } from '@/lib/rough-cut/beats';
 import { SILENCE_AGGRESSIVENESS } from '@/lib/rough-cut/brief';
-import { rankingWithScript } from '@/lib/rough-cut/script';
+import {
+  alignBeatToScript,
+  parseScript,
+  rankingWithScript,
+  scriptTakeGroups,
+} from '@/lib/rough-cut/script';
 import {
   cleanlinessScore,
+  coverageOf,
   groupTakes,
-  rejectedTakeCuts,
+  rejectedTakeCut,
+  replacedTakeCut,
+  resolveTakes,
   selectTakes,
   type TakeCandidate,
 } from '@/lib/rough-cut/takes';
@@ -166,6 +174,27 @@ describe('groupTakes', () => {
     const b = candidate(15, 'the platform handles all of the boring parts');
     expect(groupTakes([a, b], { fillers: EN })).toEqual([]);
     expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[0, 1]] })).toEqual([[0, 1]]);
+    // An index with no candidate drops out; the members around it still union.
+    expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[9, 0, 1]] })).toEqual([[0, 1]]);
+    expect(groupTakes([a, b], { fillers: EN, alsoGroup: [[0, 9]] })).toEqual([]);
+  });
+
+  it('will not call a stock phrase a take of a beat several times its length', () => {
+    const phrase = candidate(120, 'at the end of the day');
+    // Six content tokens wholly contained in both beats. Containment alone
+    // would group either pair; only the length ratio tells them apart.
+    const long = candidate(
+      0,
+      'we spent a long time thinking about how to price this new product and we decided that at the end of the day simplicity wins'
+    );
+    expect(groupTakes([long, phrase], { fillers: EN })).toEqual([]);
+
+    const shorter = candidate(
+      0,
+      'we thought about it a while and we decided that at the end of the day simplicity wins'
+    );
+    // Eighteen tokens against six is exactly the ratio the guard allows.
+    expect(groupTakes([shorter, phrase], { fillers: EN })).toEqual([[0, 1]]);
   });
 });
 
@@ -254,28 +283,254 @@ describe('selectTakes', () => {
     expect(decisions[0]!.keptIndex).toBe(1);
     expect(decisions[0]!.scores.get(1)?.scriptMatch).toBe(1);
   });
+});
 
-  it('turns the losers into REJECTED_TAKE cuts that name the kept take', () => {
+describe('resolveTakes', () => {
+  const options = {
+    fillers: EN,
+    ranking: ['cleanliness', 'energy'] as const,
+    longPauseSeconds: MEDIUM.maxKeptGapInsideBeatSeconds,
+  };
+
+  it('measures how much of a beat a reference already says and where', () => {
+    const tokens = ['we', 'help', 'founders', 'raise', 'faster', 'thanks', 'for', 'watching'];
+    const reference = new Set(['thanks for watching']);
+    expect(coverageOf(tokens, reference)).toEqual({ fraction: 3 / 8, first: 5, last: 7 });
+    expect(coverageOf(tokens, new Set())).toEqual({ fraction: 0, first: null, last: null });
+  });
+
+  it('replaces the tail of a long take with a cleaner retake of that tail', () => {
+    const long = candidate(
+      0,
+      'in this video we look at how um founders raise their seed round faster than before'
+    );
+    const retake = candidate(30, 'how founders raise their seed round faster than before');
+    const [resolution] = resolveTakes([long, retake], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.kept.map((entry) => entry.index)).toEqual([0, 1]);
+    // The retake covers the long take's last nine tokens ("how … before"), a
+    // suffix that leaves six, so the long take gives that tail up instead of
+    // losing the six tokens only it says.
+    const spliced = resolution?.kept.find((entry) => entry.index === 0)?.cuts;
+    expect(spliced).toHaveLength(1);
+    expect(spliced?.[0]).toMatchObject({ coveredBy: 1 });
+    expect(long.beat.words[spliced![0]!.wordStart]?.text).toBe('how');
+    expect(spliced?.[0]?.wordEnd).toBe(long.beat.words.length);
+    expect(resolution?.duplicatesKept).toBe(0);
+  });
+
+  it('rejects a retake of a line in the middle of a longer take, keeping the long take intact', () => {
+    const long = candidate(
+      0,
+      'we help founders raise faster our product does the heavy lifting thanks for watching everyone'
+    );
+    const retake = candidate(40, 'our product does the heavy lifting');
+    const [resolution] = resolveTakes([long, retake], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.kept).toEqual([{ index: 0, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 1, coveredBy: 0 }]);
+  });
+
+  it('trims the flubbed line off the lower-ranked of two adjacent beats that share it', () => {
+    const flub = candidate(
+      0,
+      'we help founders raise faster our um product does um the heavy lifting'
+    );
+    const good = candidate(12, 'our product does the heavy lifting thanks for watching everyone');
+    // Four shared trigrams out of nine and eight: Jaccard 4/13 and containment
+    // 4/8 are both under their thresholds, so only a script signal groups these
+    // two. `alsoGroup` stands in for it here.
+    expect(groupTakes([flub, good], { fillers: EN })).toEqual([]);
+    const [resolution] = resolveTakes([flub, good], {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+    expect(resolution?.rejected).toEqual([]);
+    const trimmed = resolution?.kept.find((entry) => entry.index === 0)?.cuts;
+    expect(trimmed).toHaveLength(1);
+    expect(flub.beat.words[trimmed![0]!.wordStart]?.text).toBe('our');
+    expect(trimmed?.[0]?.wordEnd).toBe(flub.beat.words.length);
+    expect(trimmed?.[0]?.coveredBy).toBe(1);
+    expect(resolution?.kept.find((entry) => entry.index === 1)?.cuts).toEqual([]);
+  });
+
+  it('replaces only the anchor edge the pickup is next to on the timeline', () => {
+    const script = parseScript(
+      'We help founders raise faster.\nOur product does the heavy lifting.\nThanks for watching everyone today.',
+      EN
+    );
     const candidates = [
-      candidate(0, `um ${line}`, { versionId: 'take-1' }),
-      candidate(30, line, { versionId: 'take-2' }),
+      candidate(
+        0,
+        'we help um founders raise faster our product does um the heavy lifting thanks for um watching everyone today'
+      ),
+      candidate(40, 'we help founders raise faster'),
+      candidate(50, 'our product does the heavy lifting'),
+      candidate(60, 'thanks for watching everyone today'),
     ];
-    const [decision] = selectTakes(candidates, {
-      fillers: EN,
-      ranking: ['cleanliness', 'energy'],
-      longPauseSeconds: 0.8,
+    const alignments = candidates.map((entry) => alignBeatToScript(entry.beat, script, EN));
+    expect(alignments.map((alignment) => alignment.lines)).toEqual([[0, 1, 2], [0], [1], [2]]);
+
+    const [resolution] = resolveTakes(candidates, {
+      ...options,
+      ranking: [...options.ranking],
+      scriptLines: script.lines,
+      alignments,
+      // The script is what says these four are takes of the same lines; their
+      // wording alone groups only the second pickup with the full read.
+      alsoGroup: scriptTakeGroups(candidates, alignments, 600),
     });
 
-    const cuts = rejectedTakeCuts(candidates, decision!);
-    expect(cuts).toHaveLength(1);
-    expect(cuts[0]).toMatchObject({
+    // Every pickup is cleaner than the full read, but the program keeps source
+    // order: only the last line's pickup sits where the material it replaces
+    // does, so only it may replace the full read's tail.
+    expect(resolution?.rejected).toEqual([
+      { index: 2, coveredBy: 0 },
+      { index: 1, coveredBy: 0 },
+    ]);
+    expect(resolution?.kept.map((entry) => entry.index)).toEqual([0, 3]);
+    expect(resolution?.kept.find((entry) => entry.index === 3)?.cuts).toEqual([]);
+    const spliced = resolution?.kept.find((entry) => entry.index === 0)?.cuts;
+    expect(spliced).toEqual([
+      { wordStart: 13, wordEnd: candidates[0]!.beat.words.length, coveredBy: 3 },
+    ]);
+    expect(candidates[0]!.beat.words[13]?.text).toBe('thanks');
+    expect(resolution?.duplicatesKept).toBe(0);
+  });
+
+  it('trims the shared head off the lower-ranked take that comes after it', () => {
+    const clean = candidate(0, 'we help founders raise faster our product does the heavy lifting');
+    const messy = candidate(
+      20,
+      'our um product does um the heavy lifting thanks for watching everyone today'
+    );
+    // Four shared trigrams out of nine each: under both thresholds, so the
+    // group stands in for the script signal here too.
+    const [resolution] = resolveTakes([clean, messy], {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+    expect(resolution?.rejected).toEqual([]);
+    const trimmed = resolution?.kept.find((entry) => entry.index === 1)?.cuts;
+    // The head is dropped from the later take, so the line survives where it
+    // was first said and the take keeps the material only it has.
+    expect(trimmed).toEqual([{ wordStart: 0, wordEnd: 8, coveredBy: 0 }]);
+    expect(messy.beat.words[8]?.text).toBe('thanks');
+    expect(resolution?.duplicatesKept).toBe(0);
+  });
+
+  it('keeps a shared tail that the take before it already said, and counts it', () => {
+    const clean = candidate(
+      0,
+      'our product does the heavy lifting thanks for watching everyone today'
+    );
+    const messy = candidate(
+      20,
+      'we help um founders raise faster our um product does the heavy lifting'
+    );
+    const [resolution] = resolveTakes([clean, messy], {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+    // Trimming the later take's tail would leave the shared line standing
+    // before the material that led into it, so both takes are kept whole and
+    // the duplicate is reported instead.
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.kept).toEqual([
+      { index: 0, cuts: [] },
+      { index: 1, cuts: [] },
+    ]);
+    expect(resolution?.duplicatesKept).toBe(1);
+  });
+
+  it('still rejects a plain duplicate and keeps the cleaner one', () => {
+    const first = candidate(0, 'we help um founders raise faster today');
+    const second = candidate(10, 'we help founders raise faster today');
+    const [resolution] = resolveTakes([first, second], {
+      ...options,
+      ranking: [...options.ranking],
+    });
+    expect(resolution?.kept).toEqual([{ index: 1, cuts: [] }]);
+    expect(resolution?.rejected).toEqual([{ index: 0, coveredBy: 1 }]);
+  });
+
+  it('turns a spliced span into a cut that names the take that replaced it', () => {
+    const candidates = [
+      candidate(
+        0,
+        'in this video we look at how um founders raise their seed round faster than before',
+        {
+          versionId: 'take-1',
+        }
+      ),
+      candidate(30, 'how founders raise their seed round faster than before', {
+        versionId: 'take-2',
+      }),
+    ];
+    const [resolution] = resolveTakes(candidates, { ...options, ranking: [...options.ranking] });
+    const span = resolution!.kept.find((entry) => entry.index === 0)!.cuts[0]!;
+    const removed = cutWordsFromBeat(candidates[0]!.beat, [span]).removed[0]!;
+
+    expect(replacedTakeCut(candidates, 0, span.coveredBy, removed)).toEqual({
+      versionId: 'take-1',
+      start: removed.start,
+      end: removed.end,
+      code: 'REJECTED_TAKE',
+      summary:
+        'Replaced by the take at 30.0s (“how founders raise their seed round faster than before”)',
+      text: 'how um founders raise their seed round faster than before',
+    });
+  });
+
+  it('names the group position of a rejected member and of the take that covers it', () => {
+    const candidates = [
+      candidate(0, 'we help um founders raise faster today', { versionId: 'take-1' }),
+      candidate(10, 'we help founders raise faster today', { versionId: 'take-2' }),
+    ];
+    const [resolution] = resolveTakes(candidates, { ...options, ranking: [...options.ranking] });
+    const entry = resolution!.rejected[0]!;
+
+    const cut = rejectedTakeCut(candidates, entry.index, entry.coveredBy, resolution!);
+    expect(cut).toMatchObject({
       versionId: 'take-1',
       start: 0,
       code: 'REJECTED_TAKE',
-      summary: `Take 1 of 2; kept take 2 (“${line}”)`,
-      text: `um ${line}`,
+      summary: 'Take 1 of 2; kept take 2 (“we help founders raise faster today”)',
+      text: 'we help um founders raise faster today',
     });
-    // Ten words at 0.4 s pitch end at 9 × 0.4 + 0.3.
-    expect(cuts[0]!.end).toBeCloseTo(3.9, 6);
+    // Seven words at 0.4 s pitch end at 6 × 0.4 + 0.3.
+    expect(cut.end).toBeCloseTo(2.7, 6);
+  });
+
+  it('keeps both takes and counts the duplicate when neither can give the line up', () => {
+    // Each take says the shared line in its middle, so no edge cut exists and
+    // neither is redundant: the cut says the line twice and the caller warns.
+    const first = candidate(
+      0,
+      'we help founders raise faster our product does the heavy lifting and we ship on time'
+    );
+    const second = candidate(
+      40,
+      'the team is twelve people our product does the heavy lifting across two offices in europe'
+    );
+    const [resolution] = resolveTakes([first, second], {
+      ...options,
+      ranking: [...options.ranking],
+      alsoGroup: [[0, 1]],
+    });
+    expect(resolution?.rejected).toEqual([]);
+    expect(resolution?.kept.map((entry) => [entry.index, entry.cuts])).toEqual([
+      [0, []],
+      [1, []],
+    ]);
+    expect(resolution?.duplicatesKept).toBe(1);
   });
 });
