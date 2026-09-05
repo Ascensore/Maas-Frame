@@ -9,6 +9,8 @@ import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
 import { assembleRoughCut, fillTranscriptSpeakers } from './assemble-rough-cut';
 import { claimDueMediaJobs } from '../lib/media-job-queue';
+import { upsertCaptionTrack } from '../lib/rough-cut/caption-track';
+import { serializeWebVtt } from '../lib/rough-cut/vtt';
 import { importDriveFile } from './import-drive';
 import { materializeRoughCut } from './materialize-rough-cut';
 import {
@@ -512,67 +514,6 @@ async function transcribeOpenAiAudio(
   }
 }
 
-function toVttTime(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  const secs = Math.floor(clamped % 60);
-  const millis = Math.round((clamped - Math.floor(clamped)) * 1000);
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
-}
-
-function serializeWebVtt(
-  segments: Array<{ start: number; end: number; text: string }>
-): string {
-  const body = segments
-    .map((segment) => `${toVttTime(segment.start)} --> ${toVttTime(segment.end)}\n${segment.text}`)
-    .join('\n\n');
-  return `WEBVTT\n\n${body}\n`;
-}
-
-async function upsertCaptionTrack(
-  versionId: string,
-  language: string,
-  vtt: string
-): Promise<void> {
-  const owner = await pool.query(
-    `SELECT p."ownerId" AS owner_id
-     FROM video_versions vv
-     JOIN videos v ON v.id = vv."videoParentId"
-     JOIN projects p ON p.id = v."projectId"
-     WHERE vv.id = $1`,
-    [versionId]
-  );
-  const billedUserId = owner.rows[0]?.owner_id as string | undefined;
-  if (!billedUserId) return;
-
-  const filename = `${randomUUID()}.vtt`;
-  const sourceUrl = `/api/upload/subtitle/${filename}`;
-  const body = Buffer.from(vtt, 'utf8');
-  await uploadObject(`subtitles/${filename}`, body, 'text/vtt');
-
-  const existing = await pool.query(
-    `SELECT id FROM video_subtitles WHERE "versionId" = $1 AND language = $2`,
-    [versionId, language]
-  );
-  const label = `Transcript (${language})`;
-  if (existing.rows[0]) {
-    await pool.query(
-      `UPDATE video_subtitles
-       SET "sourceUrl" = $2, size_bytes = $3, label = $4, "updatedAt" = NOW()
-       WHERE id = $1`,
-      [existing.rows[0].id, sourceUrl, body.length, label]
-    );
-    return;
-  }
-  await pool.query(
-    `INSERT INTO video_subtitles
-       (id, "versionId", language, label, "sourceUrl", size_bytes, "billedUserId", "createdAt", "updatedAt")
-     VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, NOW(), NOW())`,
-    [versionId, language, label, sourceUrl, body.length, billedUserId]
-  );
-}
-
 async function setTranscriptStatus(options: {
   transcriptId?: string;
   versionId: string;
@@ -681,7 +622,10 @@ async function transcribe(versionId: string, payload: { language?: string; trans
     }
 
     try {
-      await upsertCaptionTrack(versionId, detected, serializeWebVtt(result.segments));
+      await upsertCaptionTrack(
+        { pool, uploadObject },
+        { versionId, language: detected, vtt: serializeWebVtt(result.segments) }
+      );
     } catch (error) {
       console.error('caption upsert failed', error);
     }
