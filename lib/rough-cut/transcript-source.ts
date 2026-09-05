@@ -55,7 +55,16 @@ export type TranscriptFallbackReason = 'missing' | 'failed' | 'timed-out' | 'emp
 export type TranscriptSourceDecision =
   | { kind: 'use'; transcriptId: string; versionId: string }
   | { kind: 'wait'; transcriptId: string; versionId: string }
-  | { kind: 'fallback'; reason: Exclude<TranscriptFallbackReason, 'empty'> };
+  /**
+   * `versionId` is the candidate whose row produced the reason, so a caller
+   * can name the clip the operator has to fix. It is null for `missing`,
+   * where no candidate has a row at all.
+   */
+  | {
+      kind: 'fallback';
+      reason: Exclude<TranscriptFallbackReason, 'empty'>;
+      versionId: string | null;
+    };
 
 export function parseTranscriptRowStatus(value: unknown): TranscriptRowStatus | null {
   return TRANSCRIPT_ROW_STATUSES.includes(value as TranscriptRowStatus)
@@ -116,22 +125,24 @@ export function decideTranscriptSource(options: {
   const limit = options.waitLimitSeconds ?? TRANSCRIPT_WAIT_LIMIT_SECONDS;
   const canWait = ageSeconds < limit;
 
-  let sawInProgress = false;
-  let sawFailed = false;
+  let inProgressVersionId: string | null = null;
+  let failedVersionId: string | null = null;
   for (const versionId of options.candidateVersionIds) {
     for (const row of byVersion.get(versionId) ?? []) {
       if (isInProgress(row.status)) {
         if (canWait) return { kind: 'wait', transcriptId: row.id, versionId };
-        sawInProgress = true;
+        if (!inProgressVersionId) inProgressVersionId = versionId;
       } else if (row.status === 'FAILED') {
-        sawFailed = true;
+        if (!failedVersionId) failedVersionId = versionId;
       }
     }
   }
 
-  if (sawInProgress) return { kind: 'fallback', reason: 'timed-out' };
-  if (sawFailed) return { kind: 'fallback', reason: 'failed' };
-  return { kind: 'fallback', reason: 'missing' };
+  if (inProgressVersionId) {
+    return { kind: 'fallback', reason: 'timed-out', versionId: inProgressVersionId };
+  }
+  if (failedVersionId) return { kind: 'fallback', reason: 'failed', versionId: failedVersionId };
+  return { kind: 'fallback', reason: 'missing', versionId: null };
 }
 
 function wordCount(segment: TranscriptSegmentRow): number {

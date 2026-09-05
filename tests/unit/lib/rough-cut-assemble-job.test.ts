@@ -105,6 +105,8 @@ function harness(options: {
   briefSnapshot?: unknown;
   /** The copy the speaker read, stored on the run. */
   script?: string | null;
+  /** Rows the dedupe guard sees, i.e. a transcription already on its way. */
+  queuedTranscribeJobs?: Array<{ id: string }>;
 }) {
   const queries: Query[] = [];
   const runs: string[][] = [];
@@ -141,6 +143,11 @@ function harness(options: {
     if (sql.includes('INSERT INTO transcripts')) {
       return { rows: [{ id: `t-${params[0] as string}` }] };
     }
+    // Nothing is already queued unless a test says so, so the enqueue is not
+    // skipped by its own dedupe guard.
+    if (sql.includes('FROM media_jobs')) {
+      return { rows: options.queuedTranscribeJobs ?? [] };
+    }
     return { rows: [] };
   };
 
@@ -170,7 +177,13 @@ function harness(options: {
   };
 
   const deps: AssembleDeps = {
-    pool: { query } as unknown as Pool,
+    // The transcription enqueue runs in a transaction on its own client. It
+    // shares this `query`, so BEGIN/COMMIT and its inserts land in `queries`
+    // alongside everything else.
+    pool: {
+      query,
+      connect: async () => ({ query, release: () => {} }),
+    } as unknown as Pool,
     run,
     downloadObject: async (key) => {
       downloads.push(key);
@@ -863,9 +876,11 @@ describe('assembleRoughCut requires the transcript when transcription is on', ()
     const h = harness({
       layout: 'MULTICAM',
       createdAt: ONE_MINUTE_AGO,
+      // Stored with the wide camera second, so picking the first clip rather
+      // than the one whose role is WIDE would transcribe Cam A instead.
       videos: [
-        video({ version_id: 'ver-wide', title: 'WIDE' }),
-        video({ version_id: 'ver-a', title: 'Cam A' }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 0 }),
+        video({ version_id: 'ver-wide', title: 'WIDE', position: 1 }),
       ],
       transcripts: [],
     });
@@ -874,6 +889,48 @@ describe('assembleRoughCut requires the transcript when transcription is on', ()
 
     expect(h.transcriptInserts().map((entry) => entry.params[0])).toEqual(['ver-wide']);
     expect(h.downloads).toHaveLength(0);
+  });
+
+  it('names the camera whose transcription failed, not the wide one', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'WIDE', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      // The wide camera has no row at all; Cam A's transcription is the one
+      // that failed, so the wide camera's name would send the operator to the
+      // wrong clip.
+      transcripts: [{ id: 't-a', version_id: 'ver-a', status: 'FAILED', created_at: NOW_DATE() }],
+    });
+
+    await expect(assembleRoughCut(h.deps, 'cut-1')).rejects.toThrow(
+      /Transcription failed for Cam A/
+    );
+
+    expect(h.failed()?.params[1]).toBe(
+      'Transcription failed for Cam A; re-run or upload its transcript, then generate the cut again'
+    );
+    expect(h.transcriptInserts()).toHaveLength(0);
+  });
+
+  it('does not queue a second transcription when one is already on its way', async () => {
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A' })],
+      transcripts: [],
+      queuedTranscribeJobs: [{ id: 'job-1' }],
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    // The row is still upserted, since the parked run has to have something
+    // to wait on; only the duplicate jobs are skipped.
+    expect(h.transcriptInserts()).toHaveLength(1);
+    const kinds = h.mediaJobInserts().map((entry) => /'(\w+)'/.exec(entry.sql)?.[1]);
+    expect(kinds).toEqual(['ASSEMBLE_ROUGH_CUT']);
   });
 });
 

@@ -260,30 +260,53 @@ async function deferForTranscript(
  * a PENDING transcript row, audio extraction, then the transcribe job. The
  * worker that runs this job is the worker that will transcribe, so the
  * run parks itself and comes back when the row is READY.
+ *
+ * All of it goes in one transaction: a row with no jobs behind it would
+ * leave the run waiting on a transcript nobody is writing. The row is
+ * upserted either way, since the parked run needs something to wait on,
+ * but the jobs are skipped when a transcription is already on its way.
  */
 async function enqueueTranscription(deps: AssembleDeps, versionId: string): Promise<void> {
   const provider = (process.env.OPENFRAME_TRANSCRIPTION_PROVIDER || 'whisper-local')
     .trim()
     .toLowerCase();
-  const upsert = await deps.pool.query(
-    `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, $1, 'und', $2, 'PENDING', '', NULL, NOW(), NOW())
-     ON CONFLICT (version_id, language)
-     DO UPDATE SET status = 'PENDING', error = NULL, provider = EXCLUDED.provider, updated_at = NOW()
-     RETURNING id`,
-    [versionId, provider]
-  );
-  const transcriptId = upsert.rows[0]?.id;
-  await deps.pool.query(
-    `INSERT INTO media_jobs (id, kind, status, version_id, attempts, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, 'EXTRACT_AUDIO', 'PENDING', $1, 0, NOW(), NOW())`,
-    [versionId]
-  );
-  await deps.pool.query(
-    `INSERT INTO media_jobs (id, kind, status, version_id, payload, attempts, created_at, updated_at)
-     VALUES (gen_random_uuid()::text, 'TRANSCRIBE', 'PENDING', $1, $2::jsonb, 0, NOW(), NOW())`,
-    [versionId, JSON.stringify({ language: 'und', transcriptId: transcriptId ?? null })]
-  );
+  const client = await deps.pool.connect();
+  try {
+    await client.query('BEGIN');
+    const upsert = await client.query(
+      `INSERT INTO transcripts (id, version_id, language, provider, status, search_text, error, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'und', $2, 'PENDING', '', NULL, NOW(), NOW())
+       ON CONFLICT (version_id, language)
+       DO UPDATE SET status = 'PENDING', error = NULL, provider = EXCLUDED.provider, updated_at = NOW()
+       RETURNING id`,
+      [versionId, provider]
+    );
+    const transcriptId = upsert.rows[0]?.id;
+    const queued = await client.query(
+      `SELECT id FROM media_jobs
+       WHERE version_id = $1 AND kind = 'TRANSCRIBE' AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+       LIMIT 1`,
+      [versionId]
+    );
+    if (!queued.rows[0]) {
+      await client.query(
+        `INSERT INTO media_jobs (id, kind, status, version_id, attempts, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, 'EXTRACT_AUDIO', 'PENDING', $1, 0, NOW(), NOW())`,
+        [versionId]
+      );
+      await client.query(
+        `INSERT INTO media_jobs (id, kind, status, version_id, payload, attempts, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, 'TRANSCRIBE', 'PENDING', $1, $2::jsonb, 0, NOW(), NOW())`,
+        [versionId, JSON.stringify({ language: 'und', transcriptId: transcriptId ?? null })]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function loadTranscriptRows(
@@ -337,7 +360,7 @@ async function resolveTranscriptSlot(
   decision: Exclude<TranscriptSourceDecision, { kind: 'wait' }>,
   rows: TranscriptRow[]
 ): Promise<TranscriptSlot> {
-  if (decision.kind === 'fallback') return decision;
+  if (decision.kind === 'fallback') return { kind: 'fallback', reason: decision.reason };
   const segments = await loadTranscriptSegments(deps, decision.transcriptId);
   if (segments.length === 0) return { kind: 'fallback', reason: 'empty' };
   const row = rows.find((entry) => entry.id === decision.transcriptId);
@@ -398,7 +421,9 @@ async function materialFor(
       if (quality.weak) warnings.push(weakTranscriptWarning(quality, options.label));
       return { kind: 'transcript', clip, analysis, language: slot.language };
     }
-    if (options.required) throw new Error(transcriptRequiredError('empty', options.label));
+    if (options.required) {
+      throw new Error(transcriptRequiredError('empty', options.label, options.waitLimitSeconds));
+    }
     fallbackReason = 'empty';
   } else {
     if (options.required) {
@@ -813,14 +838,23 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       }
       if (!required || decision.kind !== 'fallback') continue;
       // Transcription is on, so a clip without a transcript gets one now and
-      // the run waits; anything else the operator has to look at.
+      // the run waits; anything else the operator has to look at. "Missing"
+      // means no candidate has a row, so the transcription goes to the first
+      // candidate (the wide camera for multicam); the other reasons name the
+      // candidate whose own row is the problem.
       const first = slotCandidates[index]![0]!;
       if (decision.reason === 'missing' && ageSeconds < waitLimitSeconds) {
         await enqueueTranscription(deps, first);
         waitingTitles.push(titleOf(first));
         continue;
       }
-      throw new Error(transcriptRequiredError(decision.reason, titleOf(first), waitLimitSeconds));
+      throw new Error(
+        transcriptRequiredError(
+          decision.reason,
+          titleOf(decision.versionId ?? first),
+          waitLimitSeconds
+        )
+      );
     }
     if (waitingTitles.length > 0) {
       await deferForTranscript(deps, {
@@ -836,10 +870,12 @@ export async function assembleRoughCut(deps: AssembleDeps, roughCutId: string): 
       if (decision.kind === 'wait') continue;
       const slot = await resolveTranscriptSlot(deps, decision, transcriptRows);
       if (required && slot.kind === 'fallback') {
+        // Only reachable for a READY transcript with no segment rows, so the
+        // clip to name is the one whose transcript was read.
         throw new Error(
           transcriptRequiredError(
             slot.reason,
-            titleOf(slotCandidates[index]![0]!),
+            titleOf(decision.versionId ?? slotCandidates[index]![0]!),
             waitLimitSeconds
           )
         );
