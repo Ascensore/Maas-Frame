@@ -43,9 +43,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!loaded.access.hasAccess) return apiErrors.forbidden('Access denied');
 
     // The review payload is several joins wider than the row, so the pane asks
-    // for it and every other caller keeps the cheap answer. The script is the
-    // editor's brief rather than part of the cut, so it travels with the same
-    // permission as the reviewer's decisions do.
+    // for it and every other caller keeps the cheap answer. It is an editing
+    // payload throughout — the script, the reviewer's decisions and the clips
+    // behind the program — so a caller who may only comment asking for it gets
+    // `review: null` rather than a hollowed out one.
     const includeReview = request.nextUrl.searchParams.get('include') === 'review';
     const canEdit = loaded.access.canEdit;
 

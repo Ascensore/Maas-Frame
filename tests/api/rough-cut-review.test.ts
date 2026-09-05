@@ -515,7 +515,7 @@ describe('GET /api/videos/[videoId]/rough-cut', () => {
     expect(payload.review.render.status).toBe('idle');
   });
 
-  it('keeps the editor’s working notes out of a commenter’s payload', async () => {
+  it('gives a commenter the row and no review at all', async () => {
     const seeded = await seedReviewableCut();
     await db.roughCut.update({
       where: { id: seeded.cut.id },
@@ -531,35 +531,19 @@ describe('GET /api/videos/[videoId]/rough-cut', () => {
 
     expect(response.status).toBe(200);
     const payload = await readData<{
-      roughCut: { script?: string; hasScript: boolean };
+      roughCut: { id: string; script?: string; hasScript: boolean };
       canEdit: boolean;
-      review: {
-        script: string | null;
-        overrides: unknown;
-        renderedOverrides: unknown;
-        applied: unknown;
-        decisions: { edits: unknown[] };
-        effective: { edits: Array<{ inSeconds: number; outSeconds: number }> };
-        sources: unknown[];
-        render: { status: string };
-        needsRender: boolean;
-      };
+      review: unknown;
     }>(response);
 
     expect(payload.canEdit).toBe(false);
-    expect(payload.review.script).toBeNull();
-    expect(payload.review.overrides).toBeNull();
-    expect(payload.review.renderedOverrides).toBeNull();
-    expect(payload.review.applied).toBeNull();
+    // Reviewing is editing: the decisions, the script and the clips behind the
+    // program are all working notes, so none of it travels rather than some.
+    expect(payload.review).toBeNull();
+    // The row still does, so a commenter can see the video came from a run.
+    expect(payload.roughCut.id).toBe(seeded.cut.id);
     expect(payload.roughCut.script).toBeUndefined();
     expect(payload.roughCut.hasScript).toBe(true);
-    // What a commenter is there for still arrives: the cut they are watching.
-    expect(payload.review.effective.edits.map((edit) => [edit.inSeconds, edit.outSeconds])).toEqual(
-      [[1, 10]]
-    );
-    expect(payload.review.sources).toHaveLength(1);
-    expect(payload.review.render.status).toBe('idle');
-    expect(payload.review.needsRender).toBe(true);
   });
 
   it('says so when a source the cut was made from has been deleted', async () => {
@@ -690,7 +674,7 @@ describe('GET /api/rough-cuts/[roughCutId]?include=review', () => {
     expect(payload.review.needsRender).toBe(false);
   });
 
-  it('withholds the script and the reviewer’s decisions from a commenter', async () => {
+  it('withholds the whole review from a commenter who asks for it', async () => {
     const seeded = await seedReviewableCut();
     await db.roughCut.update({
       where: { id: seeded.cut.id },
@@ -706,14 +690,14 @@ describe('GET /api/rough-cuts/[roughCutId]?include=review', () => {
 
     expect(response.status).toBe(200);
     const payload = await readData<{
-      roughCut: { script?: string; hasScript: boolean };
-      review: { script: string | null; overrides: unknown; effective: { edits: unknown[] } };
+      roughCut: { id: string; script?: string; hasScript: boolean };
+      review: unknown;
     }>(response);
+    expect(payload.roughCut.id).toBe(seeded.cut.id);
     expect(payload.roughCut.script).toBeUndefined();
     expect(payload.roughCut.hasScript).toBe(true);
-    expect(payload.review.script).toBeNull();
-    expect(payload.review.overrides).toBeNull();
-    expect(payload.review.effective.edits).toHaveLength(1);
+    // Asking for it by name is not permission to have it.
+    expect(payload.review).toBeNull();
   });
 });
 

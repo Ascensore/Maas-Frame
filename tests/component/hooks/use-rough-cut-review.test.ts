@@ -7,7 +7,9 @@ import {
 import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
 
 const VIDEO_ID = 'vid-out';
+const OTHER_VIDEO_ID = 'vid-two';
 const REVIEW_URL = `/api/videos/${VIDEO_ID}/rough-cut`;
+const OTHER_REVIEW_URL = `/api/videos/${OTHER_VIDEO_ID}/rough-cut`;
 const OVERRIDES_URL = '/api/rough-cuts/cut-1/overrides';
 const RENDER_URL = '/api/rough-cuts/cut-1/render';
 
@@ -17,6 +19,8 @@ const RENDER_URL = '/api/rough-cuts/cut-1/render';
  * convention shows up here as a failure instead of following along.
  */
 const ISLAND_KEY = 'ver-a:96-144';
+
+const EMPTY_DRAFT = { version: 1, cuts: {}, extraCuts: [] };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -107,7 +111,7 @@ function reviewFixture(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function roughCutFixture() {
+function roughCutFixture(overrides: Record<string, unknown> = {}) {
   return {
     id: 'cut-1',
     status: 'READY',
@@ -121,12 +125,20 @@ function roughCutFixture() {
     outputVideoId: VIDEO_ID,
     createdAt: '2026-09-03T00:00:00.000Z',
     updatedAt: '2026-09-03T00:00:00.000Z',
+    ...overrides,
   };
 }
 
-function payload(overrides: Record<string, unknown> = {}) {
+function payload(
+  reviewOverrides: Record<string, unknown> = {},
+  roughCutOverrides: Record<string, unknown> = {}
+) {
   return {
-    data: { roughCut: roughCutFixture(), review: reviewFixture(overrides), canEdit: true },
+    data: {
+      roughCut: roughCutFixture(roughCutOverrides),
+      review: reviewFixture(reviewOverrides),
+      canEdit: true,
+    },
   };
 }
 
@@ -171,7 +183,7 @@ describe('useRoughCutReview', () => {
     expect(result.current.isRoughCutOutput).toBe(true);
     expect(result.current.canEdit).toBe(true);
     expect(result.current.sources).toHaveLength(1);
-    expect(result.current.draft).toEqual({ version: 1, cuts: {}, extraCuts: [] });
+    expect(result.current.draft).toEqual(EMPTY_DRAFT);
     expect(result.current.isDirty).toBe(false);
     expect(result.current.error).toBeNull();
 
@@ -190,6 +202,47 @@ describe('useRoughCutReview', () => {
     expect(plain.result.current.roughCut).toBeNull();
     expect(plain.result.current.isRoughCutOutput).toBe(false);
 
+    // A commenter is served the row and no review at all; there is no pane to
+    // show them, so the tab must stay away.
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { roughCut: roughCutFixture(), review: null, canEdit: false } })
+    );
+    const viewer = renderReview({ videoId: 'vid-viewer' });
+    await waitFor(() => {
+      expect(viewer.result.current.roughCut?.id).toBe('cut-1');
+    });
+    expect(viewer.result.current.canEdit).toBe(false);
+    expect(viewer.result.current.isRoughCutOutput).toBe(false);
+
+    // Belt and braces: a review that arrives anyway without the permission to
+    // act on it still opens no tab, because the pane it feeds only edits.
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: { roughCut: roughCutFixture(), review: reviewFixture(), canEdit: false },
+      })
+    );
+    const readOnly = renderReview({ videoId: 'vid-read-only' });
+    await waitFor(() => {
+      expect(readOnly.result.current.review).not.toBeNull();
+    });
+    expect(readOnly.result.current.isRoughCutOutput).toBe(false);
+
+    // A row the client cannot read is not a rough-cut output either.
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: { roughCut: { id: 'cut-1', status: 'WHAT' }, review: reviewFixture(), canEdit: true },
+      })
+    );
+    const unreadable = renderReview({ videoId: 'vid-unreadable' });
+    await waitFor(() => {
+      expect(unreadable.result.current.review).not.toBeNull();
+    });
+    expect(unreadable.result.current.roughCut).toBeNull();
+    expect(unreadable.result.current.isRoughCutOutput).toBe(false);
+
     fetchMock.mockReset();
     const disabled = renderReview({ enabled: false });
     await act(async () => {
@@ -198,6 +251,74 @@ describe('useRoughCutReview', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(disabled.result.current.loading).toBe(false);
     expect(disabled.result.current.isRoughCutOutput).toBe(false);
+  });
+
+  it('starts from the decisions already saved on the run', async () => {
+    const saved = {
+      version: 1,
+      cuts: { [ISLAND_KEY]: 'keep' },
+      extraCuts: [
+        {
+          key: 'manual:ver-a:72-96',
+          sourceVersionId: 'ver-a',
+          inSeconds: 3,
+          outSeconds: 4,
+          note: 'boring',
+        },
+      ],
+    };
+    fetchMock.mockResolvedValue(jsonResponse(payload({ overrides: saved })));
+
+    const { result } = renderReview({});
+    await waitFor(() => {
+      expect(result.current.review).not.toBeNull();
+    });
+
+    expect(result.current.draft).toEqual(saved);
+    expect(result.current.isDirty).toBe(false);
+    // The extra cut takes material out, so the delivered file is out of date.
+    expect(result.current.needsRender).toBe(true);
+  });
+
+  it('starts over when the page moves to another video', async () => {
+    const savedOnSecond = { version: 1, cuts: { [ISLAND_KEY]: 'keep' }, extraCuts: [] };
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === REVIEW_URL) return jsonResponse(payload());
+      if (url === OTHER_REVIEW_URL) {
+        return jsonResponse(payload({ overrides: savedOnSecond }, { id: 'cut-2' }));
+      }
+      return jsonResponse({ error: `unexpected ${url}` }, 500);
+    });
+
+    const onRendered = vi.fn();
+    const { result, rerender } = renderHook(
+      (props: { videoId: string }) =>
+        useRoughCutReview({ videoId: props.videoId, enabled: true, onRendered }),
+      { initialProps: { videoId: VIDEO_ID } }
+    );
+    await waitFor(() => {
+      expect(result.current.roughCut?.id).toBe('cut-1');
+    });
+
+    act(() => {
+      result.current.setCutAction(ISLAND_KEY, 'restore');
+    });
+    expect(result.current.isDirty).toBe(true);
+
+    rerender({ videoId: OTHER_VIDEO_ID });
+    await waitFor(() => {
+      expect(result.current.roughCut?.id).toBe('cut-2');
+    });
+
+    // The second video's own saved decisions, not the first video's draft: a
+    // Save here must not write what was pending on the video just left.
+    expect(result.current.draft).toEqual(savedOnSecond);
+    expect(result.current.isDirty).toBe(false);
+    expect(result.current.review?.overrides).toEqual(savedOnSecond);
+    // Opening another video is not a render finishing on this one; the page
+    // must not be told to reload its version list over a navigation.
+    expect(onRendered).not.toHaveBeenCalled();
   });
 
   it('tracks pending decisions locally and saves them with PUT', async () => {
@@ -429,12 +550,92 @@ describe('useRoughCutReview', () => {
     expect(onRendered).toHaveBeenCalledTimes(1);
   });
 
+  it('adopts the saved decisions when a render finishes on a clean draft', async () => {
+    vi.useFakeTimers();
+    const onRendered = vi.fn();
+    let renderStatus = 'queued';
+    let overrides: unknown = null;
+    let renderedOverrides: unknown = null;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === REVIEW_URL) {
+        return jsonResponse(
+          payload({
+            render: { status: renderStatus, error: null, updatedAt: null },
+            overrides,
+            renderedOverrides,
+          })
+        );
+      }
+      return jsonResponse({ error: `unexpected ${url}` }, 500);
+    });
+
+    const { result } = renderReview({ onRendered });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.draft).toEqual(EMPTY_DRAFT);
+    expect(result.current.renderStatus).toBe('queued');
+
+    // The render that was already running was started from decisions this tab
+    // never saw; an untouched draft follows the row rather than fighting it.
+    const saved = { version: 1, cuts: { [ISLAND_KEY]: 'restore' }, extraCuts: [] };
+    renderStatus = 'idle';
+    overrides = saved;
+    renderedOverrides = saved;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+    });
+
+    expect(result.current.draft).toEqual(saved);
+    expect(result.current.isDirty).toBe(false);
+    expect(result.current.needsRender).toBe(false);
+    expect(onRendered).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers from a 409 by following the render that is already running', async () => {
+    vi.useFakeTimers();
+    let renderStatus = 'idle';
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === RENDER_URL && init?.method === 'POST') {
+        renderStatus = 'running';
+        return jsonResponse({ error: 'A render is already running for this cut' }, 409);
+      }
+      if (url === REVIEW_URL) {
+        return jsonResponse(
+          payload({ render: { status: renderStatus, error: null, updatedAt: null } })
+        );
+      }
+      return jsonResponse({ error: `unexpected ${url}` }, 500);
+    });
+
+    const { result } = renderReview({});
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.renderStatus).toBe('idle');
+
+    let renderError: string | null = 'unset';
+    await act(async () => {
+      renderError = await result.current.render();
+    });
+    expect(renderError).toBe('A render is already running for this cut');
+    expect(result.current.error).toBe('A render is already running for this cut');
+    // The refusal named a job that exists; the pane follows it rather than
+    // sitting on the idle it was refused from.
+    expect(result.current.renderStatus).toBe('running');
+
+    const callsAfterRefusal = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAfterRefusal + 1);
+  });
+
   it('refuses to save or render while another operation runs and surfaces API errors', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === RENDER_URL) {
-        return jsonResponse({ error: 'A render is already running for this cut' }, 409);
-      }
       if (url === OVERRIDES_URL) {
         return jsonResponse({ error: 'extraCuts: a cut must be at least 0.1s long' }, 400);
       }
@@ -447,15 +648,6 @@ describe('useRoughCutReview', () => {
       expect(result.current.review).not.toBeNull();
     });
 
-    let renderError: string | null = null;
-    await act(async () => {
-      renderError = await result.current.render();
-    });
-    expect(renderError).toBe('A render is already running for this cut');
-    expect(result.current.error).toBe('A render is already running for this cut');
-    expect(result.current.renderStatus).toBe('idle');
-    expect(result.current.rendering).toBe(false);
-
     act(() => {
       result.current.setCutAction(ISLAND_KEY, 'keep');
     });
@@ -464,6 +656,7 @@ describe('useRoughCutReview', () => {
       saveError = await result.current.save();
     });
     expect(saveError).toBe('extraCuts: a cut must be at least 0.1s long');
+    expect(result.current.error).toBe('extraCuts: a cut must be at least 0.1s long');
     expect(result.current.draft).toEqual({
       version: 1,
       cuts: { [ISLAND_KEY]: 'keep' },
@@ -502,6 +695,9 @@ describe('useRoughCutReview', () => {
     expect(fetchMock.mock.calls.filter((call) => String(call[0]) === RENDER_URL)).toHaveLength(
       renderCallsBefore
     );
-    expect(result.current.draft).toEqual({ version: 1, cuts: {}, extraCuts: [] });
+    // The refusal is said out loud, not only returned: the click had no effect
+    // and the pane has to be able to say why.
+    expect(result.current.error).toBe('Another change is already running');
+    expect(result.current.draft).toEqual(EMPTY_DRAFT);
   });
 });

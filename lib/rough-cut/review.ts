@@ -19,6 +19,11 @@ import { resolveR2PlaybackUrl } from '@/lib/video-upload-validation';
  * islands assembly cut with their reasons, the reviewer's saved decisions, the
  * program those decisions produce, the clips to scrub, and whether a render is
  * already on its way.
+ *
+ * All of it is an editor's payload. Reviewing a cut is an editing job, and the
+ * pane that shows this is only ever rendered for someone who may do it, so the
+ * whole review is withheld from anyone else rather than being served hollowed
+ * out.
  */
 
 export type RoughCutReviewSource = {
@@ -40,7 +45,7 @@ export type RoughCutRenderState = {
   updatedAt: string | null;
 };
 
-/** What the saved overrides actually did to the program. Editors only. */
+/** What the saved overrides actually did to the program. */
 export type AppliedOverridesReport = {
   restoredKeys: string[];
   staleCutKeys: string[];
@@ -51,7 +56,7 @@ export type AppliedOverridesReport = {
 export type RoughCutReview = {
   decisions: RoughCutDecisionList;
   effective: RoughCutDecisionList;
-  applied: AppliedOverridesReport | null;
+  applied: AppliedOverridesReport;
   overrides: RoughCutOverrides | null;
   renderedOverrides: RoughCutOverrides | null;
   renderedDecisions: RoughCutDecisionList | null;
@@ -169,18 +174,17 @@ async function loadSources(decisions: RoughCutDecisionList): Promise<RoughCutRev
 }
 
 /**
- * Everything the review pane needs about a READY run, or null when it has no
- * decisions yet.
- *
- * `canEdit` is what the caller may see, not only what they may do: the script,
- * the reviewer's own decisions and the report of what those decisions did are
- * an editor's working notes, so a commenter gets the program, the clips and the
- * render state without them.
+ * Everything the review pane needs about a READY run: null when the run has no
+ * decisions yet, and null for a caller who may not edit the project. A hollowed
+ * out review was worse than none — the pane it feeds can restore a cut, draw a
+ * new one and queue a render, none of which a commenter may do, and half a
+ * payload only invites a pane that half works.
  */
 export async function loadRoughCutReview(
   row: RoughCut,
   options: { canEdit: boolean }
 ): Promise<RoughCutReview | null> {
+  if (!options.canEdit) return null;
   const decisions = parseRoughCutDecisionList(row.decisions);
   if (!decisions) return null;
   const overrides = parseRoughCutOverrides(row.overrides);
@@ -190,19 +194,17 @@ export async function loadRoughCutReview(
   return {
     decisions,
     effective: applied.decisions,
-    applied: options.canEdit
-      ? {
-          restoredKeys: applied.restoredKeys,
-          staleCutKeys: applied.staleCutKeys,
-          skippedIslands: applied.skippedIslands,
-          extraCutsApplied: applied.extraCutsApplied,
-        }
-      : null,
-    overrides: options.canEdit ? overrides : null,
-    renderedOverrides: options.canEdit ? renderedOverrides : null,
+    applied: {
+      restoredKeys: applied.restoredKeys,
+      staleCutKeys: applied.staleCutKeys,
+      skippedIslands: applied.skippedIslands,
+      extraCutsApplied: applied.extraCutsApplied,
+    },
+    overrides,
+    renderedOverrides,
     renderedDecisions: parseRoughCutDecisionList(row.renderedDecisions),
     needsRender: needsRender(decisions, overrides, renderedOverrides),
-    script: options.canEdit ? (row.script ?? null) : null,
+    script: row.script ?? null,
     sources,
     render,
   };

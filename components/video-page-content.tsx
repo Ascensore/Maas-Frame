@@ -171,8 +171,11 @@ export function VideoPageContent({
     propProjectId,
   });
 
-  // A render started from the pane adds a version to this very video, so the
-  // page reloads itself rather than asking the reviewer to.
+  // Asked of every video: "not a rough cut" is an answer, and the API withholds
+  // the review itself from anyone who may not edit, so the tab appears for
+  // editors of a delivered cut and for nobody else. A render started from the
+  // pane adds a version to this very video, so the page reloads itself rather
+  // than asking the reviewer to.
   const roughCutReview = useRoughCutReview({
     videoId,
     enabled: !loading && !!video && (video.kind ?? 'VIDEO') === 'VIDEO',

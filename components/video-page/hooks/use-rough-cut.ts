@@ -63,7 +63,8 @@ function parseWarnings(value: unknown): RoughCutWarning[] | null {
   return warnings;
 }
 
-function parseRoughCut(value: unknown): RoughCutRecord | null {
+/** Shared with the review hook: one reader for the row, whichever route served it. */
+export function parseRoughCut(value: unknown): RoughCutRecord | null {
   if (!value || typeof value !== 'object') return null;
   const row = value as Record<string, unknown>;
   if (typeof row.id !== 'string' || typeof row.status !== 'string') return null;

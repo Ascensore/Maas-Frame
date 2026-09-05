@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  applyOverrides,
   emptyOverrides,
   extraCutKey,
   needsRender as computeNeedsRender,
@@ -17,13 +16,16 @@ import type {
   RoughCutReviewSource,
 } from '@/lib/rough-cut/review';
 import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
-import type { RoughCutRecord } from '@/components/video-page/hooks/use-rough-cut';
+import { parseRoughCut, type RoughCutRecord } from '@/components/video-page/hooks/use-rough-cut';
 
 /**
  * The review behind the video being watched: what the run cut and why, what the
  * reviewer has decided about it, and where the output's seconds sit in the
  * footage. The decisions live here as a draft until they are saved, and saving
  * changes nothing on the delivered file until a render is asked for.
+ *
+ * The API withholds the review from anyone who may not edit the project, so a
+ * loaded review is by itself the permission to act on it.
  */
 
 export const ROUGH_CUT_REVIEW_POLL_MS = 4000;
@@ -33,8 +35,10 @@ const EPSILON = 1e-6;
 /** Stable identity for a review with nothing to show, so the pane does not rerender on it. */
 const NO_SOURCES: RoughCutReviewSource[] = [];
 
+const BUSY_MESSAGE = 'Another change is already running';
+
 type ReviewPayload = {
-  roughCut: RoughCutRecord | null;
+  roughCut: unknown;
   review: RoughCutReview | null;
   canEdit?: boolean;
 };
@@ -92,6 +96,12 @@ export function useRoughCutReview(options: {
   const draftRef = useRef<RoughCutOverrides>(draft);
   const savedRef = useRef<RoughCutOverrides | null>(null);
   const onRenderedRef = useRef(onRendered);
+  /**
+   * Bumped every time the hook is pointed at another video. The page reuses one
+   * mounted hook across videos, so a reply from the one just left — a load, a
+   * save, a render — must not land on the one now open.
+   */
+  const generationRef = useRef(0);
 
   useEffect(() => {
     onRenderedRef.current = onRendered;
@@ -113,19 +123,39 @@ export function useRoughCutReview(options: {
     [commitDraft]
   );
 
+  // Declared above the load effect on purpose: effects run in order, so the
+  // state of the video being left is gone before the next one is asked for.
+  // Without it the second video's saved decisions were never adopted (the
+  // "already loaded" branch kept the first one's draft) and one Save wrote the
+  // first video's decisions onto the second one's run.
+  useEffect(() => {
+    generationRef.current += 1;
+    inFlightRef.current = false;
+    loadedRef.current = false;
+    lastRenderedRef.current = null;
+    savedRef.current = null;
+    commitDraft(emptyOverrides());
+    setRoughCut(null);
+    setReview(null);
+    setCanEdit(false);
+    setError(null);
+  }, [commitDraft, videoId]);
+
   const load = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    const generation = generationRef.current;
     try {
       const response = await fetch(`/api/videos/${videoId}/rough-cut`, { cache: 'no-store' });
       const payload = await response.json().catch(() => null);
+      if (generationRef.current !== generation) return;
       if (!response.ok) {
         setError(readClientApiError(payload, 'Failed to load the cut review'));
         return;
       }
       const data = (payload as { data?: ReviewPayload } | null)?.data ?? null;
       const nextReview = data?.review ?? null;
-      setRoughCut(data?.roughCut ?? null);
+      setRoughCut(parseRoughCut(data?.roughCut));
       setReview(nextReview);
       setCanEdit(data?.canEdit === true);
       setError(null);
@@ -149,9 +179,10 @@ export function useRoughCutReview(options: {
       if (!wasDirty) commitDraft(nextReview.overrides ?? emptyOverrides());
       onRenderedRef.current?.();
     } catch {
-      setError('Failed to load the cut review');
+      if (generationRef.current === generation) setError('Failed to load the cut review');
     } finally {
-      inFlightRef.current = false;
+      // A reply from a video already left never frees the current video's slot.
+      if (generationRef.current === generation) inFlightRef.current = false;
     }
   }, [commitDraft, videoId]);
 
@@ -172,12 +203,6 @@ export function useRoughCutReview(options: {
     }, ROUGH_CUT_REVIEW_POLL_MS);
     return () => clearInterval(timer);
   }, [enabled, load, renderStatus]);
-
-  /** The program the reviewer's pending decisions would produce. */
-  const effective = useMemo(
-    () => (review ? applyOverrides(review.decisions, draft) : null),
-    [draft, review]
-  );
 
   /**
    * The program the output video actually plays. A row written before renders
@@ -290,10 +315,14 @@ export function useRoughCutReview(options: {
   const save = useCallback(async (): Promise<string | null> => {
     const id = roughCut?.id;
     if (!id) return 'There is no cut to save';
-    if (busyRef.current) return 'Another change is already running';
+    if (busyRef.current) {
+      setError(BUSY_MESSAGE);
+      return BUSY_MESSAGE;
+    }
     busyRef.current = true;
     setSaving(true);
     setError(null);
+    const generation = generationRef.current;
     try {
       const response = await fetch(`/api/rough-cuts/${id}/overrides`, {
         method: 'PUT',
@@ -301,6 +330,7 @@ export function useRoughCutReview(options: {
         body: JSON.stringify(draftRef.current),
       });
       const payload = await response.json().catch(() => null);
+      if (generationRef.current !== generation) return null;
       if (!response.ok) {
         const message = readClientApiError(payload, 'Failed to save the review');
         setError(message);
@@ -324,7 +354,7 @@ export function useRoughCutReview(options: {
       return null;
     } catch {
       const message = 'Failed to save the review';
-      setError(message);
+      if (generationRef.current === generation) setError(message);
       return message;
     } finally {
       setSaving(false);
@@ -335,15 +365,24 @@ export function useRoughCutReview(options: {
   const render = useCallback(async (): Promise<string | null> => {
     const id = roughCut?.id;
     if (!id) return 'There is no cut to render';
-    if (busyRef.current) return 'Another change is already running';
+    if (busyRef.current) {
+      setError(BUSY_MESSAGE);
+      return BUSY_MESSAGE;
+    }
     busyRef.current = true;
     setRendering(true);
     setError(null);
+    const generation = generationRef.current;
     try {
       const response = await fetch(`/api/rough-cuts/${id}/render`, { method: 'POST' });
       const payload = await response.json().catch(() => null);
+      if (generationRef.current !== generation) return null;
       if (!response.ok) {
         const message = readClientApiError(payload, 'Failed to start the render');
+        // 409 is "somebody already started one" — an answer about a job that
+        // exists. Reload before reporting it, so the pane follows that job to
+        // its new version instead of sitting on an idle it no longer has.
+        if (response.status === 409) await load();
         setError(message);
         return message;
       }
@@ -358,13 +397,13 @@ export function useRoughCutReview(options: {
       return null;
     } catch {
       const message = 'Failed to start the render';
-      setError(message);
+      if (generationRef.current === generation) setError(message);
       return message;
     } finally {
       setRendering(false);
       busyRef.current = false;
     }
-  }, [roughCut]);
+  }, [load, roughCut]);
 
   const isDirty = useMemo(() => !overridesEqual(draft, review?.overrides ?? null), [draft, review]);
 
@@ -381,7 +420,6 @@ export function useRoughCutReview(options: {
     review,
     canEdit,
     draft,
-    effective,
     rendered,
     sources: review?.sources ?? NO_SOURCES,
     loading,
@@ -391,7 +429,9 @@ export function useRoughCutReview(options: {
     isDirty,
     needsRender,
     renderStatus,
-    isRoughCutOutput: Boolean(roughCut && review),
+    // The API serves the review to editors alone, so a review in hand is the
+    // whole test; `canEdit` is named here so the rule reads at the call site.
+    isRoughCutOutput: Boolean(roughCut && review && canEdit),
     setCutAction,
     addExtraCutFromTimeline,
     removeExtraCut,

@@ -14,6 +14,9 @@ type RouteParams = { params: Promise<{ videoId: string }> };
  * Answers `{ roughCut: null }` for an ordinary video rather than 404: the pane
  * asks this of every video it opens, and "not a rough cut" is an answer, not an
  * error.
+ *
+ * A caller who may only comment gets the row and `review: null`: the review is
+ * an editing payload, and `loadRoughCutReview` withholds it from them.
  */
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {

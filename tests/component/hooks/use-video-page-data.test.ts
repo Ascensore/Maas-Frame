@@ -285,6 +285,38 @@ describe('useVideoPageData loading the video', () => {
 
     expect(callsMatching((url) => url === WATCH_URL)).toHaveLength(1);
   });
+
+  it('reloads on demand and opens whichever version became the active one', async () => {
+    const harness = await renderPage();
+    expect(harness.result.current.activeVersionId).toBe('ver1');
+    expect(callsMatching((url) => url === DASHBOARD_URL)).toHaveLength(1);
+
+    // What a finished re-render leaves behind: a new version of the same video,
+    // flagged active, which the page has to pick up without a navigation.
+    videoResponse = respond({
+      payload: {
+        data: {
+          id: VIDEO_ID,
+          title: 'Cut 3',
+          projectId: PROJECT_ID,
+          versions: [
+            makeVersion({ id: 'ver1', isActive: false }),
+            makeVersion({ id: 'ver2', versionNumber: 2, isActive: true }),
+          ],
+        },
+      },
+    });
+
+    await act(async () => {
+      await harness.result.current.reloadVideo();
+    });
+    await settle();
+
+    expect(callsMatching((url) => url === DASHBOARD_URL)).toHaveLength(2);
+    expect(harness.result.current.activeVersionId).toBe('ver2');
+    expect(harness.result.current.video?.versions.map((v) => v.id)).toEqual(['ver1', 'ver2']);
+    expect(harness.result.current.loading).toBe(false);
+  });
 });
 
 describe('useVideoPageData loading comments', () => {
