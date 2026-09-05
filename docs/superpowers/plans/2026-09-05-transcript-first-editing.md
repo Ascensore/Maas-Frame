@@ -70,7 +70,7 @@
 
 Context: today a run that cannot get a transcript within 15 minutes silently falls back to energy-based voice activity, which knows nothing about takes, so every take is kept. The operator's rule is "transcription first". When transcription is enabled on the host (`OPENFRAME_ENABLE_TRANSCRIPTION` is anything but `false`, the same rule as `isTranscriptionFeatureEnabled`), a run must wait for the transcript (up to two hours), must start a transcription itself when a clip has none, and must fail with a clear message instead of degrading when the transcript failed, timed out, or has no speech. The VAD fallback stays only for hosts with transcription disabled.
 
-- [ ] **Step 1: Schema and migration**
+- [x] **Step 1: Schema and migration**
 
 In `prisma/schema.prisma`, add `BURN_SUBTITLES` as the last value of `enum MediaJobKind`, and add these fields to `model RoughCut` after `warnings          Json?`:
 
@@ -100,7 +100,7 @@ ADD COLUMN "rendered_decisions" JSONB;
 
 Append `'20260907110000_transcript_first_editing',` to `REVIEWED_MIGRATIONS` in `tests/setup/db-global.ts` (plain enum/column additions: no `POST_PUSH_SQL` entry). Run `bun run db:generate`.
 
-- [ ] **Step 2: Failing unit tests for the env flag and the wait policy**
+- [x] **Step 2: Failing unit tests for the env flag and the wait policy**
 
 Add to `tests/unit/lib/rough-cut-env.test.ts`:
 
@@ -175,7 +175,7 @@ describe('isWaitingForTranscript', () => {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-env.test.ts tests/unit/lib/rough-cut-transcript-source.test.ts tests/unit/lib/rough-cut-workspace.test.ts`
 Expected: FAIL (missing exports / wrong values).
 
-- [ ] **Step 3: Implement the flag, the wait limit and the error text**
+- [x] **Step 3: Implement the flag, the wait limit and the error text**
 
 `lib/rough-cut/env.ts`, append:
 
@@ -243,7 +243,7 @@ function capitalize(text: string): string {
 
 Run the three test files again. Expected: PASS.
 
-- [ ] **Step 4: Failing assemble-job tests for the required policy**
+- [x] **Step 4: Failing assemble-job tests for the required policy**
 
 In `tests/unit/lib/rough-cut-assemble-job.test.ts`:
 
@@ -371,7 +371,7 @@ Check how the existing tests express "the run was marked FAILED" (`h.failed()` r
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-assemble-job.test.ts`
 Expected: the new describe fails; the env-stubbed fallback tests pass.
 
-- [ ] **Step 5: Implement the policy in the assemble job**
+- [x] **Step 5: Implement the policy in the assemble job**
 
 In `lib/rough-cut/assemble-job.ts`:
 
@@ -478,7 +478,7 @@ for (let index = 0; index < transcriptDecisions.length; index += 1) {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-assemble-job.test.ts tests/unit/lib/rough-cut-transcript-source.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Whole-suite check and commit**
+- [x] **Step 6: Whole-suite check and commit**
 
 Run: `bun run test` and `bun run check`. Fix formatting with `bunx prettier --write` on touched files.
 
@@ -505,7 +505,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: the assembler (Task 1) parks a run until its transcripts are READY and starts one when a clip has none, but on a Vercel host without a media worker the only thing that transcribes is the app's own inline path (`scheduleVersionTranscription`). So the create route must make sure every file-backed clip has a transcript on the way before it enqueues the run. The route also stores the operator's optional script (max 20 000 characters) that Task 3 reads.
 
-- [ ] **Step 1: Failing API tests**
+- [x] **Step 1: Failing API tests**
 
 In `tests/api/rough-cuts.test.ts`, inside `describe('POST /api/projects/[projectId]/rough-cuts')`, add (the file already imports `db`, `createReadyTranscript` is exported from `../factories`, `scheduleVersionTranscription` is mocked by `tests/setup/api.ts` and importable from `@/lib/transcription/schedule`):
 
@@ -617,7 +617,7 @@ Existing POST tests that count `mediaJob` rows or assert the run's `warnings` wi
 Run: `DATABASE_URL="postgresql://openframe:openframe@127.0.0.1:55432/openframe_test?schema=public" bun run vitest run --project api tests/api/rough-cuts.test.ts`
 Expected: the three new tests FAIL.
 
-- [ ] **Step 2: Implement `ensureTranscriptsForVersions`**
+- [x] **Step 2: Implement `ensureTranscriptsForVersions`**
 
 Create `lib/transcription/ensure.ts`:
 
@@ -718,7 +718,7 @@ export async function ensureTranscriptsForVersions(
 
 Note: a version whose rows all FAILED still has a row for language `und` (or another language). The upsert keys on `(versionId, 'und')`; a FAILED row in a different language stays FAILED, which is fine because the assembler picks READY rows first.
 
-- [ ] **Step 3: The create route stores the script and calls `ensureTranscriptsForVersions`**
+- [x] **Step 3: The create route stores the script and calls `ensureTranscriptsForVersions`**
 
 In `app/api/projects/[projectId]/rough-cuts/route.ts`:
 
@@ -764,7 +764,7 @@ const pendingTitles = fileBacked
 
 Run the api file again. Expected: PASS (fix any test that counted media jobs, as described in Step 1).
 
-- [ ] **Step 4: Dialog and hook**
+- [x] **Step 4: Dialog and hook**
 
 `components/video-page/hooks/use-rough-cut.ts`: add `script?: string` to `start`'s options and `...(options.script ? { script: options.script } : {})` to the POST body. In `tests/component/hooks/use-rough-cut.test.ts`, add a test that `start({ ..., script: 'Hello there.' })` sends `script` in the body and that omitting it sends no `script` key (read the file's fetch-mock conventions first).
 
@@ -795,7 +795,7 @@ Also change the dialog's waiting copy: the `status === 'PENDING'` branch shows `
 
 Presentation only, no component test for the textarea.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `bun run test`, the api file with the DATABASE_URL prefix, `bun run check`.
 
@@ -820,7 +820,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: takes are grouped by Jaccard similarity of word trigrams (≥ 0.5). A retake that only re-says the second half of a line, or a line that the transcript split into two beats, shares too few trigrams with the whole and stays in the cut: that is the "same take twice" the operator saw. Two fixes: (1) containment, the share of the smaller take's trigrams found in the larger one, groups partial retakes; (2) when the operator gave a script, beats are aligned to script lines, beats covering the same line are takes of that line whatever their wording, and the take that matches the script best wins before cleanliness.
 
-- [ ] **Step 1: Failing tests for text and takes**
+- [x] **Step 1: Failing tests for text and takes**
 
 Add to `tests/unit/lib/rough-cut-takes.test.ts` (reuse the file's `candidate`, `EN` and `MEDIUM` helpers; import `containment` from `@/lib/rough-cut/text` and `rankingWithScript` from `@/lib/rough-cut/script`):
 
@@ -1017,7 +1017,7 @@ describe('scriptCoverageWarnings / rankingWithScript', () => {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-takes.test.ts tests/unit/lib/rough-cut-script.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 2: Implement `containment`, take options and the script module**
+- [x] **Step 2: Implement `containment`, take options and the script module**
 
 `lib/rough-cut/text.ts`, after `jaccard`:
 
@@ -1212,7 +1212,7 @@ export function rankingWithScript(ranking: BriefRankingCriterion[]): BriefRankin
 
 Run the two unit files. Expected: PASS.
 
-- [ ] **Step 3: Failing assemble-job test with a script**
+- [x] **Step 3: Failing assemble-job test with a script**
 
 In `tests/unit/lib/rough-cut-assemble-job.test.ts`, inside `describe('assembleRoughCut editorial pass')`, add (use the describe's own timed-words helper, the talking-head brief snapshot the neighbouring take-selection test uses, and the harness `script` option from Task 1):
 
@@ -1281,7 +1281,7 @@ Without the script, recency keeps the second take (both are equally clean); with
 
 Run the file. Expected: the two new tests FAIL.
 
-- [ ] **Step 4: Wire the script into the editorial pass**
+- [x] **Step 4: Wire the script into the editorial pass**
 
 In `lib/rough-cut/assemble-job.ts`:
 
@@ -1332,7 +1332,7 @@ if (useScript) {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-assemble-job.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run `bun run test` and `bun run check`.
 
@@ -1356,7 +1356,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: take groups now form through containment and script lines (Task 3), so a group can hold takes of different extents: a long take covering three script lines and a later retake of one of them; a take whose tail was re-said; two adjacent beats that both contain the same line (a flubbed reading followed by the good one). Keeping exactly one beat per group then either drops content (the long take loses its other lines) or, if the long take wins, keeps the flubbed line. The rule below keeps every line exactly once: the longest take anchors the group, a sub-take replaces the anchor's span only when it is better and the span sits at an edge of the anchor (so the program order stays the source order), an adjacent overlap is trimmed off the lower-ranked beat, and anything else that would duplicate a line is rejected with a reason that says which take covers it.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 `tests/unit/lib/rough-cut-beats.test.ts` (create if absent, else append), using the file's timed-segment helper or this one:
 
@@ -1548,7 +1548,7 @@ Work the assemble-job fixture numbers out against `spokenSegment`'s word spacing
 
 Run the three test files → FAIL.
 
-- [ ] **Step 2: `cutWordsFromBeat`**
+- [x] **Step 2: `cutWordsFromBeat`**
 
 Append to `lib/rough-cut/beats.ts`:
 
@@ -1608,7 +1608,7 @@ export function cutWordsFromBeat(
 
 Note in the suffix test the run end becomes 3.8 because the removed range starts at 4 (the fifth word's start) and the run was 0–5.8; cutting at `range.start` leaves 0–4, not 0–3.8. Decide which is right: the kept speech should end where the last kept word ends, so after cutting, clamp each run's end to the last kept word that lies inside it and its start to the first kept word inside it. Implement that clamp (walk kept words per run) and keep the test's 3.8 expectation.
 
-- [ ] **Step 3: `beatTokens`, `coverageOf`, `resolveTakes`**
+- [x] **Step 3: `beatTokens`, `coverageOf`, `resolveTakes`**
 
 In `lib/rough-cut/takes.ts`:
 
@@ -1674,7 +1674,7 @@ export type TakeResolution = {
 
 Export `resolveTakes` and the new helpers. `rejectedTakeCuts` gets a sibling `replacedTakeCut(candidates, keptIndex, coveredBy, removed: { start, end, text })` returning a `SourceCut` with code `REJECTED_TAKE`, summary `Replaced by the take at ${timelineStart of coveredBy in seconds, one decimal}s (“${excerpt of that take, 60}”)`, and `text: removed.text`.
 
-- [ ] **Step 4: `editorialPass` uses the resolution**
+- [x] **Step 4: `editorialPass` uses the resolution**
 
 Replace the `selectTakes` loop that builds `rejected` with:
 
@@ -1723,7 +1723,7 @@ if (duplicatesKept > 0)
 
 Run the three test files, then `bun run test`, `bun run check`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add lib tests
@@ -1743,7 +1743,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: every removal the assembler makes is a keyed cut island on the decision list (`cuts[].key = ${sourceVersionId}:${inFrame}-${outFrame}`). The reviewer's decisions are stored on the run as overrides: `restore` puts an island back, `keep` records that it was looked at, and extra cuts remove more material, expressed in source time so they survive a re-render. `applyOverrides` is pure and produces the program that materialization renders. All layouts leave assembly packed tight, so ordering edits by the continuous axis (clip offset plus source in-point) works for every layout.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 Create `tests/unit/lib/rough-cut-overrides.test.ts`:
 
@@ -2022,7 +2022,7 @@ describe('overrideSummary / overridesEqual', () => {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-overrides.test.ts`
 Expected: FAIL (module missing).
 
-- [ ] **Step 2: Implement the module**
+- [x] **Step 2: Implement the module**
 
 Create `lib/rough-cut/overrides.ts`:
 
@@ -2319,7 +2319,7 @@ export function overridesEqual(a: RoughCutOverrides | null, b: RoughCutOverrides
 
 Run the test file. Expected: PASS. Note the `mergeContiguous` reason rule: when a restored piece merges into a neighbour, the merged edit carries the restored reason so the review UI can still show it as restored; the test expects that.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 Run `bun run check`.
 
@@ -2346,7 +2346,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: the review pane on the output video needs, in one payload, the run's decision list (islands with reasons and transcript text), the reviewer's saved overrides, what was last rendered, the effective program (`applyOverrides`), the source clips with playable URLs, and whether a render is queued. Saving overrides and rendering are separate calls, both editor-only. The output video is found by `RoughCut.outputVideoId`.
 
-- [ ] **Step 1: Failing API tests**
+- [x] **Step 1: Failing API tests**
 
 Create `tests/api/rough-cut-review.test.ts`. Seed with the helpers `tests/api/rough-cuts.test.ts` uses (`seedProject`, `createVideo`, `createVersion`, `createRoughCut`, `createUser`, `addProjectMember`), a READY run with `sampleDecisions`-style decisions that include one cut island, and `outputVideoId` pointing at a second video. `createRoughCut` in `tests/factories/rough-cut.ts` needs two new optional fields: `outputVideoId?: string | null` and `overrides?: object | null`; add them.
 
@@ -2670,7 +2670,7 @@ Add the three new route files to `tests/api/auth-matrix.test.ts` following its e
 Run: `DATABASE_URL="postgresql://openframe:openframe@127.0.0.1:55432/openframe_test?schema=public" bun run vitest run --project api tests/api/rough-cut-review.test.ts tests/api/auth-matrix.test.ts`
 Expected: FAIL (routes missing).
 
-- [ ] **Step 2: The review payload builder**
+- [x] **Step 2: The review payload builder**
 
 Create `lib/rough-cut/review.ts`:
 
@@ -2819,7 +2819,7 @@ export async function loadRoughCutReview(row: RoughCut): Promise<RoughCutReview 
 
 Check the exact `resolveR2PlaybackUrl` parameter shape in `lib/video-upload-validation.ts` (it takes `{ videoId, originalUrl, proxyUrl?, proxyStatus? }`) and pass a matching object.
 
-- [ ] **Step 3: Routes**
+- [x] **Step 3: Routes**
 
 `app/api/rough-cuts/[roughCutId]/overrides/route.ts`:
 
@@ -3003,7 +3003,7 @@ Check `VideoAssetAccessContext` in `lib/video-assets.ts` for the exact field nam
 
 Run the two api files. Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run `bun run check`.
 
@@ -3029,7 +3029,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: the rendered cut is a new `Video` whose only job today is `PROBE_MEDIA`, so it arrives with no transcript and the operator ends up re-transcribing it with AI, twice (once for the transcript, once through "Generate AI" captions). Every word of the output already has a timed word in a source transcript; the decision list says where it landed. So materialization derives the output transcript by mapping source words through the edits, stores it as a READY `Transcript` (provider `rough-cut`), and writes the same text as the version's caption track. Re-renders (Task 5) add a version to the existing output video instead of a new video, so v1/v2 can be compared.
 
-- [ ] **Step 1: Failing tests for the pure parts**
+- [x] **Step 1: Failing tests for the pure parts**
 
 `tests/unit/lib/rough-cut-vtt.test.ts`:
 
@@ -3171,7 +3171,7 @@ describe('deriveProgramTranscript', () => {
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-vtt.test.ts tests/unit/lib/rough-cut-derived-transcript.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 2: Implement vtt, caption-track and derived-transcript**
+- [x] **Step 2: Implement vtt, caption-track and derived-transcript**
 
 `lib/rough-cut/vtt.ts` (moved verbatim from the worker's private helpers so both sides share one serializer):
 
@@ -3451,7 +3451,7 @@ export async function persistDerivedTranscript(
 
 Run the two unit files. Expected: PASS.
 
-- [ ] **Step 3: Failing test for the materialize job**
+- [x] **Step 3: Failing test for the materialize job**
 
 Create `tests/unit/lib/rough-cut-materialize-job.test.ts` with a fake pool in the style of `tests/unit/lib/rough-cut-assemble-job.test.ts`: record every `query(sql, params)`, answer `FROM rough_cuts` with a row `{ id: 'cut-1', project_id: 'proj-1', folder_id: null, decisions, overrides, output_video_id }`, `FROM video_versions WHERE id = ANY` with the source version rows, `FROM transcripts` with `[{ id: 't-a', version_id: 'ver-a', language: 'en' }]`, `FROM transcript_segments` with one timed segment `'one two three four five six'` at 0–6 (words 1 s apart, 0.8 s long), `COALESCE(MAX("versionNumber")` with `{ max: 1 }`, `SELECT id FROM videos` with `[{ id: 'out-1' }]`, `SELECT position FROM videos` with `[]`, `INSERT INTO transcripts` with `[{ id: 't-out' }]`, `SELECT p."ownerId"` with `[{ owner_id: 'owner-1' }]`, and `{ rows: [] }` otherwise. `run` records args and returns `{ code: 0 }`; `downloadObject` records keys; `uploadObject` records `{ key, contentType }`; use `vi.mock('node:fs/promises', ...)` only if needed for `readFile` of the ffmpeg output — simpler: pass `readOutput: async () => Buffer.from('mp4')` as a dep (see the deps type below) so the test never touches the filesystem beyond `mkdtemp`.
 
@@ -3461,7 +3461,7 @@ Tests:
 2. `creates the output video on a first render`: `output_video_id = null`, no overrides → `INSERT INTO videos` once, version 1, `rendered_overrides` param `null`.
 3. `refuses a program that the reviewer cut to nothing`: overrides with an extra cut spanning the whole clip → the job throws `/Nothing is left/` and runs no ffmpeg.
 
-- [ ] **Step 4: Implement the job in lib and re-export from the worker**
+- [x] **Step 4: Implement the job in lib and re-export from the worker**
 
 Create `lib/rough-cut/materialize-job.ts` by moving `worker/src/materialize-rough-cut.ts` and changing it as follows (relative imports only):
 
@@ -3612,7 +3612,7 @@ export type { MaterializeDeps } from '../lib/rough-cut/materialize-job';
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-materialize-job.test.ts`
 Expected: PASS. Then `bun run test` and `bun run check`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add lib worker tests
@@ -3636,7 +3636,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: on the output video the operator wants to see what was removed and why, look at the uncut source next to the cut, and restore or add cuts without leaving the page. The pane lives in the right-hand side panel next to Comments and Assets (only on rough-cut outputs), shows a source player that can follow the output playhead, lists every cut island with its reason and transcript, and offers Restore / Keep, an extra cut from the output's current time, Save, and Re-render (a new version of this video, Task 6).
 
-- [ ] **Step 1: Failing hook test**
+- [x] **Step 1: Failing hook test**
 
 Create `tests/component/hooks/use-rough-cut-review.test.ts` in the style of `tests/component/hooks/use-subtitles.test.ts` (stub `fetch`, `renderHook`, `waitFor`, `act`). Build a `review` payload matching Task 5's `GET /api/videos/[videoId]/rough-cut` response: one source clip `ver-a` (offset 0, duration 30, playbackUrl `/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4`), decisions with edits `[0–3 from 1–4], [3–7 from 6–10]` and one island `key: 'ver-a:96-144'` (24 fps, 4–6 s, DEAD_AIR), `overrides: null`, `renderedOverrides: null`, `needsRender: false`, `render: { status: 'idle', error: null, updatedAt: null }`, `canEdit: true`.
 
@@ -3651,7 +3651,7 @@ Tests:
 Run: `bun run vitest run --project component tests/component/hooks/use-rough-cut-review.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 2: The hook**
+- [x] **Step 2: The hook**
 
 Create `components/video-page/hooks/use-rough-cut-review.ts`:
 
@@ -3944,7 +3944,7 @@ export function useRoughCutReview(options: {
 
 Run the hook test. Expected: PASS.
 
-- [ ] **Step 3: The pane**
+- [x] **Step 3: The pane**
 
 Create `components/video-page/rough-cut-review-pane.tsx` (client component; uses `Button` from `@/components/ui/button`, `Badge`, `Textarea`, `Input`, `cn`, lucide icons `RotateCcw`, `Scissors`, `Play`, `Loader2`, `Check`, `Trash2`). Props:
 
@@ -3967,7 +3967,7 @@ Layout, top to bottom:
 
 `formatClock` is a local helper (`m:ss`). Presentation only: no component test beyond the hook test.
 
-- [ ] **Step 4: Wire the pane into the page**
+- [x] **Step 4: Wire the pane into the page**
 
 `components/video-page/hooks/use-video-page-data.ts`: turn the inline `fetchVideo` into a `useCallback` named `loadVideo` (same body, dependencies `[apiBasePath, mode]`), call it from the effect, and return it as `reloadVideo`.
 
@@ -3991,7 +3991,7 @@ const roughCutReview = useRoughCutReview({
 
 Run `bun run test` and `bun run check`. There is no dev server to screenshot; the hook test plus typecheck are the gate.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add components tests
@@ -4020,7 +4020,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: a transcript line with a misheard word is corrected in place. The words keep their timings when the count is unchanged; otherwise the new words are spread evenly across the segment (the same rule uploaded SRTs use). The caption track for the transcript's language is rebuilt from the transcript after every edit, so subtitles and transcript never diverge. "Generate AI" on a version that already has a READY transcript builds the captions from it instead of transcribing again.
 
-- [ ] **Step 1: Failing unit test for retiming**
+- [x] **Step 1: Failing unit test for retiming**
 
 Create `tests/unit/lib/transcript-edit.test.ts`:
 
@@ -4081,7 +4081,7 @@ describe('parseSegmentPatch', () => {
 
 Run: `bun run vitest run --project unit tests/unit/lib/transcript-edit.test.ts` → FAIL.
 
-- [ ] **Step 2: Implement `lib/transcript-edit.ts` and `lib/transcript-caption.ts`**
+- [x] **Step 2: Implement `lib/transcript-edit.ts` and `lib/transcript-caption.ts`**
 
 `lib/transcript-edit.ts`:
 
@@ -4186,7 +4186,7 @@ which loads the transcript (`versionId`, `language`, segments ordered by positio
 
 Run the unit test → PASS.
 
-- [ ] **Step 3: Failing API tests**
+- [x] **Step 3: Failing API tests**
 
 Create `tests/api/transcript-edit.test.ts` with the R2 recorder mock from `tests/api/transcript.test.ts` (copy the `vi.hoisted` + `vi.mock('@/lib/r2', ...)` block). Cases:
 
@@ -4197,7 +4197,7 @@ Add both routes to `tests/api/auth-matrix.test.ts` (fixture needs a `segmentId`:
 
 Run the api file + auth-matrix → FAIL.
 
-- [ ] **Step 4: Routes**
+- [x] **Step 4: Routes**
 
 `app/api/versions/[versionId]/transcript/segments/[segmentId]/route.ts`:
 
@@ -4321,7 +4321,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
 Run the api tests → PASS.
 
-- [ ] **Step 5: Hook for editing and the pane dialog**
+- [x] **Step 5: Hook for editing and the pane dialog**
 
 `components/video-page/hooks/use-transcript-segment-edit.ts`:
 
@@ -4378,7 +4378,7 @@ Test `tests/component/hooks/use-transcript-segment-edit.test.ts`: PATCH body and
 
 `components/video-page/transcript-pane.tsx`: `TranscriptPane` gains an "Edit" affordance per row when `canManage`: add `onEditSegment: (segment: TranscriptSegment) => void` to `TranscriptRowProps`/`rowProps` and render a small `Pencil` icon button (`aria-label="Edit line"`) in the row header next to the time. The pane holds `const [editing, setEditing] = useState<TranscriptSegment | null>(null)` and renders a `Dialog` (title "Edit transcript line", a `Textarea` with the text, an `Input` for the speaker, Save/Cancel). Save calls `useTranscriptSegmentEdit(versionId).save(editing.id, { text, speaker })`; on success replace the segment in local `transcript.segments` (keep `position`) and close; errors show under the textarea. Move `TranscriptSegment` etc. exports as needed so the hook can import the type without a cycle (put the types in `components/video-page/types.ts` if the import from `transcript-pane` creates one).
 
-- [ ] **Step 6: Captions without re-transcribing**
+- [x] **Step 6: Captions without re-transcribing**
 
 `components/video-page/hooks/use-subtitles.ts`, `generateSubtitles`: before the AI POST, check for a READY transcript:
 
@@ -4410,7 +4410,7 @@ if (existing.ok && transcript?.status === 'READY' && timed) {
 
 `components/video-page/subtitle-controls.tsx`: the generate dialog description becomes `If this version already has a transcript, the captions are built from it; otherwise we transcribe it first. Either way the result is a track you can turn on in the player.`
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run `bun run test`, the api files with the DATABASE_URL prefix, `bun run check`.
 
@@ -4432,7 +4432,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: burned-in subtitles are rendered by ffmpeg's `ass` filter (libass) from an ASS document we generate: one style (font, size, colours, outline or box, position) and one dialogue line per cue. Cues are regrouped from the transcript's timed words so the operator controls pacing (words per cue, max seconds per cue). An optional playback rate speeds the whole video up (`setpts`/`atempo`) and scales the cue times to match. Everything here is pure; the job (Task 10) feeds it words and dimensions.
 
-- [ ] **Step 1: Failing tests**
+- [x] **Step 1: Failing tests**
 
 Create `tests/unit/lib/rough-cut-subtitle-style.test.ts`:
 
@@ -4597,7 +4597,7 @@ The odd-looking casts in the `regroupWordsIntoCues` tests are only there because
 
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-subtitle-style.test.ts` → FAIL.
 
-- [ ] **Step 2: Implement**
+- [x] **Step 2: Implement**
 
 Create `lib/rough-cut/subtitle-style.ts`:
 
@@ -4882,7 +4882,7 @@ The `regroupWordsIntoCues` expectations in Step 1 follow from these rules: with 
 
 Run the unit file → PASS. Then `bun run check`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add lib/rough-cut/subtitle-style.ts tests/unit/lib/rough-cut-subtitle-style.test.ts
@@ -4905,7 +4905,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: the job takes a version, a style (Task 9) and a caption source, renders the subtitles into the picture with ffmpeg, and adds the result as a new version of the same video, carrying the transcript and caption track forward (re-timed when the playback rate changed) so the new version is reviewable and searchable without another transcription.
 
-- [ ] **Step 1: Failing job test**
+- [x] **Step 1: Failing job test**
 
 Create `tests/unit/lib/rough-cut-burn-in-job.test.ts` with a fake pool like the materialize test (Task 6). Answer: `FROM video_versions vv` (the version row: `id 'ver-1'`, `providerId 'r2'`, `videoId 'videos/in.mp4'`, `originalUrl '/api/upload/video/in.mp4'`, `videoParentId 'vid-1'`, `duration 10`, `title 'Talk'`), `SELECT DISTINCT ON (version_id)`/`FROM transcripts` (one READY transcript `t-1`, language `en`), `FROM transcript_segments` (one segment 0–3 with three timed words), `COALESCE(MAX("versionNumber")` → `{ max: 1 }`, `INSERT INTO transcripts` → `[{ id: 't-2' }]`, `SELECT p."ownerId"` → `[{ owner_id: 'owner' }]`. Deps: `run` records args and answers ffprobe with `{ stdout: JSON.stringify({ streams: [{ codec_type: 'video', width: 1280, height: 720 }] }), code: 0 }`, ffmpeg with `{ code: 0 }`; `downloadVersionMedia` records the version and writes nothing; `uploadObject` records keys; `readOutput` returns `Buffer.from('mp4')`; `writeFile` is a dep too (`writeText(path, text)`) so the ASS content can be asserted.
 
@@ -4915,7 +4915,7 @@ Tests:
 2. `re-times the copied transcript when the playback rate is not 1`: style `playbackRate: 2` → the copied segment's `start_sec`/`end_sec` are halved, the new version's duration is 5, the label is `Subtitled 2x`, and ffmpeg args contain `setpts=PTS/2`.
 3. `uses a caption track when asked and fails clearly with no source`: `source: { kind: 'subtitle', subtitleId: 's-1' }` → the job downloads `subtitles/<file>.vtt` (answer `SELECT "sourceUrl" FROM video_subtitles` with `/api/upload/subtitle/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.vtt` and `downloadObject` writes a VTT string through a `readText` dep) and burns its cues; with a version that has neither transcript nor track the job throws `/no transcript or caption track/` and runs no ffmpeg.
 
-- [ ] **Step 2: Implement the job**
+- [x] **Step 2: Implement the job**
 
 Create `lib/rough-cut/burn-in-job.ts`:
 
@@ -5004,7 +5004,7 @@ export type { BurnInDeps, BurnInPayload } from '../lib/rough-cut/burn-in-job';
 
 Run: `bun run vitest run --project unit tests/unit/lib/rough-cut-burn-in-job.test.ts` → PASS; `bun run test`; `bun run check`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add lib worker tests
@@ -5025,7 +5025,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Context: editors start a burn-in for a version of a video they manage and poll its job. Guests and share-link viewers can see nothing here; the route uses the same editor gate as subtitle uploads.
 
-- [ ] **Step 1: Failing API tests**
+- [x] **Step 1: Failing API tests**
 
 Create `tests/api/burn-in.test.ts` (seed with `seedVersion({ providerId: 'r2' })`, `createReadyTranscript` for the version, `addProjectMember` for a VIEWER):
 
@@ -5038,7 +5038,7 @@ Create `tests/api/burn-in.test.ts` (seed with `seedVersion({ providerId: 'r2' })
 
 Add the route to `tests/api/auth-matrix.test.ts` (POST body `{ versionId: f.versionId, style: {} }`).
 
-- [ ] **Step 2: Route**
+- [x] **Step 2: Route**
 
 `app/api/videos/[videoId]/burn-in/route.ts`:
 
@@ -5189,7 +5189,7 @@ Check the `MediaJob` ↔ `VideoVersion` relation name for the `version: { videoP
 
 Run the api file + auth-matrix → PASS. `bun run check`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add app tests
@@ -5211,7 +5211,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `components/video-page-content.tsx` (hook, dialog, reload on completion)
 - Test: `tests/component/hooks/use-burn-in.test.ts`, `tests/component/subtitle-controls.test.tsx`
 
-- [ ] **Step 1: Failing hook test**
+- [x] **Step 1: Failing hook test**
 
 `tests/component/hooks/use-burn-in.test.ts` (fetch stub + fake timers, like `use-subtitles.test.ts`):
 
@@ -5219,7 +5219,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 2. `polls every four seconds until the job succeeds, then calls onDone once`: GET answers `RUNNING` then `SUCCEEDED`; after advancing timers `onDone` was called once, `isRunning` is false, polling stops.
 3. `surfaces the job error on FAILED and the API error on a refused start`: FAILED → `error` is the job's error; a 409 start → `start` returns the message and `job` stays null.
 
-- [ ] **Step 2: Hook**
+- [x] **Step 2: Hook**
 
 `components/video-page/hooks/use-burn-in.ts`:
 
@@ -5325,7 +5325,7 @@ export function useBurnIn(options: {
 }
 ```
 
-- [ ] **Step 3: Dialog and wiring**
+- [x] **Step 3: Dialog and wiring**
 
 `components/video-page/burn-in-dialog.tsx`: a `Dialog` titled "Burn subtitles into a new version" with form state for every `BurnInStyle` field: font (`Select` over `BURN_IN_FONTS`), font size (`<input type="range" min=16 max=120>` with the value shown), text colour and outline colour (`<input type="color">`), outline width (range 0–6, step 0.5), background opacity (range 0–1, step 0.1, labelled "Box behind text"), position (`Select`: Bottom/Centre/Top), bottom/top margin (range 0–400), bold and uppercase checkboxes, words per caption (range 1–14, labelled "Caption speed: fewer words = faster changes"), max seconds per caption (range 0.5–10, step 0.5), playback speed (`Select` 0.9×/1×/1.1×/1.25×/1.5×). A preview box (`aspect-video`, dark background) renders a sample line with the chosen font family (fallback stack), size scaled to the box (`fontSize * boxHeight / 1080`), colours, `text-shadow` outline or a box background, and vertical placement. Footer: Cancel and `Burn in` (spinner while `starting`); the dialog explains that the result lands as a new version of this video and that the current version stays. Props: `open`, `onOpenChange`, `onStart: (style: Partial<BurnInStyle>) => Promise<string | null>`, `starting`, `canStart` (false without a transcript/track, with the reason shown), `subtitles` (tracks, to pick a caption source when the version has no transcript: a `Select` "Caption source" listing "Transcript" plus each track).
 
@@ -5351,7 +5351,7 @@ Pass `onBurnIn={canManageCaptions && supportsSubtitles ? () => setBurnInOpen(tru
 
 Run `bun run test`, `bun run check`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add components tests
@@ -5371,7 +5371,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `INTERNAL.md` (worker fonts, new job kind, transcript-first rule, 2-hour wait)
 - Modify: `README.md` ("Versioning and comparison" / features: burned-in subtitles, transcript editing, cut review)
 
-- [ ] **Step 1: Write the design note**
+- [x] **Step 1: Write the design note**
 
 `docs/superpowers/specs/2026-09-05-transcript-first-editing-design.md`, sections: Problem (the three observations from the operator's test: repeated takes, a manual re-transcription, captions transcribing again), Decisions (transcript required when transcription is on, 2-hour wait, auto-enqueue at run creation and in the job; containment grouping; script alignment with `script_match` first; derived transcript on every render; overrides keyed by island / source range; re-render as a new version of the output video; burn-in as a media job into a new version with the transcript carried forward), Data model (the four `rough_cuts` columns, `BURN_SUBTITLES`), API (each new route, one line each), UI (script textarea, Cuts tab, transcript line editing, captions-from-transcript, burn-in dialog), Warnings (`script-lines-missing`, `off-script-beats`, `script-ignored`, `script-unreadable`), Out of scope (markers re-placement after overrides, per-viewer forensic marks, model-backed script alignment).
 
@@ -5381,7 +5381,7 @@ In the editorial-brief spec, mark phase 5 as **Done** (overrides route, `applyOv
 
 `README.md`: add bullets for editing transcript lines in place, captions built from the transcript, burned-in subtitle versions, and reviewing a rough cut's removals against the source.
 
-- [ ] **Step 2: Full verification**
+- [x] **Step 2: Full verification**
 
 Run, in the worktree:
 
@@ -5393,7 +5393,7 @@ DATABASE_URL="postgresql://openframe:openframe@127.0.0.1:55432/openframe_test?sc
 
 All three must pass. Then `git status` must be clean after the commit below.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs INTERNAL.md README.md
