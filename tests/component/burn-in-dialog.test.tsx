@@ -123,6 +123,35 @@ describe('BurnInDialog', () => {
     );
   });
 
+  it('stays closable while the start is in flight', async () => {
+    // The POST has no timeout. A modal that will not close until it answers is
+    // a trap, and there is nothing to lose by leaving: the hook outlives the
+    // dialog and the page reports whatever comes back.
+    const onOpenChange = vi.fn();
+    renderDialog({ starting: true, onOpenChange });
+
+    expect(screen.getByRole('button', { name: /Burn in/ })).toBeDisabled();
+
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel).toBeEnabled();
+    await userEvent.click(cancel);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    onOpenChange.mockClear();
+    await userEvent.keyboard('{Escape}');
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('warns that the playback speed re-times the video, which the preview cannot show', () => {
+    renderDialog();
+
+    expect(
+      screen.getByText(
+        'Re-times the picture and the audio too, not just the captions. The preview does not show it.'
+      )
+    ).toBeVisible();
+  });
+
   it('refuses to start, with the reason, when the version has no file to burn into', async () => {
     renderDialog({ canStart: false });
 

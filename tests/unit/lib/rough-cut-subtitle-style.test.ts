@@ -208,10 +208,11 @@ describe('ASS output', () => {
     expect(doc).toContain('PlayResX: 1280');
     expect(doc).toContain('PlayResY: 720');
     // At 720 the scale is two thirds, so the 48 pt size becomes 32, the 60
-    // margin becomes 40, and the 40 side margins become 27 with it: a 4K line
-    // would otherwise keep 40 units of air and run edge to edge.
+    // margin becomes 40, the 40 side margins become 27 with it (a 4K line would
+    // otherwise keep 40 units of air and run edge to edge) and the 2-unit
+    // outline becomes 1.33.
     expect(doc).toContain(
-      'Style: Default,Roboto,32,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,3,2,0,8,27,27,40,1'
+      'Style: Default,Roboto,32,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,3,1.33,0,8,27,27,40,1'
     );
     expect(doc).toContain(
       'Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,Hello (there)\\Nfriend'
@@ -306,6 +307,32 @@ describe('ASS output', () => {
       'Style: Default,DejaVu Sans,48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,5,40,40,60,1'
     );
     expect(doc).not.toContain('Dialogue:');
+  });
+
+  it('scales the outline with the font size instead of leaving it thin at 4K', () => {
+    // PlayRes is the frame here, so `ScaledBorderAndShadow` has nothing to
+    // scale by and the outline has to be scaled explicitly. At 2160 the factor
+    // is 2: a 3-unit outline is written as 6, the same proportion of the 96 pt
+    // line the operator saw against a 1080 preview. An unscaled 3 would render
+    // at half the weight they picked.
+    const uhd = buildAssDocument([], style({ outlineWidth: 3, fontSize: 48 }), {
+      width: 3840,
+      height: 2160,
+    });
+    expect(uhd).toContain(
+      'Style: Default,DejaVu Sans,96,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,6,0,2,80,80,120,1'
+    );
+
+    // Nothing moves at the reference height, whole or fractional.
+    const hd = buildAssDocument([], style({ outlineWidth: 2.5 }), { width: 1920, height: 1080 });
+    expect(hd).toContain(',0,0,1,2.5,0,2,40,40,60,1');
+
+    // A vertical phone cut scales by height alone, so 1080x1920 keeps 1.
+    const vertical = buildAssDocument([], style({ outlineWidth: 2 }), {
+      width: 1080,
+      height: 1920,
+    });
+    expect(vertical).toContain(',0,0,1,3.56,0,2,71,71,107,1');
   });
 });
 

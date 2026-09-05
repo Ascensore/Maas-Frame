@@ -70,6 +70,19 @@ export function canAutoTranscribe(kind: ReviewKind, providerId: string): boolean
   return fileBacked && (kind === 'VIDEO' || kind === 'AUDIO');
 }
 
+/**
+ * Burning captions into the picture needs a picture and a master to re-encode.
+ * Narrower than `canAutoTranscribe` by exactly one kind: an audio review is
+ * file-backed and can hold a ready transcript, so nothing but the kind
+ * separates it from a video, and the burn-in route refuses it with a 400. This
+ * is the same gate, asked before the menu entry is drawn rather than after the
+ * operator has filled in a dialog.
+ */
+export function canBurnInSubtitles(kind: ReviewKind, providerId: string): boolean {
+  const fileBacked = providerId === 'r2' || providerId === 'bunny';
+  return fileBacked && kind === 'VIDEO';
+}
+
 export function shouldEnqueueTranscribe(
   kind: ReviewKind,
   providerId: string,

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
+  BURN_IN_BOUNDS,
   BURN_IN_FONTS,
   BURN_IN_REFERENCE_HEIGHT,
   type BurnInFontId,
@@ -16,10 +17,13 @@ import { cn } from '@/lib/utils';
  * words-per-caption the renderer will use, scaled from the schema's 1080-line
  * reference height to whatever this box measures. libass draws the real thing,
  * and it draws the stroke rather than eight offset copies of the text.
+ *
+ * One thing it deliberately does not show: the playback rate, which re-times
+ * the video rather than changing how a caption looks. The dialog says so in
+ * words instead.
  */
 
-/** Fourteen words, the schema's ceiling, so the line can show any pacing setting. */
-const SAMPLE_WORDS = [
+const SAMPLE_PHRASE = [
   'This',
   'is',
   'how',
@@ -35,6 +39,17 @@ const SAMPLE_WORDS = [
   'the',
   'picture',
 ];
+
+/**
+ * Exactly as many words as the pacing slider can ask for, so the longest
+ * setting shows the longest line. Generated rather than written out: raising
+ * the schema's ceiling would otherwise leave the preview quietly clipped at
+ * fourteen while the control claimed more.
+ */
+const SAMPLE_WORDS = Array.from(
+  { length: BURN_IN_BOUNDS.maxWordsPerCue.max },
+  (_, index) => SAMPLE_PHRASE[index % SAMPLE_PHRASE.length]!
+);
 
 /** What the browser falls back to when the render font is not installed locally. */
 const FONT_FALLBACKS: Record<BurnInFontId, string> = {
@@ -106,8 +121,11 @@ export function BurnInPreview({ style }: { style: BurnInStyle }) {
       padding: boxed ? `${fontSize * 0.12}px ${fontSize * 0.3}px` : undefined,
       // The renderer draws the box in the outline colour too, so the two agree.
       backgroundColor: boxed ? rgba(style.outlineColor, style.backgroundOpacity) : undefined,
+      // With a box, ASS BorderStyle 3 spends the outline width on padding round
+      // the box rather than on a stroke round each glyph, so drawing one here
+      // would show an edge the render will not have.
       textShadow:
-        style.outlineWidth > 0
+        !boxed && style.outlineWidth > 0
           ? outlineShadow(style.outlineColor, style.outlineWidth * scale)
           : undefined,
     }),

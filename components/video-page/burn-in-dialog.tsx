@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import { Flame, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,6 +22,7 @@ import {
 import { BurnInPreview } from '@/components/video-page/burn-in-preview';
 import type { SubtitleTrackOption } from '@/components/video-page/types';
 import {
+  BURN_IN_BOUNDS,
   BURN_IN_FONTS,
   burnInStyleSchema,
   type BurnInFontId,
@@ -32,9 +33,12 @@ import {
 /**
  * The knobs behind a burned-in caption, with a picture of what they do.
  *
- * Every bound and every default comes out of `burnInStyleSchema`, so a slider
- * cannot offer a value the API would refuse and the dialog cannot drift from
- * the renderer when the schema moves.
+ * The sliders take their ends from `BURN_IN_BOUNDS` and the form opens on
+ * `burnInStyleSchema`'s own defaults, so no control can offer a value the route
+ * would refuse. The two enumerated controls are narrower than the schema on
+ * purpose: `PLAYBACK_RATES` is a curated subset of the 0.5-2 the API accepts,
+ * because the speeds either side of 1 are the only ones anyone wants and 2x is
+ * unwatchable.
  */
 
 interface BurnInDialogProps {
@@ -63,20 +67,6 @@ const POSITION_LABELS: Record<BurnInPosition, string> = {
 };
 
 const PLAYBACK_RATES = [0.9, 1, 1.1, 1.25, 1.5];
-
-type NumericStyleKey =
-  | 'fontSize'
-  | 'outlineWidth'
-  | 'backgroundOpacity'
-  | 'marginVertical'
-  | 'maxWordsPerCue'
-  | 'maxCueSeconds';
-
-/** The slider's ends, read off the schema rather than written down twice. */
-function bounds(key: NumericStyleKey): { min: number; max: number } {
-  const field = burnInStyleSchema.shape[key].def.innerType;
-  return { min: field.minValue ?? 0, max: field.maxValue ?? 0 };
-}
 
 export function BurnInDialog({
   open,
@@ -107,6 +97,10 @@ export function BurnInDialog({
     onOpenChange(false);
   }, [onOpenChange]);
 
+  // A refusal that arrives after the dialog was dismissed is kept rather than
+  // dropped: the page deliberately does not toast start refusals, so reopening
+  // is the only place left to read it, and one start runs at a time.
+
   const handleStart = useCallback(async () => {
     setError(null);
     const message = await onStart(
@@ -119,14 +113,12 @@ export function BurnInDialog({
   return (
     <Dialog
       open={open}
+      // Closing while the POST is in flight is allowed on purpose: the request
+      // has no timeout, and a modal that cannot be dismissed until an answer
+      // arrives is a trap. The hook outlives the dialog and the page reports
+      // whatever comes back.
       onOpenChange={(next) => {
-        if (next) {
-          onOpenChange(true);
-          return;
-        }
-        // A queued job is not cancellable, so the dialog stays put until the
-        // POST has answered one way or the other.
-        if (!starting) close();
+        if (!next) close();
       }}
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
@@ -142,8 +134,11 @@ export function BurnInDialog({
         <BurnInPreview style={style} />
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="burn-in-source">Caption source</Label>
+          <Field
+            id="burn-in-source"
+            label="Caption source"
+            hint="Transcript uses this version's own words; a track burns that file instead."
+          >
             <Select value={chosenSource} onValueChange={setSource}>
               <SelectTrigger id="burn-in-source">
                 <SelectValue />
@@ -157,10 +152,13 @@ export function BurnInDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="burn-in-font">Font</Label>
+          <Field
+            id="burn-in-font"
+            label="Font"
+            hint="Rendered with the font installed on the worker, not on this machine."
+          >
             <Select
               value={style.font}
               onValueChange={(value) => set('font', value as BurnInFontId)}
@@ -176,14 +174,14 @@ export function BurnInDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
           <RangeField
             id="burn-in-font-size"
             label="Font size"
             value={style.fontSize}
             step={1}
-            {...bounds('fontSize')}
+            {...BURN_IN_BOUNDS.fontSize}
             display={`${style.fontSize} pt`}
             hint="Measured on a 1080-line frame and scaled to the real height."
             onChange={(value) => set('fontSize', Math.round(value))}
@@ -209,7 +207,7 @@ export function BurnInDialog({
             label="Outline width"
             value={style.outlineWidth}
             step={0.5}
-            {...bounds('outlineWidth')}
+            {...BURN_IN_BOUNDS.outlineWidth}
             display={`${style.outlineWidth}`}
             onChange={(value) => set('outlineWidth', value)}
           />
@@ -219,7 +217,7 @@ export function BurnInDialog({
             label="Box behind text"
             value={style.backgroundOpacity}
             step={0.1}
-            {...bounds('backgroundOpacity')}
+            {...BURN_IN_BOUNDS.backgroundOpacity}
             display={
               style.backgroundOpacity === 0
                 ? 'Off'
@@ -229,8 +227,7 @@ export function BurnInDialog({
             onChange={(value) => set('backgroundOpacity', value)}
           />
 
-          <div className="space-y-1.5">
-            <Label htmlFor="burn-in-position">Position</Label>
+          <Field id="burn-in-position" label="Position">
             <Select
               value={style.position}
               onValueChange={(value) => set('position', value as BurnInPosition)}
@@ -246,14 +243,14 @@ export function BurnInDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
           <RangeField
             id="burn-in-margin"
             label="Vertical margin"
             value={style.marginVertical}
             step={1}
-            {...bounds('marginVertical')}
+            {...BURN_IN_BOUNDS.marginVertical}
             display={`${style.marginVertical} px`}
             onChange={(value) => set('marginVertical', Math.round(value))}
           />
@@ -263,7 +260,7 @@ export function BurnInDialog({
             label="Caption speed: fewer words = faster changes"
             value={style.maxWordsPerCue}
             step={1}
-            {...bounds('maxWordsPerCue')}
+            {...BURN_IN_BOUNDS.maxWordsPerCue}
             display={`${style.maxWordsPerCue} words`}
             onChange={(value) => set('maxWordsPerCue', Math.round(value))}
           />
@@ -273,13 +270,16 @@ export function BurnInDialog({
             label="Longest caption"
             value={style.maxCueSeconds}
             step={0.5}
-            {...bounds('maxCueSeconds')}
+            {...BURN_IN_BOUNDS.maxCueSeconds}
             display={`${style.maxCueSeconds}s`}
             onChange={(value) => set('maxCueSeconds', value)}
           />
 
-          <div className="space-y-1.5">
-            <Label htmlFor="burn-in-rate">Playback speed</Label>
+          <Field
+            id="burn-in-rate"
+            label="Playback speed"
+            hint="Re-times the picture and the audio too, not just the captions. The preview does not show it."
+          >
             <Select
               value={String(style.playbackRate)}
               onValueChange={(value) => set('playbackRate', Number(value))}
@@ -295,7 +295,7 @@ export function BurnInDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </Field>
 
           <div className="flex items-end gap-4 text-xs">
             <label className="flex items-center gap-1.5">
@@ -327,7 +327,7 @@ export function BurnInDialog({
         )}
 
         <DialogFooter>
-          <Button variant="ghost" onClick={close} disabled={starting}>
+          <Button variant="ghost" onClick={close}>
             Cancel
           </Button>
           <Button onClick={() => void handleStart()} disabled={starting || !canStart}>
@@ -341,6 +341,36 @@ export function BurnInDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Label, control, and room underneath for what the control actually does. The
+ * hint is where a setting says the part its name does not: that the playback
+ * speed re-times the whole video, say, which nothing else on screen admits.
+ */
+function Field({
+  id,
+  label,
+  hint,
+  aside,
+  children,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  aside?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <Label htmlFor={id}>{label}</Label>
+        {aside && <span className="text-muted-foreground text-xs tabular-nums">{aside}</span>}
+      </div>
+      {children}
+      {hint && <p className="text-muted-foreground text-[11px]">{hint}</p>}
+    </div>
   );
 }
 
@@ -366,11 +396,7 @@ function RangeField({
   onChange: (value: number) => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <Label htmlFor={id}>{label}</Label>
-        <span className="text-muted-foreground text-xs tabular-nums">{display}</span>
-      </div>
+    <Field id={id} label={label} hint={hint} aside={display}>
       <input
         id={id}
         type="range"
@@ -381,8 +407,7 @@ function RangeField({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      {hint && <p className="text-muted-foreground text-[11px]">{hint}</p>}
-    </div>
+    </Field>
   );
 }
 
@@ -398,8 +423,7 @@ function ColorField({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
+    <Field id={id} label={label}>
       <div className="flex items-center gap-2">
         <input
           id={id}
@@ -410,6 +434,6 @@ function ColorField({
         />
         <span className="text-muted-foreground text-xs uppercase tabular-nums">{value}</span>
       </div>
-    </div>
+    </Field>
   );
 }

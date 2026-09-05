@@ -43,23 +43,70 @@ export const BURN_IN_MIN_CUE_SECONDS = 0.6;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
+/**
+ * The ends of every numeric field, named once so the schema below and the UI
+ * that draws the sliders cannot disagree. A control that offered a value
+ * outside these would be refused by the route with a validation error the
+ * operator has no way to act on.
+ */
+export const BURN_IN_BOUNDS = {
+  fontSize: { min: 16, max: 120 },
+  outlineWidth: { min: 0, max: 6 },
+  backgroundOpacity: { min: 0, max: 1 },
+  marginVertical: { min: 0, max: 400 },
+  maxWordsPerCue: { min: 1, max: 14 },
+  maxCueSeconds: { min: 0.5, max: 10 },
+  playbackRate: { min: 0.5, max: 2 },
+} as const;
+
 export const burnInStyleSchema = z
   .object({
     font: z.enum(FONT_IDS).default('dejavu-sans'),
-    fontSize: z.number().int().min(16).max(120).default(48),
+    fontSize: z
+      .number()
+      .int()
+      .min(BURN_IN_BOUNDS.fontSize.min)
+      .max(BURN_IN_BOUNDS.fontSize.max)
+      .default(48),
     textColor: z.string().regex(HEX_COLOR).default('#FFFFFF'),
     outlineColor: z.string().regex(HEX_COLOR).default('#000000'),
-    outlineWidth: z.number().min(0).max(6).default(2),
+    outlineWidth: z
+      .number()
+      .min(BURN_IN_BOUNDS.outlineWidth.min)
+      .max(BURN_IN_BOUNDS.outlineWidth.max)
+      .default(2),
     /** 0 draws an outline only; above 0 draws a box behind the text with this opacity. */
-    backgroundOpacity: z.number().min(0).max(1).default(0),
+    backgroundOpacity: z
+      .number()
+      .min(BURN_IN_BOUNDS.backgroundOpacity.min)
+      .max(BURN_IN_BOUNDS.backgroundOpacity.max)
+      .default(0),
     position: z.enum(BURN_IN_POSITIONS).default('bottom'),
-    marginVertical: z.number().int().min(0).max(400).default(60),
+    marginVertical: z
+      .number()
+      .int()
+      .min(BURN_IN_BOUNDS.marginVertical.min)
+      .max(BURN_IN_BOUNDS.marginVertical.max)
+      .default(60),
     bold: z.boolean().default(true),
     uppercase: z.boolean().default(false),
-    maxWordsPerCue: z.number().int().min(1).max(14).default(6),
-    maxCueSeconds: z.number().min(0.5).max(10).default(4),
+    maxWordsPerCue: z
+      .number()
+      .int()
+      .min(BURN_IN_BOUNDS.maxWordsPerCue.min)
+      .max(BURN_IN_BOUNDS.maxWordsPerCue.max)
+      .default(6),
+    maxCueSeconds: z
+      .number()
+      .min(BURN_IN_BOUNDS.maxCueSeconds.min)
+      .max(BURN_IN_BOUNDS.maxCueSeconds.max)
+      .default(4),
     /** 1 keeps the timing; anything else re-times video, audio and cues together. */
-    playbackRate: z.number().min(0.5).max(2).default(1),
+    playbackRate: z
+      .number()
+      .min(BURN_IN_BOUNDS.playbackRate.min)
+      .max(BURN_IN_BOUNDS.playbackRate.max)
+      .default(1),
   })
   .strict();
 
@@ -81,6 +128,10 @@ export function parseBurnInStyle(
 
 function round3(value: number): number {
   return Math.round(value * 1000) / 1000;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**
@@ -184,6 +235,13 @@ export function buildAssDocument(
   const margin = Math.round(style.marginVertical * scale);
   // Scaled like everything else, or a 4K line runs from one edge to the other.
   const sideMargin = Math.round(SIDE_MARGIN * scale);
+  // The outline is given against the same 1080-line reference as the font size,
+  // so it has to be scaled with it. `ScaledBorderAndShadow: yes` would do this
+  // for us if PlayRes differed from the frame, but PlayRes *is* the frame here,
+  // so its factor is 1 and an unscaled 2 would come out half as thick at 4K as
+  // the operator saw it. Fractions are legal in this field; two decimals is
+  // finer than libass renders.
+  const outlineWidth = round2(style.outlineWidth * scale);
   const boxed = style.backgroundOpacity > 0;
   const styleLine = [
     'Default',
@@ -202,7 +260,8 @@ export function buildAssDocument(
     '0',
     '0',
     boxed ? '3' : '1',
-    String(style.outlineWidth),
+    String(outlineWidth),
+    // Shadow, always off: zero scales to zero, so it needs no factor.
     '0',
     String(ALIGNMENT[style.position]),
     String(sideMargin),

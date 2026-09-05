@@ -55,7 +55,7 @@ import type { BurnInStyle } from '@/lib/rough-cut/subtitle-style';
 import { BurnInDialog } from '@/components/video-page/burn-in-dialog';
 import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
-import { canAutoTranscribe } from '@/lib/review-kind';
+import { canAutoTranscribe, canBurnInSubtitles } from '@/lib/review-kind';
 
 function formatTime(seconds: number): string {
   const totalSeconds = Math.floor(seconds);
@@ -403,11 +403,23 @@ export function VideoPageContent({
   });
   const canManageCaptions = canShareVideo || canManageSubtitles;
   const canGenerateCaptions = supportsSubtitles && canManageCaptions;
+  /**
+   * Everything the burn-in route insists on, asked once. `supportsSubtitles` is
+   * provider-only, so an audio review stored on R2 passes it and would be
+   * offered a burn the route answers 400 to: there is no picture to burn into.
+   * `canBurnInSubtitles` is the route's own gate, asked before the menu entry
+   * is drawn rather than after the operator has filled in the dialog.
+   */
+  const canBurnIn =
+    canManageCaptions &&
+    !!activeVersionId &&
+    canBurnInSubtitles(video?.kind ?? 'VIDEO', activeProviderId ?? '');
   // A burn-in adds a version to this very video, so the page reloads its own
   // data rather than asking the operator to.
   const burnIn = useBurnIn({
     videoId,
     versionId: activeVersionId,
+    enabled: canBurnIn,
     onDone: () => {
       toast.success('Subtitled version ready');
       void reloadVideo();
@@ -1211,7 +1223,7 @@ export function VideoPageContent({
             onGenerateSubtitles={generateSubtitles}
             isUploadingSubtitle={isUploadingSubtitle}
             isGeneratingSubtitles={isGeneratingSubtitles}
-            onBurnIn={canManageCaptions && supportsSubtitles ? openBurnIn : undefined}
+            onBurnIn={canBurnIn ? openBurnIn : undefined}
             burnInRunning={burnIn.isRunning}
             playbackSpeed={playbackSpeed}
             playbackSpeedBounds={playbackSpeedBounds}
@@ -1421,14 +1433,16 @@ export function VideoPageContent({
 
       <ImagePreviewDialog previewImage={previewImage} onClose={() => setPreviewImage(null)} />
 
-      <BurnInDialog
-        open={burnInOpen}
-        onOpenChange={setBurnInOpen}
-        starting={burnIn.starting}
-        canStart={supportsSubtitles}
-        subtitles={subtitles}
-        onStart={startBurnIn}
-      />
+      {canBurnIn && (
+        <BurnInDialog
+          open={burnInOpen}
+          onOpenChange={setBurnInOpen}
+          starting={burnIn.starting}
+          canStart={canBurnIn}
+          subtitles={subtitles}
+          onStart={startBurnIn}
+        />
+      )}
 
       <CompareVersionsDialog
         open={showCompareDialog}

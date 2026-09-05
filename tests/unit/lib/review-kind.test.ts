@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canAutoTranscribe,
+  canBurnInSubtitles,
   hasKnownReviewMagicBytes,
   reviewKindFromFileName,
   reviewKindFromUploadPath,
@@ -158,6 +159,26 @@ describe('hasKnownReviewMagicBytes', () => {
     const exe = Uint8Array.from([0x4d, 0x5a, 0x90, 0x00]);
     expect(hasKnownReviewMagicBytes('hero.jpg', exe)).toBe(false);
     expect(hasKnownReviewMagicBytes('payload.exe', exe)).toBe(false);
+  });
+});
+
+describe('canBurnInSubtitles', () => {
+  it('allows only a file-backed video, refusing the audio review transcription allows', () => {
+    expect(canBurnInSubtitles('VIDEO', 'r2')).toBe(true);
+    expect(canBurnInSubtitles('VIDEO', 'bunny')).toBe(true);
+
+    // The one that matters: an audio review on R2 passes every provider check
+    // and holds a transcript, so only the kind stops the burn-in route from
+    // being asked to draw captions onto a file with no picture.
+    expect(canAutoTranscribe('AUDIO', 'r2')).toBe(true);
+    expect(canBurnInSubtitles('AUDIO', 'r2')).toBe(false);
+
+    expect(canBurnInSubtitles('IMAGE', 'r2')).toBe(false);
+    expect(canBurnInSubtitles('PDF', 'r2')).toBe(false);
+    // No master to re-encode.
+    expect(canBurnInSubtitles('VIDEO', 'youtube')).toBe(false);
+    expect(canBurnInSubtitles('VIDEO', 'vimeo')).toBe(false);
+    expect(canBurnInSubtitles('VIDEO', '')).toBe(false);
   });
 });
 
