@@ -9,6 +9,7 @@ import {
   sanitizeSubtitleLabel,
   SAFE_SUBTITLE_PROXY_PATH,
   serializeWebVtt,
+  stripCueMarkup,
   subtitleProxyPathToObjectKey,
 } from '@/lib/subtitle-validation';
 
@@ -192,6 +193,23 @@ describe('normalizeSubtitleFile', () => {
       ok: false,
       error: 'No subtitle cues found. Upload a valid .srt or .vtt file.',
     });
+  });
+});
+
+describe('stripCueMarkup', () => {
+  it('drops the tags the parser keeps and decodes the entities it wrote', () => {
+    expect(stripCueMarkup('<b>Hello</b> &lt;world&gt; &amp; more')).toBe('Hello <world> & more');
+  });
+
+  it('undoes everything parseSubtitleCues leaves in a cue', () => {
+    // The parser keeps this markup on purpose: its output feeds a browser VTT
+    // parser, which renders it. Anything treating a cue as text — a transcript
+    // import, a burned-in caption — reads it literally unless this runs first.
+    const [cue] = parseSubtitleCues(
+      'WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n<v Alice><i>Whispering</i> now &amp; then <c.loud>5</c>\n'
+    );
+    expect(cue!.text).toBe('<v Alice><i>Whispering</i> now &amp; then <c.loud>5</c>');
+    expect(stripCueMarkup(cue!.text)).toBe('Whispering now & then 5');
   });
 });
 

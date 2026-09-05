@@ -4,6 +4,7 @@ import {
   MAX_SUBTITLE_CUES,
   MAX_SUBTITLE_FILE_SIZE,
   parseSubtitleCues,
+  stripCueMarkup,
 } from '@/lib/subtitle-validation';
 import type { TranscriptWord } from '@/lib/transcription/types';
 
@@ -42,20 +43,6 @@ export function getTranscriptUploadExtension(fileName: string): TranscriptUpload
 
 export function isTranscriptSegmentTimed(segment: { startSec: number; endSec: number }): boolean {
   return segment.endSec > segment.startSec;
-}
-
-/**
- * Strip the small amount of WebVTT markup `parseSubtitleCues` may leave, so a
- * cue becomes words a reviewer can highlight.
- */
-export function stripCueMarkup(text: string): string {
-  return text
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 export function splitWords(text: string): string[] {

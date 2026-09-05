@@ -22,11 +22,23 @@ const FONT_IDS = BURN_IN_FONTS.map((font) => font.id) as [BurnInFontId, ...BurnI
 export const BURN_IN_POSITIONS = ['bottom', 'center', 'top'] as const;
 export type BurnInPosition = (typeof BURN_IN_POSITIONS)[number];
 
-/** Font sizes are given for a 1080-pixel-high frame and scaled to the real height. */
+/**
+ * Font sizes are given for a 1080-pixel-high frame and scaled to the real
+ * height. Height alone, deliberately: on a 1080x1920 phone cut the same point
+ * size comes out roughly twice as large relative to the frame's width as it
+ * does on a landscape master, which is the convention for vertical social
+ * cuts. Scaling by width instead, or by the smaller side, would shrink them
+ * back to something unreadable at arm's length.
+ */
 export const BURN_IN_REFERENCE_HEIGHT = 1080;
 /** A pause longer than this between words starts a new cue. */
 export const BURN_IN_CUE_GAP_SECONDS = 1;
-/** A cue never disappears faster than this after it starts, unless the next cue starts. */
+/**
+ * A cue never disappears faster than this after it starts, unless the next cue
+ * starts. Measured in the time the viewer experiences: the grouping works in
+ * source seconds, so the floor is stretched by the playback rate here and comes
+ * back to 0.6 s once `scaleCueTimes` has divided the cue by that rate.
+ */
 export const BURN_IN_MIN_CUE_SECONDS = 0.6;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -72,9 +84,9 @@ function round3(value: number): number {
 }
 
 /**
- * Words become cues by count, duration and pauses. A cue holds until its last
- * word ends, or until a beat after the cue started when that is later, and
- * never into the next cue.
+ * Words become cues by count, duration, pauses and speaker changes. A cue holds
+ * until its last word ends, or until a beat after the cue started when that is
+ * later, and never into the next cue.
  */
 export function regroupWordsIntoCues(words: TimedWord[], style: BurnInStyle): SubtitleCue[] {
   const ordered = [...words].filter((word) => word.text.trim()).sort((a, b) => a.start - b.start);
@@ -83,7 +95,12 @@ export function regroupWordsIntoCues(words: TimedWord[], style: BurnInStyle): Su
   for (const word of ordered) {
     const first = current[0];
     const last = current[current.length - 1];
+    // A turn is a hard boundary: one caption carrying the end of an answer
+    // and the start of the next question reads as one person saying both.
+    const speakerChange =
+      last?.speaker != null && word.speaker != null && last.speaker !== word.speaker;
     const breaks =
+      speakerChange ||
       current.length >= style.maxWordsPerCue ||
       (first !== undefined && word.end - first.start > style.maxCueSeconds) ||
       (last !== undefined && word.start - last.end > BURN_IN_CUE_GAP_SECONDS);
@@ -98,7 +115,7 @@ export function regroupWordsIntoCues(words: TimedWord[], style: BurnInStyle): Su
   return groups.map((group, index) => {
     const next = groups[index + 1];
     const lastEnd = group[group.length - 1]!.end;
-    const held = Math.max(lastEnd, group[0]!.start + BURN_IN_MIN_CUE_SECONDS);
+    const held = Math.max(lastEnd, group[0]!.start + BURN_IN_MIN_CUE_SECONDS * style.playbackRate);
     const end = next ? Math.min(held, next[0]!.start) : held;
     const text = group.map((word) => word.text.trim()).join(' ');
     return {
@@ -140,11 +157,20 @@ export function assTime(seconds: number): string {
 }
 
 function assText(text: string): string {
-  // Braces would open an override block; newlines are ASS line breaks.
-  return text.replace(/\{/g, '(').replace(/\}/g, ')').replace(/\r?\n/g, '\\N');
+  // Backslashes first: libass reads `\N`, `\n` and `\h` as controls, so one
+  // that arrived in the text has to stop being one before the line break
+  // rewrite below adds a real `\N`. Braces would open an override block.
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/\{/g, '(')
+    .replace(/\}/g, ')')
+    .replace(/\r?\n/g, '\\N');
 }
 
 const ALIGNMENT: Record<BurnInPosition, number> = { bottom: 2, center: 5, top: 8 };
+
+/** Left and right margins at the reference height, in ASS units. */
+const SIDE_MARGIN = 40;
 
 export function buildAssDocument(
   cues: SubtitleCue[],
@@ -155,6 +181,8 @@ export function buildAssDocument(
   const scale = video.height / BURN_IN_REFERENCE_HEIGHT;
   const fontSize = Math.max(8, Math.round(style.fontSize * scale));
   const margin = Math.round(style.marginVertical * scale);
+  // Scaled like everything else, or a 4K line runs from one edge to the other.
+  const sideMargin = Math.round(SIDE_MARGIN * scale);
   const boxed = style.backgroundOpacity > 0;
   const styleLine = [
     'Default',
@@ -176,8 +204,8 @@ export function buildAssDocument(
     String(style.outlineWidth),
     '0',
     String(ALIGNMENT[style.position]),
-    '40',
-    '40',
+    String(sideMargin),
+    String(sideMargin),
     String(margin),
     '1',
   ].join(',');
@@ -204,11 +232,28 @@ export function buildAssDocument(
   ].join('\n');
 }
 
-/** ffmpeg filter option values need these characters escaped. */
+/**
+ * Escape a path for an ffmpeg filter option that the caller wraps in `'…'`.
+ *
+ * ffmpeg reads the value twice. First the filtergraph is tokenised (terminators
+ * `[`, `]`, `,`, `;`), where a `'…'` run is copied out literally and a
+ * backslash inside it is *not* an escape. What comes out of that is then read
+ * again by the option parser, which splits on `:` and this time does honour
+ * backslash escapes and quotes. So a doubled backslash survives level one and
+ * becomes one backslash at level two, `\:` reaches level two as `\:` and
+ * becomes `:`, and the graph terminators are already safe inside the quotes —
+ * the backslashes on them are dropped at level two and cost nothing.
+ *
+ * An apostrophe is the exception, and the reason this is not a plain escape
+ * table: inside the quotes there is no way to write one, because the quote run
+ * ends at the first `'` whatever precedes it. It has to leave the quotes and
+ * come back — `\` (literal, inside), `'` (closes), `\'` (escaped apostrophe,
+ * outside), `'` (reopens) — which is level one's `\'` and level two's `'`.
+ */
 export function escapeFfmpegFilterPath(path: string): string {
   return path
     .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
+    .replace(/'/g, "\\'\\''")
     .replace(/:/g, '\\:')
     .replace(/,/g, '\\,')
     .replace(/\[/g, '\\[')
@@ -265,8 +310,12 @@ export function burnInFfmpegArgs(
     ];
   }
   const rate = String(style.playbackRate);
-  // `-map 0:a:0?` above makes a silent source harmless at normal speed, but a
-  // filtergraph has no optional inputs: naming `[0:a]` when there is no audio
+  // Indexed labels, matching the `0:v:0` / `0:a:0?` maps above: `[0:v]` is
+  // rejected outright when it matches more than one stream, which an MP4 with
+  // cover art or a second audio language routinely does.
+  //
+  // `-map 0:a:0?` makes a silent source harmless at normal speed, but a
+  // filtergraph has no optional inputs: naming `[0:a:0]` when there is no audio
   // stream fails the whole render.
   if (!hasAudio) {
     return [
@@ -277,7 +326,7 @@ export function burnInFfmpegArgs(
       '-i',
       inputPath,
       '-filter_complex',
-      `[0:v]setpts=PTS/${rate},${ass}[v]`,
+      `[0:v:0]setpts=PTS/${rate},${ass}[v]`,
       '-map',
       '[v]',
       ...encode,
@@ -291,7 +340,7 @@ export function burnInFfmpegArgs(
     '-i',
     inputPath,
     '-filter_complex',
-    `[0:v]setpts=PTS/${rate},${ass}[v];[0:a]atempo=${rate}[a]`,
+    `[0:v:0]setpts=PTS/${rate},${ass}[v];[0:a:0]atempo=${rate}[a]`,
     '-map',
     '[v]',
     '-map',

@@ -137,6 +137,41 @@ describe('regroupWordsIntoCues', () => {
     ]);
   });
 
+  it('holds a short cue for the same time on screen at any playback rate', () => {
+    const word = [{ start: 0, end: 0.1, text: 'Hi' }];
+    // The grouping works in source seconds but the floor is about reading
+    // time, so it is stretched by the rate here and divided back out by
+    // scaleCueTimes. Enforcing it before the scaling left a 2x render showing
+    // its shortest captions for 0.3 s.
+    expect(regroupWordsIntoCues(word, style())).toEqual([{ start: 0, end: 0.6, text: 'Hi' }]);
+    const fast = regroupWordsIntoCues(word, style({ playbackRate: 2 }));
+    expect(fast).toEqual([{ start: 0, end: 1.2, text: 'Hi' }]);
+    expect(scaleCueTimes(fast, 2)).toEqual([{ start: 0, end: 0.6, text: 'Hi' }]);
+  });
+
+  it('starts a new cue when the speaker changes', () => {
+    const turn = [
+      { start: 0, end: 0.4, text: 'Yes', speaker: 'A' },
+      { start: 0.5, end: 0.9, text: 'exactly', speaker: 'A' },
+      { start: 1, end: 1.4, text: 'And', speaker: 'B' },
+      { start: 1.5, end: 1.9, text: 'you?', speaker: 'B' },
+    ];
+    // Four words, six to a cue, no pause over a second and under four seconds
+    // end to end: nothing but the turn can split them.
+    expect(regroupWordsIntoCues(turn, style())).toEqual([
+      { start: 0, end: 0.9, text: 'Yes exactly' },
+      { start: 1, end: 1.9, text: 'And you?' },
+    ]);
+    // The same words with nobody attributed stay in one caption, which is what
+    // makes the split above the speaker's doing.
+    expect(
+      regroupWordsIntoCues(
+        turn.map((word) => ({ start: word.start, end: word.end, text: word.text })),
+        style()
+      )
+    ).toEqual([{ start: 0, end: 1.9, text: 'Yes exactly And you?' }]);
+  });
+
   it('orders words by time and drops the ones that are only whitespace', () => {
     // Out of order, and with a blank token in the middle. Both are dropped or reordered
     // before grouping, so the two real words make one cue holding to 0.9.
@@ -172,13 +207,29 @@ describe('ASS output', () => {
     );
     expect(doc).toContain('PlayResX: 1280');
     expect(doc).toContain('PlayResY: 720');
+    // At 720 the scale is two thirds, so the 48 pt size becomes 32, the 60
+    // margin becomes 40, and the 40 side margins become 27 with it: a 4K line
+    // would otherwise keep 40 units of air and run edge to edge.
     expect(doc).toContain(
-      'Style: Default,Roboto,32,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,3,2,0,8,40,40,40,1'
+      'Style: Default,Roboto,32,&H00FFFFFF,&H00FFFFFF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,3,2,0,8,27,27,40,1'
     );
     expect(doc).toContain(
       'Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,Hello (there)\\Nfriend'
     );
-    expect(BURN_IN_FONTS.find((font) => font.id === 'roboto')?.family).toBe('Roboto');
+  });
+
+  it('stops a backslash in the text from becoming an ASS control', () => {
+    // libass reads \N, \n and \h as controls, so a backslash that arrived in
+    // the words has to stop being one before the line break rewrite adds a
+    // real \N of its own.
+    const doc = buildAssDocument(
+      [{ start: 0, end: 1, text: 'back\\slash {and} a\nbreak' }],
+      style(),
+      { width: 1920, height: 1080 }
+    );
+    expect(doc).toContain(
+      'Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,back\\\\slash (and) a\\Nbreak'
+    );
   });
 
   it('writes the operator\u2019s colours, size and margin into the style line unscaled at 1080', () => {
@@ -262,13 +313,22 @@ describe('burnInFfmpegArgs', () => {
       style({ playbackRate: 1.25 })
     );
     expect(fast[fast.indexOf('-filter_complex') + 1]).toBe(
-      "[0:v]setpts=PTS/1.25,ass='/tmp/subs.ass'[v];[0:a]atempo=1.25[a]"
+      "[0:v:0]setpts=PTS/1.25,ass='/tmp/subs.ass'[v];[0:a:0]atempo=1.25[a]"
     );
     expect(fast).toContain('[v]');
     expect(fast).toContain('[a]');
-    expect(escapeFfmpegFilterPath("/a'b,c[d]")).toBe("/a\\'b\\,c\\[d\\]");
+    expect(escapeFfmpegFilterPath("/a'b,c[d]")).toBe(String.raw`/a\'\''b\,c\[d\]`);
     // A backslash is doubled first, so the escapes added after it are not re-escaped.
     expect(escapeFfmpegFilterPath('/a\\b.ass')).toBe('/a\\\\b.ass');
+
+    // ffmpeg reads the value twice: the filtergraph tokeniser, where a quoted
+    // run is copied out literally and a backslash is NOT an escape, and then
+    // the option parser, which does honour both. An apostrophe cannot be
+    // written inside the quotes at all — the run ends at the first one — so it
+    // leaves and comes back: `\` inside, `'` closes, `\'` outside, `'` reopens.
+    expect(escapeFfmpegFilterPath(String.raw`C:\dir\o'brien.ass`)).toBe(
+      String.raw`C\:\\dir\\o\'\''brien.ass`
+    );
   });
 
   it('spells out every encoder argument at normal speed and at another', () => {
@@ -323,7 +383,7 @@ describe('burnInFfmpegArgs', () => {
       '-i',
       '/tmp/in.mp4',
       '-filter_complex',
-      "[0:v]setpts=PTS/1.25,ass='/tmp/subs.ass'[v];[0:a]atempo=1.25[a]",
+      "[0:v:0]setpts=PTS/1.25,ass='/tmp/subs.ass'[v];[0:a:0]atempo=1.25[a]",
       '-map',
       '[v]',
       '-map',
@@ -348,6 +408,23 @@ describe('burnInFfmpegArgs', () => {
     ]);
   });
 
+  it('names one stream per filtergraph label', () => {
+    // `[0:v]` is rejected outright by ffmpeg when the specifier matches more
+    // than one stream, and cover art in an MP4 or a second audio language
+    // makes that the normal case rather than the exotic one. The rate-1 path
+    // has always used indexed maps; the filtergraph has to agree.
+    const fast = burnInFfmpegArgs(
+      '/tmp/in.mp4',
+      '/tmp/subs.ass',
+      '/tmp/out.mp4',
+      style({ playbackRate: 1.5 })
+    );
+    const graph = fast[fast.indexOf('-filter_complex') + 1]!;
+    expect(graph.startsWith('[0:v:0]')).toBe(true);
+    expect(graph).toContain('[0:a:0]atempo=1.5[a]');
+    expect(graph).not.toMatch(/\[0:v\]|\[0:a\]/);
+  });
+
   it('leaves the audio stream unnamed when the source is silent', () => {
     // A filtergraph has no optional inputs: `[0:a]` on a source with no audio
     // stream fails the whole render, which is how a silent clip used to come
@@ -360,11 +437,11 @@ describe('burnInFfmpegArgs', () => {
       false
     );
     expect(silent[silent.indexOf('-filter_complex') + 1]).toBe(
-      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v]"
+      "[0:v:0]setpts=PTS/2,ass='/tmp/subs.ass'[v]"
     );
     expect(silent.slice(silent.indexOf('-filter_complex'), silent.indexOf('-c:v'))).toEqual([
       '-filter_complex',
-      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v]",
+      "[0:v:0]setpts=PTS/2,ass='/tmp/subs.ass'[v]",
       '-map',
       '[v]',
     ]);
@@ -380,7 +457,7 @@ describe('burnInFfmpegArgs', () => {
       true
     );
     expect(heard[heard.indexOf('-filter_complex') + 1]).toBe(
-      "[0:v]setpts=PTS/2,ass='/tmp/subs.ass'[v];[0:a]atempo=2[a]"
+      "[0:v:0]setpts=PTS/2,ass='/tmp/subs.ass'[v];[0:a:0]atempo=2[a]"
     );
     expect(heard.slice(heard.indexOf('-map'))).toContain('[a]');
   });

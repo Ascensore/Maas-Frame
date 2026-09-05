@@ -5,7 +5,17 @@
  * lib/rough-cut.
  */
 
-export type TimedWord = { start: number; end: number; text: string };
+export type TimedWord = {
+  start: number;
+  end: number;
+  text: string;
+  /**
+   * Who said it, when the source knows. Optional because most producers of a
+   * TimedWord have no speaker to attach; the readers that care (cue grouping)
+   * treat a missing one as "same as the last".
+   */
+  speaker?: string | null;
+};
 
 /**
  * Hesitation sounds, not real words. Kept deliberately short: a word that is

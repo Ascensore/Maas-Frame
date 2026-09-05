@@ -34,7 +34,7 @@ afterAll(async () => {
 
 type Uploaded = { key: string; contentType: string; body: string };
 
-function stubbedDeps(uploads: Uploaded[]): BurnInDeps {
+function stubbedDeps(uploads: Uploaded[], deletions: string[] = []): BurnInDeps {
   return {
     pool,
     run: async (command) =>
@@ -53,6 +53,9 @@ function stubbedDeps(uploads: Uploaded[]): BurnInDeps {
     downloadObject: async () => undefined,
     uploadObject: async (key, body, contentType) => {
       uploads.push({ key, contentType, body: body.toString('utf8') });
+    },
+    deleteObject: async (key) => {
+      deletions.push(key);
     },
     downloadVersionMedia: async () => undefined,
     readOutput: async () => Buffer.from('burned mp4'),
@@ -274,7 +277,7 @@ describe('burnInSubtitles against the real schema', () => {
     await burnInSubtitles(
       stubbedDeps(uploads),
       seeded.version.id,
-      payloadOf({ maxWordsPerCue: 3 }, { kind: 'subtitle', subtitleId: track.id })
+      payloadOf({ maxWordsPerCue: 3, uppercase: true }, { kind: 'subtitle', subtitleId: track.id })
     );
 
     const burned = await db.videoVersion.findFirstOrThrow({
@@ -290,6 +293,9 @@ describe('burnInSubtitles against the real schema', () => {
     });
     expect(transcript.provider).toBe('burn-in');
     expect(transcript.language).toBe('it');
+    // In the operator's own case and cue boundaries: the capitals and the
+    // words-per-cue regrouping are for the picture, not for the text people
+    // read and search.
     expect(
       transcript.segments.map((segment) => [
         segment.position,
@@ -301,6 +307,7 @@ describe('burnInSubtitles against the real schema', () => {
       [0, 0, 2, 'ciao a tutti'],
       [1, 3, 5, 'grazie mille'],
     ]);
+    expect(transcript.searchText).toBe('ciao a tutti grazie mille');
 
     const subtitle = await db.videoSubtitle.findFirstOrThrow({ where: { versionId: burned.id } });
     expect(subtitle.language).toBe('it');

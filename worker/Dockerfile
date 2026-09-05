@@ -11,7 +11,11 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        ffmpeg python3 python3-pip python3-venv \
        fontconfig fonts-dejavu-core fonts-liberation2 fonts-roboto fonts-open-sans \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && for family in "DejaVu Sans" "Liberation Sans" "Roboto" "Open Sans" "Liberation Serif" "DejaVu Sans Mono"; do \
+       fc-match --format='%{family}' "$family" | grep -qiF "$family" \
+         || { echo "missing font: $family"; exit 1; }; \
+     done
 
 # Local transcription and diarization only. The worker runs every ffmpeg job
 # without them, so a wheel that will not build here is not a reason to have no

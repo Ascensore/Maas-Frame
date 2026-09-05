@@ -6,6 +6,7 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import {
   parseSubtitleCues,
+  stripCueMarkup,
   subtitleProxyPathToObjectKey,
   type SubtitleCue,
 } from '../subtitle-validation';
@@ -44,6 +45,14 @@ const FALLBACK_SIZE = { width: 1920, height: 1080 };
 /** What the render needs to know about the file it is about to re-encode. */
 type ProbedVideo = { width: number; height: number; hasAudio: boolean };
 
+type ProbedStream = {
+  codec_type?: unknown;
+  width?: unknown;
+  height?: unknown;
+  disposition?: { attached_pic?: unknown };
+  side_data_list?: Array<{ side_data_type?: unknown; rotation?: unknown }>;
+};
+
 export type BurnInSource =
   | { kind: 'transcript'; transcriptId: string | null }
   | { kind: 'subtitle'; subtitleId: string };
@@ -62,6 +71,8 @@ export type BurnInDeps = {
   ) => Promise<{ stdout: string; stderr: string; code: number }>;
   downloadObject: (key: string, dest: string) => Promise<void>;
   uploadObject: (key: string, body: Buffer, contentType: string) => Promise<void>;
+  /** Removes an object we uploaded, when the row that would own it never lands. */
+  deleteObject: (key: string) => Promise<void>;
   downloadVersionMedia: (
     version: { providerId: string; videoId: string; originalUrl: string },
     dest: string
@@ -110,12 +121,20 @@ type VersionRow = {
   title: string | null;
 };
 
-/** What gets burned in, and what is copied onto the new version afterwards. */
+/**
+ * What gets burned in, and what is copied onto the new version afterwards. The
+ * two are not the same text: `words` is regrouped and possibly upper-cased for
+ * the picture, while the carried-forward transcript comes from the source rows
+ * (`segments`) or the track's own cues (`trackCues`), as the operator wrote
+ * them.
+ */
 type Material = {
   words: TimedWord[];
   language: string;
   /** The transcript lines to carry forward; null when the words came from a track. */
   segments: TranscriptSegmentRow[] | null;
+  /** The track's cues as parsed, before regrouping; null for a transcript source. */
+  trackCues: SubtitleCue[] | null;
 };
 
 function round3(value: number): number {
@@ -153,7 +172,7 @@ async function captionTrackMaterial(
     [subtitleId, versionId]
   );
   const track = trackRes.rows[0];
-  if (!track) return { words: [], language: 'und', segments: null };
+  if (!track) return { words: [], language: 'und', segments: null, trackCues: null };
   // Through the same validator the upload API writes with, so the object key
   // is one we could have written rather than whatever the column happens to
   // hold. A row that fails it points at nothing we can fetch.
@@ -166,11 +185,17 @@ async function captionTrackMaterial(
   const dest = join(dir, 'source.vtt');
   await deps.downloadObject(key, dest);
   const readText = deps.readText ?? ((path: string) => readFile(path, 'utf8'));
-  const cues = parseSubtitleCues(await readText(dest));
+  // `parseSubtitleCues` keeps `<i>`, `<v Alice>` and friends, and escapes stray
+  // angle brackets to `&lt;` — right for a file a browser will parse, wrong for
+  // one libass draws letter by letter.
+  const cues = parseSubtitleCues(await readText(dest))
+    .map((cue) => ({ ...cue, text: stripCueMarkup(cue.text) }))
+    .filter((cue) => cue.text.length > 0);
   return {
     words: cues.flatMap((cue) => cueWords(cue)),
     language: languageOf(track.language),
     segments: null,
+    trackCues: cues,
   };
 }
 
@@ -193,7 +218,7 @@ async function transcriptMaterial(
         [versionId]
       );
   const transcript = transcriptRes.rows[0];
-  if (!transcript) return { words: [], language: 'und', segments: null };
+  if (!transcript) return { words: [], language: 'und', segments: null, trackCues: null };
 
   const segmentsRes = await deps.pool.query(
     `SELECT start_sec, end_sec, speaker, text, words FROM transcript_segments
@@ -207,40 +232,73 @@ async function transcriptMaterial(
     text: typeof row.text === 'string' ? row.text : '',
     words: row.words,
   }));
+  // No duration to clamp against here: the words are the whole of what the
+  // transcript timed, and the burn keeps the picture end to end.
+  const words = wordsFromSegments(segments, 0);
+  // A .txt or .docx transcript is stored READY with every segment 0-0 and no
+  // word timings, so this collapses to a pile of zero-length words at t=0:
+  // every cue would start and end at the same instant, libass would draw
+  // nothing, and the job would report a successful render of an unchanged
+  // picture. Refuse it while the operator can still be told why.
+  if (words.length > 0 && !words.some((word) => word.end > word.start)) {
+    throw new Error("This version's transcript has no timings to burn in");
+  }
   return {
-    // No duration to clamp against here: the words are the whole of what the
-    // transcript timed, and the burn keeps the picture end to end.
-    words: wordsFromSegments(segments, 0),
+    words,
     language: languageOf(transcript.language),
     segments,
+    trackCues: null,
   };
 }
 
 /**
+ * A display matrix turns a stored frame a quarter turn. Phones record
+ * landscape and tag the rotation rather than transposing the pixels, so a
+ * portrait clip is stored 1920x1080 with -90 in its side data.
+ */
+function displayRotation(stream: ProbedStream | undefined): number {
+  const matrix = stream?.side_data_list?.find((entry) => entry.side_data_type === 'Display Matrix');
+  // Older ffprobe builds write it as a string, and it is signed either way.
+  const rotation = Number(matrix?.rotation);
+  return Number.isFinite(rotation) ? rotation : 0;
+}
+
+/**
  * The frame the ASS document is written against, and whether there is any
- * audio to re-time with it. Every stream is listed rather than just the first
- * video one: a re-timed render names `[0:a]` in its filtergraph, and doing that
- * to a silent source fails the whole encode.
+ * audio to re-time with it.
+ *
+ * Every stream is listed rather than just the first video one. A re-timed
+ * render names `[0:a:0]` in its filtergraph and doing that to a silent source
+ * fails the encode; cover art in an MP4 is a second video stream, and picking
+ * it would size the captions to the artwork; and a rotated clip has to be
+ * measured the way ffmpeg's own autorotate will present it, or the ASS declares
+ * a landscape frame for a portrait picture and libass stretches the text.
  */
 async function probeVideo(deps: BurnInDeps, path: string): Promise<ProbedVideo> {
   const probed = await deps.run('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', path]);
+  if (probed.code !== 0) throw new Error(probed.stderr || 'ffprobe failed');
+  let parsed: { streams?: ProbedStream[] };
   try {
-    const parsed = JSON.parse(probed.stdout) as {
-      streams?: Array<{ codec_type?: unknown; width?: unknown; height?: unknown }>;
-    };
-    const streams = parsed.streams ?? [];
-    const hasAudio = streams.some((stream) => stream.codec_type === 'audio');
-    const video = streams.find((stream) => stream.codec_type === 'video') ?? streams[0];
-    const width = Number(video?.width);
-    const height = Number(video?.height);
-    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
-      return { width, height, hasAudio };
-    }
-    return { ...FALLBACK_SIZE, hasAudio };
+    parsed = JSON.parse(probed.stdout) as { streams?: ProbedStream[] };
   } catch {
-    // Not JSON, so ffprobe told us nothing usable.
+    throw new Error('ffprobe returned output we could not read');
   }
-  return { ...FALLBACK_SIZE, hasAudio: true };
+
+  const streams = parsed.streams ?? [];
+  const hasAudio = streams.some((stream) => stream.codec_type === 'audio');
+  const videos = streams.filter((stream) => stream.codec_type === 'video');
+  const video = videos.find((stream) => !stream.disposition?.attached_pic) ?? videos[0];
+  const width = Number(video?.width);
+  const height = Number(video?.height);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    // Valid JSON, no usable dimensions: the ASS scale is all that depends on
+    // them, so a default beats refusing to render.
+    return { ...FALLBACK_SIZE, hasAudio };
+  }
+  // ffmpeg's CLI autorotate transposes before the filter chain, so what reaches
+  // the `ass` filter is already the right way up.
+  const upright = Math.abs(displayRotation(video)) % 180 === 90;
+  return upright ? { width: height, height: width, hasAudio } : { width, height, hasAudio };
 }
 
 /** The source transcript at the new speed: every time divided by the rate. */
@@ -260,15 +318,36 @@ function retimedSegments(segments: TranscriptSegmentRow[], rate: number): Derive
   }));
 }
 
-/** The burned cues as transcript lines, for a version whose words came from a track. */
-function segmentsFromCues(cues: SubtitleCue[]): DerivedSegment[] {
-  return cues.map((cue) => ({
-    startSec: cue.start,
-    endSec: cue.end,
-    speaker: null,
-    text: cue.text,
-    words: cueWords(cue),
-  }));
+/**
+ * The track's own cues as transcript lines, at the new speed. Taken from the
+ * parsed cues rather than the ones that were burned in: those have been
+ * regrouped to the operator's words-per-cue and possibly upper-cased, and
+ * neither belongs in a transcript people read and search.
+ */
+function retimedCues(cues: SubtitleCue[], rate: number): DerivedSegment[] {
+  return cues.map((cue) => {
+    const scaled = { start: round3(cue.start / rate), end: round3(cue.end / rate), text: cue.text };
+    return {
+      startSec: scaled.start,
+      endSec: scaled.end,
+      speaker: null,
+      text: scaled.text,
+      words: cueWords(scaled),
+    };
+  });
+}
+
+/**
+ * Take back an object nothing ended up pointing at. Best effort by design: the
+ * render has already failed, and the reason it failed is what the job should
+ * report — a storage error on top of it would only hide that.
+ */
+async function discardUpload(deps: BurnInDeps, key: string): Promise<void> {
+  try {
+    await deps.deleteObject(key);
+  } catch (error) {
+    console.error(`burn-in could not remove the orphaned object ${key}`, error);
+  }
 }
 
 export async function burnInSubtitles(
@@ -355,11 +434,17 @@ export async function burnInSubtitles(
       await client.query(output ? 'COMMIT' : 'ROLLBACK');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
+      // The file is uploaded but no row will ever name it, and pg-boss will
+      // retry the whole render into a fresh key.
+      await discardUpload(deps, objectKey);
       throw error;
     } finally {
       client.release();
     }
-    if (!output) throw new Error('The video this version belongs to is gone');
+    if (!output) {
+      await discardUpload(deps, objectKey);
+      throw new Error('The video this version belongs to is gone');
+    }
 
     // The burn is what the operator asked for; a transcript that could not be
     // copied over is a missing convenience, not a failed render.
@@ -370,7 +455,7 @@ export async function burnInSubtitles(
         provider: BURN_IN_PROVIDER,
         segments: material.segments
           ? retimedSegments(material.segments, rate)
-          : segmentsFromCues(cues),
+          : retimedCues(material.trackCues ?? [], rate),
       });
     } catch (error) {
       console.error(`burn-in transcript for version ${output.versionId} failed`, error);

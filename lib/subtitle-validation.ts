@@ -248,6 +248,23 @@ export function parseSubtitleCues(input: string): SubtitleCue[] {
   return cues;
 }
 
+/**
+ * Strip the small amount of WebVTT markup `parseSubtitleCues` keeps, and undo
+ * the escaping it applies to stray angle brackets, so a cue becomes plain
+ * words. The parser's own output is written for a browser VTT parser, which
+ * renders `<i>` and `&amp;`; anything reading a cue as text — a transcript
+ * import, a burned-in caption — has to take them back out first.
+ */
+export function stripCueMarkup(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function serializeWebVtt(cues: SubtitleCue[]): string {
   const body = cues
     .map((cue) => `${formatTimestamp(cue.start)} --> ${formatTimestamp(cue.end)}\n${cue.text}`)

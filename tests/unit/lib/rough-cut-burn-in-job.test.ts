@@ -1,5 +1,5 @@
 import type { Pool } from 'pg';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   burnInSubtitles,
   parseBurnInPayload,
@@ -85,8 +85,18 @@ function harness(
     ffmpeg?: { code: number; stderr?: string };
     /** What ffprobe lists; the default is a normal video with sound. */
     streams?: Array<Record<string, unknown>>;
+    /** How ffprobe itself behaves, for the runs where it does not work. */
+    probe?: { code?: number; stdout?: string; stderr?: string };
     /** The `sourceUrl` the caption-track row holds. */
     trackUrl?: string;
+    /** The file `readText` hands back for a caption-track source. */
+    trackVtt?: string;
+    /** The transcript_segments rows; the default is one timed line. */
+    segments?: Array<Record<string, unknown>>;
+    /** `[]` stands for a video deleted between the enqueue and the render. */
+    videos?: Array<{ id: string }>;
+    /** Makes the carried-forward transcript fail without failing the render. */
+    failTranscriptInsert?: boolean;
   } = {}
 ) {
   const queries: Query[] = [];
@@ -95,11 +105,15 @@ function harness(
   const uploads: Upload[] = [];
   const written: Written[] = [];
   const removed: string[] = [];
+  const deleted: string[] = [];
   const media: Array<{ providerId: string; videoId: string; originalUrl: string }> = [];
 
   const query = async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
-    if (sql.includes('INSERT INTO transcripts')) return { rows: [{ id: 't-2' }] };
+    if (sql.includes('INSERT INTO transcripts')) {
+      if (options.failTranscriptInsert) throw new Error('transcripts unique violation');
+      return { rows: [{ id: 't-2' }] };
+    }
     // Ordered before the version lookup: the caption track's owner query joins
     // through video_versions as well.
     if (sql.includes('SELECT p."ownerId"')) return { rows: [{ owner_id: 'owner' }] };
@@ -124,8 +138,10 @@ function harness(
     if (sql.includes('FROM transcripts')) {
       return { rows: options.transcripts ?? [{ id: 't-1', language: 'en' }] };
     }
-    if (sql.includes('SELECT start_sec')) return { rows: transcriptSegmentRows() };
-    if (sql.includes('SELECT id FROM videos')) return { rows: [{ id: 'vid-1' }] };
+    if (sql.includes('SELECT start_sec')) {
+      return { rows: options.segments ?? transcriptSegmentRows() };
+    }
+    if (sql.includes('SELECT id FROM videos')) return { rows: options.videos ?? [{ id: 'vid-1' }] };
     if (sql.includes('COALESCE(MAX("versionNumber")')) return { rows: [{ max: 1 }] };
     return { rows: [] };
   };
@@ -141,14 +157,16 @@ function harness(
       runs.push({ command, args });
       if (command === 'ffprobe') {
         return {
-          stdout: JSON.stringify({
-            streams: options.streams ?? [
-              { codec_type: 'video', width: 1280, height: 720 },
-              { codec_type: 'audio', channels: 2 },
-            ],
-          }),
-          stderr: '',
-          code: 0,
+          stdout:
+            options.probe?.stdout ??
+            JSON.stringify({
+              streams: options.streams ?? [
+                { codec_type: 'video', width: 1280, height: 720 },
+                { codec_type: 'audio', channels: 2 },
+              ],
+            }),
+          stderr: options.probe?.stderr ?? '',
+          code: options.probe?.code ?? 0,
         };
       }
       return { stdout: '', stderr: options.ffmpeg?.stderr ?? '', code: options.ffmpeg?.code ?? 0 };
@@ -162,8 +180,11 @@ function harness(
     downloadVersionMedia: async (version) => {
       media.push(version);
     },
+    deleteObject: async (key) => {
+      deleted.push(key);
+    },
     readOutput: async () => Buffer.from(OUTPUT_BYTES),
-    readText: async () => TRACK_VTT,
+    readText: async () => options.trackVtt ?? TRACK_VTT,
     writeText: async (path, text) => {
       written.push({ path, text });
     },
@@ -176,7 +197,20 @@ function harness(
   const all = (needle: string) => queries.filter((entry) => entry.sql.includes(needle));
   const flow = () => queries.map((entry) => label(entry.sql)).filter((entry) => entry !== null);
 
-  return { deps, queries, runs, downloads, uploads, written, removed, media, find, all, flow };
+  return {
+    deps,
+    queries,
+    runs,
+    downloads,
+    uploads,
+    written,
+    removed,
+    deleted,
+    media,
+    find,
+    all,
+    flow,
+  };
 }
 
 describe('burnInSubtitles', () => {
@@ -304,13 +338,13 @@ describe('burnInSubtitles', () => {
 
     const args = h.runs[1]!.args;
     expect(args[args.indexOf('-filter_complex') + 1]).toMatch(
-      /^\[0:v\]setpts=PTS\/2,ass='.+\.ass'\[v\];\[0:a\]atempo=2\[a\]$/
+      /^\[0:v:0\]setpts=PTS\/2,ass='.+\.ass'\[v\];\[0:a:0\]atempo=2\[a\]$/
     );
     expect(args.slice(args.indexOf('-map'))).toContain('[a]');
     // The cues are half as late as the words they came from.
     expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
       'Dialogue: 0,0:00:00.00,0:00:00.75,Default,,0,0,0,,one two',
-      'Dialogue: 0,0:00:01.00,0:00:01.30,Default,,0,0,0,,three',
+      'Dialogue: 0,0:00:01.00,0:00:01.60,Default,,0,0,0,,three',
     ]);
 
     const versionInsert = h.find('INSERT INTO video_versions');
@@ -417,12 +451,193 @@ describe('burnInSubtitles', () => {
     expect(h.runs[0]!.args).not.toContain('-select_streams');
     const args = h.runs[1]!.args;
     expect(args[args.indexOf('-filter_complex') + 1]).toMatch(
-      /^\[0:v\]setpts=PTS\/2,ass='.+\.ass'\[v\]$/
+      /^\[0:v:0\]setpts=PTS\/2,ass='.+\.ass'\[v\]$/
     );
     expect(args).not.toContain('[a]');
     expect(args.join(' ')).not.toContain('atempo');
     // The render still happened, so the version is there.
     expect(h.all('INSERT INTO video_versions')).toHaveLength(1);
+  });
+  it('refuses a transcript with no timings instead of rendering an empty burn', async () => {
+    // What a .txt or .docx upload leaves behind: READY, one row per paragraph,
+    // every one of them 0-0 with no word timings. Burned as-is, every cue would
+    // start and end at the same instant, libass would draw nothing, and the job
+    // would report a successful render of an unchanged picture.
+    const h = harness({
+      segments: [
+        { start_sec: 0, end_sec: 0, speaker: null, text: 'A paragraph from a script.', words: [] },
+        { start_sec: 0, end_sec: 0, speaker: null, text: 'And the one after it.', words: [] },
+      ],
+    });
+
+    await expect(
+      burnInSubtitles(h.deps, 'ver-1', payloadOf({}, { kind: 'transcript', transcriptId: 't-1' }))
+    ).rejects.toThrow(/no timings to burn in/);
+
+    expect(h.media).toEqual([]);
+    expect(h.runs).toEqual([]);
+    expect(h.uploads).toEqual([]);
+    expect(h.all('INSERT INTO video_versions')).toHaveLength(0);
+    expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
+  });
+
+  it('takes WebVTT markup and entities out of a track before drawing it', async () => {
+    // parseSubtitleCues keeps this markup on purpose — its output is written
+    // for a browser VTT parser — but libass draws every character it is given.
+    const h = harness({
+      trackVtt:
+        'WEBVTT\n\n00:00:00.000 --> 00:00:03.000\n<v Alice><i>Whispering</i> now &amp; then\n',
+    });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({ maxWordsPerCue: 6 }, { kind: 'subtitle', subtitleId: 's-1' })
+    );
+
+    expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
+      'Dialogue: 0,0:00:00.00,0:00:03.00,Default,,0,0,0,,Whispering now & then',
+    ]);
+    expect(h.find('INSERT INTO transcripts')?.params[3]).toBe('Whispering now & then');
+  });
+
+  it('carries a track forward as the operator wrote it, not as it was burned in', async () => {
+    const h = harness();
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({ maxWordsPerCue: 1, uppercase: true }, { kind: 'subtitle', subtitleId: 's-1' })
+    );
+
+    // One word to a caption, shouted, because that is what was asked for.
+    expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
+      'Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,HELLO',
+      'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,THERE',
+      'Dialogue: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,GOODBYE',
+      'Dialogue: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,NOW',
+    ]);
+    // The transcript on the new version is the track's own lines, in their own
+    // case: it is read and searched, not drawn.
+    expect(h.find('INSERT INTO transcripts')?.params[3]).toBe('hello there goodbye now');
+    const [, starts, ends, , texts] = h.find('INSERT INTO transcript_segments')?.params as [
+      string,
+      number[],
+      number[],
+      Array<string | null>,
+      string[],
+    ];
+    expect(starts).toEqual([0, 4]);
+    expect(ends).toEqual([2, 6]);
+    expect(texts).toEqual(['hello there', 'goodbye now']);
+  });
+
+  it('measures a rotated clip the way ffmpeg will present it', async () => {
+    // A phone records landscape and tags the quarter turn instead of
+    // transposing. ffmpeg's autorotate runs before the ass filter, so the frame
+    // libass draws on is 1080x1920 whatever the stream says it stores.
+    const h = harness({
+      streams: [
+        {
+          codec_type: 'video',
+          width: 1920,
+          height: 1080,
+          side_data_list: [{ side_data_type: 'Display Matrix', rotation: -90 }],
+        },
+        { codec_type: 'audio', channels: 2 },
+      ],
+    });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({}, { kind: 'transcript', transcriptId: 't-1' })
+    );
+
+    expect(h.written[0]!.text).toContain('PlayResX: 1080');
+    expect(h.written[0]!.text).toContain('PlayResY: 1920');
+  });
+
+  it('sizes the captions to the picture rather than to cover art', async () => {
+    const h = harness({
+      streams: [
+        { codec_type: 'video', width: 600, height: 600, disposition: { attached_pic: 1 } },
+        { codec_type: 'video', width: 1920, height: 1080, disposition: { attached_pic: 0 } },
+        { codec_type: 'audio', channels: 2 },
+      ],
+    });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({}, { kind: 'transcript', transcriptId: 't-1' })
+    );
+
+    expect(h.written[0]!.text).toContain('PlayResX: 1920');
+    expect(h.written[0]!.text).toContain('PlayResY: 1080');
+  });
+
+  it('fails the job when ffprobe does instead of guessing a frame size', async () => {
+    const broken = harness({ probe: { code: 1, stderr: 'moov atom not found' } });
+    await expect(
+      burnInSubtitles(
+        broken.deps,
+        'ver-1',
+        payloadOf({}, { kind: 'transcript', transcriptId: 't-1' })
+      )
+    ).rejects.toThrow(/moov atom not found/);
+    expect(broken.runs.map((entry) => entry.command)).toEqual(['ffprobe']);
+    expect(broken.uploads).toEqual([]);
+    expect(broken.all('INSERT INTO video_versions')).toHaveLength(0);
+
+    const garbled = harness({ probe: { stdout: 'ffprobe version 7.1' } });
+    await expect(
+      burnInSubtitles(
+        garbled.deps,
+        'ver-1',
+        payloadOf({}, { kind: 'transcript', transcriptId: 't-1' })
+      )
+    ).rejects.toThrow(/could not read/);
+    expect(garbled.uploads).toEqual([]);
+  });
+
+  it('takes the uploaded file back when the video it belongs to is gone', async () => {
+    // The upload happens before the row that names it, so a video deleted
+    // between the enqueue and the render leaves an object nothing points at —
+    // and pg-boss retries the whole encode into a fresh key.
+    const h = harness({ videos: [] });
+
+    await expect(
+      burnInSubtitles(h.deps, 'ver-1', payloadOf({}, { kind: 'transcript', transcriptId: 't-1' }))
+    ).rejects.toThrow(/video this version belongs to is gone/);
+
+    const uploaded = h.uploads.find((upload) => upload.key.startsWith('videos/'));
+    expect(uploaded).toBeDefined();
+    expect(h.deleted).toEqual([uploaded!.key]);
+    expect(h.all('INSERT INTO video_versions')).toHaveLength(0);
+    expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
+  });
+
+  it('keeps the render when the carried-forward transcript cannot be written', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const h = harness({ failTranscriptInsert: true });
+
+    try {
+      await burnInSubtitles(
+        h.deps,
+        'ver-1',
+        payloadOf({}, { kind: 'transcript', transcriptId: 't-1' })
+      );
+
+      const versionInsert = h.find('INSERT INTO video_versions');
+      expect(versionInsert).toBeDefined();
+      expect(h.find('INSERT INTO media_jobs')?.params).toEqual([versionInsert!.params[0]]);
+      // The version owns the file now, so nothing is taken back.
+      expect(h.deleted).toEqual([]);
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 

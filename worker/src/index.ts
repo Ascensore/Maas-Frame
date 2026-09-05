@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import PgBoss from 'pg-boss';
 import pg from 'pg';
 import { shouldTranscodeReviewProxy, reviewProxyBurnInLabel, reviewProxyFfmpegArgs } from './review-proxy';
@@ -121,6 +121,10 @@ async function uploadObject(key: string, body: Buffer, contentType: string): Pro
       ContentType: contentType,
     })
   );
+}
+
+async function deleteObject(key: string): Promise<void> {
+  await s3.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
 }
 
 function objectKeyFromProvider(version: { providerId: string; videoId: string; originalUrl: string }): string | null {
@@ -760,7 +764,14 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
       const payload = parseBurnInPayload(data.payload);
       if (!payload) throw new Error('BURN_SUBTITLES payload is invalid');
       await burnInSubtitles(
-        { pool, run, downloadObject, uploadObject, downloadVersionMedia: downloadVersionFile },
+        {
+          pool,
+          run,
+          downloadObject,
+          uploadObject,
+          deleteObject,
+          downloadVersionMedia: downloadVersionFile,
+        },
         data.versionId,
         payload
       );
