@@ -1,6 +1,6 @@
 const { app } = require('electron');
 const path = require('path');
-const nleCore = require('../core/nle-core.cjs');
+const nleCore = require('./nle-core.cjs');
 
 function parseCustomData(raw) {
   if (!raw || typeof raw !== 'string' || !raw.startsWith('{')) return null;
@@ -40,7 +40,7 @@ async function createWindow() {
   });
   await win.loadFile(path.join(__dirname, 'index.html'));
 
-  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds }) => {
+  ipcMain.handle('sync', async (_event, { baseUrl, token, versionId, previousIds, auto }) => {
     const resolve = app.resolve;
     if (!resolve) throw new Error('Resolve scripting API is unavailable. Studio is required.');
     const projectManager = resolve.GetProjectManager();
@@ -60,7 +60,16 @@ async function createWindow() {
     const startTc =
       timeline.GetStartTimecode?.() || timeline.GetSetting?.('timelineStartTimecode') || '00:00:00:00';
     const dropFrame = String(startTc).includes(';');
-    const offsetSeconds = nleCore.sequenceOffsetSeconds(startTc, fps);
+    const parsedOffset = nleCore.sequenceOffsetSeconds(startTc, fps);
+    if (parsedOffset === null && auto) {
+      // Guessing 0 here puts every marker an hour from its comment on a
+      // timeline starting at 01:00:00:00. A human can still force it.
+      return {
+        message: `Auto-sync paused: could not read the timeline start timecode (${startTc}). Sync manually to place markers at 00:00:00:00.`,
+        syncedIds: previousIds || [],
+      };
+    }
+    const offsetSeconds = parsedOffset === null ? 0 : parsedOffset;
     const sequenceName = timeline.GetName?.() || 'Untitled';
     const rational = nleCore.fpsToRational(fps);
     const persistError = await persistSequenceLink(baseUrl, token, versionId, {
@@ -89,9 +98,14 @@ async function createWindow() {
       });
     }
 
-    const toResolve = nleCore.commentsRemovedFromTimeline(comments, local, previousIds || []);
+    // Auto-sync runs the read direction only: putting a comment on the timeline
+    // is recoverable, resolving one on the review record is not.
+    const decision = auto
+      ? { ok: true, ids: [] }
+      : nleCore.planTimelineResolves(comments, local, previousIds || []);
+    const refusal = nleCore.describeResolveRefusal(decision);
     const resolvedIds = [];
-    for (const commentId of toResolve) {
+    for (const commentId of decision.ids) {
       const patch = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/comments/${commentId}`, {
         method: 'PATCH',
         headers: {
@@ -167,11 +181,16 @@ async function createWindow() {
       });
     }
 
-    const summary = `Synced. Added ${added}, moved ${moved}, removed ${removed}, resolved ${resolvedIds.length}. Offset ${offsetSeconds.toFixed(2)}s.`;
-    return {
-      message: persistError ? `${summary} Sequence link was not saved: ${persistError}` : summary,
-      syncedIds: nleCore.collectSyncedMarkerIds(afterLocal),
-    };
+    const syncedIds = nleCore.collectSyncedMarkerIds(afterLocal);
+    if (auto && added === 0 && moved === 0 && removed === 0) {
+      return { message: `Auto-sync on. No changes at ${new Date().toLocaleTimeString()}.`, syncedIds };
+    }
+    const parts = [`Synced. Added ${added}, moved ${moved}, removed ${removed}.`];
+    if (!auto) parts.push(`Resolved ${resolvedIds.length}.`);
+    parts.push(`Offset ${offsetSeconds.toFixed(2)}s${parsedOffset === null ? ' (assumed)' : ''}.`);
+    if (refusal) parts.push(refusal);
+    if (persistError) parts.push(`Sequence link was not saved: ${persistError}`);
+    return { message: parts.join(' '), syncedIds };
   });
 }
 

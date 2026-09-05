@@ -9,6 +9,9 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   var SENTINEL_RE = /\[of:([a-z0-9]+)\]/i;
+  var DEFAULT_AUTO_RESOLVE_CAP = 5;
+  var AUTO_SYNC_BASE_MS = 10000;
+  var AUTO_SYNC_MAX_BACKOFF_MS = 300000;
 
   function commentSentinel(commentId) {
     return '[of:' + commentId + ']';
@@ -159,9 +162,11 @@
     return best.name;
   }
 
+  /* Returns null when the timecode does not parse, so callers fail closed
+     instead of placing every marker an hour from its comment. */
   function sequenceOffsetSeconds(startTimecode, fps) {
     var match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(String(startTimecode || '').trim());
-    if (!match) return 0;
+    if (!match) return null;
     var rate = Math.max(1, Number(fps) || 24);
     return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / rate;
   }
@@ -204,12 +209,57 @@
     return pad(hours) + ':' + pad(minutes) + ':' + pad(secs) + sep + pad(frames);
   }
 
+  function planIsEmpty(plan) {
+    return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
+  }
+
+  /* See planTimelineResolves in ../core/src/index.ts for why these refusals exist. */
+  function planTimelineResolves(remote, local, previouslySyncedIds, options) {
+    var cap = (options && typeof options.cap === 'number') ? options.cap : DEFAULT_AUTO_RESOLVE_CAP;
+    var previous = previouslySyncedIds || [];
+    var ids = commentsRemovedFromTimeline(remote, local, previous);
+    if (ids.length === 0) return { ok: true, ids: [] };
+    var presentIds = collectSyncedMarkerIds(local);
+    var anyOfOursPresent = previous.some(function (id) {
+      return presentIds.indexOf(id) !== -1;
+    });
+    if (previous.length > 0 && !anyOfOursPresent) {
+      return { ok: false, reason: 'timeline-not-bound', ids: ids, cap: cap };
+    }
+    if (ids.length > cap) return { ok: false, reason: 'over-cap', ids: ids, cap: cap };
+    return { ok: true, ids: ids };
+  }
+
+  function describeResolveRefusal(decision) {
+    if (decision.ok) return null;
+    var count = decision.ids.length;
+    if (decision.reason === 'timeline-not-bound') {
+      return 'Did not resolve ' + count + ' comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.';
+    }
+    return 'Did not resolve ' + count + ' comment(s): more than the ' + decision.cap + ' allowed in one sync. Resolve them in the web app if that was intended.';
+  }
+
+  function nextPollDelayMs(consecutiveFailures, baseMs, maxMs) {
+    var base = typeof baseMs === 'number' ? baseMs : AUTO_SYNC_BASE_MS;
+    var max = typeof maxMs === 'number' ? maxMs : AUTO_SYNC_MAX_BACKOFF_MS;
+    if (!isFinite(consecutiveFailures) || consecutiveFailures <= 0) return base;
+    var exponent = Math.min(consecutiveFailures, 10);
+    return Math.min(max, base * Math.pow(2, exponent));
+  }
+
   function resolveCustomData(commentId, versionId) {
     return JSON.stringify({ ofId: commentId, versionId: versionId });
   }
 
   return {
     SENTINEL_RE: SENTINEL_RE,
+    DEFAULT_AUTO_RESOLVE_CAP: DEFAULT_AUTO_RESOLVE_CAP,
+    AUTO_SYNC_BASE_MS: AUTO_SYNC_BASE_MS,
+    AUTO_SYNC_MAX_BACKOFF_MS: AUTO_SYNC_MAX_BACKOFF_MS,
+    planIsEmpty: planIsEmpty,
+    planTimelineResolves: planTimelineResolves,
+    describeResolveRefusal: describeResolveRefusal,
+    nextPollDelayMs: nextPollDelayMs,
     commentSentinel: commentSentinel,
     parseSentinel: parseSentinel,
     commentLabel: commentLabel,

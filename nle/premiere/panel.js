@@ -4,8 +4,47 @@ function nle() {
   return window.OpenFrameNle;
 }
 
+function el(id) {
+  return document.getElementById(id);
+}
+
 function setStatus(message) {
-  document.getElementById('status').textContent = message;
+  el('status').textContent = message;
+}
+
+function store() {
+  return typeof localStorage !== 'undefined' ? localStorage : null;
+}
+
+const SETTINGS_KEY = 'of-panel-settings';
+
+/**
+ * Auto-sync has to survive a panel reload without a human retyping a token, so
+ * connection details are persisted. Keep this to connection details only.
+ */
+function loadSettings() {
+  const storage = store();
+  if (!storage) return;
+  try {
+    const saved = JSON.parse(storage.getItem(SETTINGS_KEY) || '{}');
+    if (typeof saved.baseUrl === 'string' && saved.baseUrl) el('baseUrl').value = saved.baseUrl;
+    if (typeof saved.token === 'string' && saved.token) el('token').value = saved.token;
+  } catch {
+    // Ignore malformed storage and start from the defaults in the markup.
+  }
+}
+
+function saveSettings() {
+  const storage = store();
+  if (!storage) return;
+  try {
+    storage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim() })
+    );
+  } catch {
+    // Storage being unavailable must not stop a sync.
+  }
 }
 
 async function api(baseUrl, token, path, init) {
@@ -26,27 +65,37 @@ async function api(baseUrl, token, path, init) {
 }
 
 function secondsFromTick(tick) {
-  if (!tick) return 0;
+  if (!tick) return null;
   if (typeof tick.seconds === 'number') return tick.seconds;
   if (typeof tick.sec === 'number') return tick.sec;
   if (typeof tick.ticks === 'number' && typeof tick.ticksPerSecond === 'number' && tick.ticksPerSecond) {
     return tick.ticks / tick.ticksPerSecond;
   }
-  return 0;
+  return null;
 }
 
+/**
+ * `offsetOk` is false when the sequence start time could not be read. Writing
+ * markers at a guessed offset of 0 puts every note an hour away from its comment
+ * on a sequence starting at 01:00:00:00, so auto-sync refuses instead.
+ */
 async function sequenceMeta(sequence) {
   let offsetSeconds = 0;
+  let offsetOk = false;
   let fps = 24;
   let dropFrame = false;
   let sequenceName = sequence.name || 'Untitled';
   try {
     const settings = await sequence.getSettings?.();
-    offsetSeconds = secondsFromTick(settings?.startTime ?? settings?.zeroPoint ?? null);
+    const start = secondsFromTick(settings?.startTime ?? settings?.zeroPoint ?? null);
+    if (start !== null) {
+      offsetSeconds = start;
+      offsetOk = true;
+    }
     const rate = settings?.videoFrameRate;
     if (rate) {
       const frameDur = secondsFromTick(rate);
-      if (frameDur > 0) fps = 1 / frameDur;
+      if (frameDur !== null && frameDur > 0) fps = 1 / frameDur;
     }
     dropFrame = Boolean(
       settings?.dropFrame || String(settings?.videoDisplayFormat || '').toLowerCase().includes('drop')
@@ -55,9 +104,9 @@ async function sequenceMeta(sequence) {
       sequenceName = settings.name.trim();
     }
   } catch {
-    // Keep the defaults and still persist a link so the next sync has an offset.
+    // Leave offsetOk false; a manual sync may still proceed at offset 0.
   }
-  return { offsetSeconds, fps, dropFrame, sequenceName };
+  return { offsetSeconds, offsetOk, fps, dropFrame, sequenceName };
 }
 
 async function persistSequenceLink(baseUrl, token, versionId, meta) {
@@ -75,18 +124,42 @@ async function persistSequenceLink(baseUrl, token, versionId, meta) {
         dropFrame: meta.dropFrame,
       }),
     });
+    return null;
   } catch (error) {
-    setStatus(`Markers will still sync. Sequence link was not saved: ${error.message}`);
+    return error.message;
   }
 }
 
-async function syncMarkers() {
+function readMarkers(markerList) {
   const core = nle();
-  const baseUrl = document.getElementById('baseUrl').value.trim();
-  const token = document.getElementById('token').value.trim();
-  const versionId = document.getElementById('version').value;
+  const local = [];
+  for (const marker of markerList) {
+    const commentsText = marker.comments || marker.getComments?.() || '';
+    local.push({
+      id: String(local.length),
+      commentId: core.parseSentinel(commentsText),
+      startSeconds: secondsFromTick(marker.start) ?? 0,
+      durationSeconds: secondsFromTick(marker.duration) ?? 0,
+      name: marker.name || '',
+      comments: commentsText,
+      _marker: marker,
+    });
+  }
+  return local;
+}
+
+/**
+ * `auto` runs the read direction only. Putting a comment on the timeline is
+ * recoverable; resolving one on the review record is not, so write-back stays a
+ * deliberate click.
+ */
+async function syncMarkers({ auto = false } = {}) {
+  const core = nle();
+  const baseUrl = el('baseUrl').value.trim();
+  const token = el('token').value.trim();
+  const versionId = el('version').value;
   if (!token || !versionId) {
-    setStatus('Token and version are required.');
+    if (!auto) setStatus('Token and version are required.');
     return;
   }
 
@@ -98,108 +171,147 @@ async function syncMarkers() {
   const sequenceMarkers = await ppro.Markers.getMarkers(sequence);
   const existing = await sequenceMarkers.getMarkers();
   const meta = await sequenceMeta(sequence);
-  await persistSequenceLink(baseUrl, token, versionId, meta);
 
-  const { comments } = await api(baseUrl, token, `/api/v1/versions/${versionId}/comments`);
-  const local = [];
-  for (const marker of existing) {
-    const commentsText = marker.comments || marker.getComments?.() || '';
-    local.push({
-      id: String(local.length),
-      commentId: core.parseSentinel(commentsText),
-      startSeconds: secondsFromTick(marker.start),
-      durationSeconds: secondsFromTick(marker.duration),
-      name: marker.name || '',
-      comments: commentsText,
-      _marker: marker,
-    });
+  if (auto && !meta.offsetOk) {
+    setStatus('Auto-sync paused: could not read the sequence start timecode. Sync manually to place markers at 00:00:00:00.');
+    return;
   }
+
+  const linkError = await persistSequenceLink(baseUrl, token, versionId, meta);
+  const { comments } = await api(baseUrl, token, `/api/v1/versions/${versionId}/comments`);
+  const local = readMarkers(existing);
 
   const storageKey = core.syncedMarkerStorageKey(versionId);
-  const previousIds = core.parseSyncedMarkerIds(
-    typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
-  );
-  const toResolve = core.commentsRemovedFromTimeline(comments, local, previousIds);
-  const resolvedIds = [];
-  for (const commentId of toResolve) {
-    await api(baseUrl, token, `/api/v1/comments/${commentId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ isResolved: true }),
-    });
-    resolvedIds.push(commentId);
+  const storage = store();
+  const previousIds = core.parseSyncedMarkerIds(storage ? storage.getItem(storageKey) : null);
+
+  let resolvedIds = [];
+  let refusal = null;
+  if (!auto) {
+    const decision = core.planTimelineResolves(comments, local, previousIds);
+    refusal = core.describeResolveRefusal(decision);
+    for (const commentId of decision.ids) {
+      await api(baseUrl, token, `/api/v1/comments/${commentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isResolved: true }),
+      });
+      resolvedIds.push(commentId);
+    }
   }
   const remaining = core.remainingCommentsAfterTimelineResolves(comments, resolvedIds);
-
   const plan = core.reconcile(remaining, local, meta.offsetSeconds);
 
   let added = 0;
   let moved = 0;
   let removed = 0;
 
-  project.lockedAccess(() => {
-    project.executeTransaction((compound) => {
-      for (const comment of plan.add) {
-        const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
-        const durationSeconds =
-          comment.timestampEnd && comment.timestampEnd > comment.timestamp
-            ? comment.timestampEnd - comment.timestamp
-            : 0;
-        const duration =
-          durationSeconds > 0
-            ? ppro.TickTime.createWithSeconds(durationSeconds)
-            : ppro.TickTime.TIME_ZERO;
-        compound.addAction(
-          sequenceMarkers.createAddMarkerAction(
-            core.commentLabel(comment).slice(0, 40),
-            ppro.Marker.MARKER_TYPE_COMMENT,
-            start,
-            duration,
-            core.markerCommentBody(comment)
-          )
-        );
-        added += 1;
-      }
+  // Every executeTransaction pushes an undo entry. Opening one for an empty plan
+  // used to cost the editor a junk undo step per sync, which a poll would make
+  // constant.
+  if (!core.planIsEmpty(plan)) {
+    project.lockedAccess(() => {
+      project.executeTransaction((compound) => {
+        for (const comment of plan.add) {
+          const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
+          const durationSeconds =
+            comment.timestampEnd && comment.timestampEnd > comment.timestamp
+              ? comment.timestampEnd - comment.timestamp
+              : 0;
+          const duration =
+            durationSeconds > 0
+              ? ppro.TickTime.createWithSeconds(durationSeconds)
+              : ppro.TickTime.TIME_ZERO;
+          compound.addAction(
+            sequenceMarkers.createAddMarkerAction(
+              core.commentLabel(comment).slice(0, 40),
+              ppro.Marker.MARKER_TYPE_COMMENT,
+              start,
+              duration,
+              core.markerCommentBody(comment)
+            )
+          );
+          added += 1;
+        }
 
-      for (const { comment, marker } of plan.move) {
-        const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
-        compound.addAction(sequenceMarkers.createMoveMarkerAction(marker._marker, start));
-        moved += 1;
-      }
+        for (const { comment, marker } of plan.move) {
+          const start = ppro.TickTime.createWithSeconds(comment.timestamp + meta.offsetSeconds);
+          compound.addAction(sequenceMarkers.createMoveMarkerAction(marker._marker, start));
+          moved += 1;
+        }
 
-      for (const marker of plan.remove) {
-        compound.addAction(sequenceMarkers.createRemoveMarkerAction(marker._marker));
-        removed += 1;
-      }
-    }, 'Sync review comments');
-  });
-
-  const after = await sequenceMarkers.getMarkers();
-  const afterLocal = [];
-  for (const marker of after) {
-    const commentsText = marker.comments || marker.getComments?.() || '';
-    afterLocal.push({
-      id: String(afterLocal.length),
-      commentId: core.parseSentinel(commentsText),
-      startSeconds: 0,
-      durationSeconds: 0,
-      name: marker.name || '',
-      comments: commentsText,
+        for (const marker of plan.remove) {
+          compound.addAction(sequenceMarkers.createRemoveMarkerAction(marker._marker));
+          removed += 1;
+        }
+      }, 'Sync review comments');
     });
   }
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem(storageKey, JSON.stringify(core.collectSyncedMarkerIds(afterLocal)));
+
+  if (storage) {
+    const after = await sequenceMarkers.getMarkers();
+    storage.setItem(storageKey, JSON.stringify(core.collectSyncedMarkerIds(readMarkers(after))));
   }
 
-  setStatus(
-    `Synced. Added ${added}, moved ${moved}, removed ${removed}, resolved ${resolvedIds.length}. Offset ${meta.offsetSeconds.toFixed(2)}s.`
-  );
+  if (auto && added === 0 && moved === 0 && removed === 0) {
+    setStatus(`Auto-sync on. No changes at ${new Date().toLocaleTimeString()}.`);
+    return;
+  }
+
+  const parts = [`Synced. Added ${added}, moved ${moved}, removed ${removed}.`];
+  if (!auto) parts.push(`Resolved ${resolvedIds.length}.`);
+  parts.push(`Offset ${meta.offsetSeconds.toFixed(2)}s${meta.offsetOk ? '' : ' (assumed)'}.`);
+  if (refusal) parts.push(refusal);
+  if (linkError) parts.push(`Sequence link was not saved: ${linkError}`);
+  setStatus(parts.join(' '));
+}
+
+let autoTimer = null;
+let autoFailures = 0;
+let syncInFlight = false;
+
+function autoSyncEnabled() {
+  return Boolean(el('auto').checked);
+}
+
+function stopAutoSync() {
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = null;
+  autoFailures = 0;
+}
+
+function scheduleAutoSync(delayMs) {
+  if (autoTimer) clearTimeout(autoTimer);
+  if (!autoSyncEnabled()) return;
+  autoTimer = setTimeout(runAutoSync, delayMs ?? nle().nextPollDelayMs(autoFailures));
+}
+
+async function runAutoSync() {
+  if (!autoSyncEnabled()) return;
+  // A hidden panel is not worth polling for, and a sync already running must not
+  // be re-entered: both halves of a read-then-write would race.
+  const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  if (syncInFlight || hidden) {
+    scheduleAutoSync(nle().AUTO_SYNC_BASE_MS);
+    return;
+  }
+  syncInFlight = true;
+  try {
+    await syncMarkers({ auto: true });
+    autoFailures = 0;
+  } catch (error) {
+    autoFailures += 1;
+    setStatus(`Auto-sync error (retry ${autoFailures}): ${error.message}`);
+  } finally {
+    syncInFlight = false;
+    scheduleAutoSync();
+  }
 }
 
 async function loadProjects() {
-  const baseUrl = document.getElementById('baseUrl').value.trim();
-  const token = document.getElementById('token').value.trim();
+  const baseUrl = el('baseUrl').value.trim();
+  const token = el('token').value.trim();
   const { projects } = await api(baseUrl, token, '/api/v1/projects');
-  const select = document.getElementById('project');
+  const select = el('project');
   select.innerHTML = projects
     .map((project) => `<option value="${project.id}">${project.name}</option>`)
     .join('');
@@ -207,10 +319,10 @@ async function loadProjects() {
 }
 
 async function loadVersions(projectId) {
-  const baseUrl = document.getElementById('baseUrl').value.trim();
-  const token = document.getElementById('token').value.trim();
+  const baseUrl = el('baseUrl').value.trim();
+  const token = el('token').value.trim();
   const { videos } = await api(baseUrl, token, `/api/v1/projects/${projectId}/videos`);
-  const select = document.getElementById('version');
+  const select = el('version');
   const options = [];
   for (const video of videos) {
     for (const version of video.versions) {
@@ -222,12 +334,35 @@ async function loadVersions(projectId) {
   select.innerHTML = options.join('') || '<option value="">No versions</option>';
 }
 
-document.getElementById('load').addEventListener('click', () => {
+loadSettings();
+
+for (const id of ['baseUrl', 'token']) {
+  el(id).addEventListener('change', saveSettings);
+}
+el('load').addEventListener('click', () => {
+  saveSettings();
   loadProjects().catch((error) => setStatus(error.message));
 });
-document.getElementById('project').addEventListener('change', (event) => {
+el('project').addEventListener('change', (event) => {
   loadVersions(event.target.value).catch((error) => setStatus(error.message));
 });
-document.getElementById('sync').addEventListener('click', () => {
-  syncMarkers().catch((error) => setStatus(error.message));
+el('sync').addEventListener('click', () => {
+  if (syncInFlight) return;
+  syncInFlight = true;
+  saveSettings();
+  syncMarkers()
+    .catch((error) => setStatus(error.message))
+    .finally(() => {
+      syncInFlight = false;
+    });
+});
+el('auto').addEventListener('change', () => {
+  if (autoSyncEnabled()) {
+    saveSettings();
+    setStatus('Auto-sync on. Markers follow the web app; resolving stays on Sync markers.');
+    scheduleAutoSync(0);
+  } else {
+    stopAutoSync();
+    setStatus('Auto-sync off.');
+  }
 });

@@ -34,6 +34,22 @@ export type SyncPlan = {
   remove: LocalMarker[];
 };
 
+/**
+ * A write-back decision. Resolving a comment on the web because its marker left
+ * the timeline is not reversible, so the unsafe cases are refused rather than
+ * guessed at, and the panel tells the editor what it declined to do.
+ */
+export type TimelineResolveDecision =
+  | { ok: true; ids: string[] }
+  | { ok: false; reason: 'timeline-not-bound' | 'over-cap'; ids: string[]; cap: number };
+
+/** Above this many resolves in one pass, ask a human instead. */
+export const DEFAULT_AUTO_RESOLVE_CAP = 5;
+
+/** Poll cadence for auto-sync. Matches the web client's comment poll. */
+export const AUTO_SYNC_BASE_MS = 10000;
+export const AUTO_SYNC_MAX_BACKOFF_MS = 300000;
+
 export const SENTINEL_RE = /\[of:([a-z0-9]+)\]/i;
 
 export function commentSentinel(commentId: string): string {
@@ -88,6 +104,64 @@ export function commentsRemovedFromTimeline(
     if (openIds.has(id) && !present.has(id)) removed.push(id);
   }
   return removed;
+}
+
+/** True when a sync would change nothing, so the host never opens a transaction. */
+export function planIsEmpty(plan: SyncPlan): boolean {
+  return plan.add.length === 0 && plan.move.length === 0 && plan.remove.length === 0;
+}
+
+/**
+ * Decides which comments a sync may resolve on the web because their markers
+ * left the timeline.
+ *
+ * `commentsRemovedFromTimeline` cannot tell "the editor deleted this marker"
+ * apart from "these markers were never on the timeline I am looking at". When
+ * the front sequence is not the bound one, every previously synced comment reads
+ * as deleted and would be resolved in a single pass. Two refusals close that:
+ *
+ * - `timeline-not-bound`: we previously synced markers and the timeline now
+ *   carries none at all. Deleting the genuinely last review marker also lands
+ *   here; refusing is recoverable, resolving wrongly is not.
+ * - `over-cap`: more resolves in one pass than a person plausibly performed.
+ */
+export function planTimelineResolves(
+  remote: RemoteComment[],
+  local: LocalMarker[],
+  previouslySyncedIds: readonly string[],
+  options: { cap?: number } = {}
+): TimelineResolveDecision {
+  const cap = options.cap ?? DEFAULT_AUTO_RESOLVE_CAP;
+  const ids = commentsRemovedFromTimeline(remote, local, previouslySyncedIds);
+  if (ids.length === 0) return { ok: true, ids: [] };
+  const present = new Set(collectSyncedMarkerIds(local));
+  const anyOfOursPresent = previouslySyncedIds.some((id) => present.has(id));
+  if (previouslySyncedIds.length > 0 && !anyOfOursPresent) {
+    return { ok: false, reason: 'timeline-not-bound', ids, cap };
+  }
+  if (ids.length > cap) return { ok: false, reason: 'over-cap', ids, cap };
+  return { ok: true, ids };
+}
+
+/** Explains a refusal in the panel status line. */
+export function describeResolveRefusal(decision: TimelineResolveDecision): string | null {
+  if (decision.ok) return null;
+  const count = decision.ids.length;
+  if (decision.reason === 'timeline-not-bound') {
+    return `Did not resolve ${count} comment(s): this timeline has no review markers, so the open sequence may not be the one being synced. Resolve them in the web app if that was intended.`;
+  }
+  return `Did not resolve ${count} comment(s): more than the ${decision.cap} allowed in one sync. Resolve them in the web app if that was intended.`;
+}
+
+/** Exponential backoff for the auto-sync poll, so a down server is not hammered. */
+export function nextPollDelayMs(
+  consecutiveFailures: number,
+  baseMs: number = AUTO_SYNC_BASE_MS,
+  maxMs: number = AUTO_SYNC_MAX_BACKOFF_MS
+): number {
+  if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return baseMs;
+  const exponent = Math.min(consecutiveFailures, 10);
+  return Math.min(maxMs, baseMs * 2 ** exponent);
 }
 
 export function parseSyncedMarkerIds(raw: string | null | undefined): string[] {
@@ -182,9 +256,15 @@ export function nearestResolveColor(hex: string | null | undefined): string {
   return best.name;
 }
 
-export function sequenceOffsetSeconds(startTimecode: string, fps: number): number {
-  const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(startTimecode.trim());
-  if (!match) return 0;
+/**
+ * Returns null when the start timecode cannot be parsed. A sequence starting at
+ * 01:00:00:00 whose timecode failed to parse used to yield 0, which silently put
+ * every marker an hour away from its comment. Callers must decide what to do
+ * with null; auto-sync refuses to write.
+ */
+export function sequenceOffsetSeconds(startTimecode: string, fps: number): number | null {
+  const match = /^(\d{1,3}):([0-5]\d):([0-5]\d)[:;](\d{1,3})$/.exec(String(startTimecode ?? '').trim());
+  if (!match) return null;
   const rate = Math.max(1, fps);
   return (
     Number(match[1]) * 3600 +

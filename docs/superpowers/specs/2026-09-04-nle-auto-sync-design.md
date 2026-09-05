@@ -1,6 +1,17 @@
 # Automatic delivery of web comments into open Premiere / Resolve projects
 
-Status: investigation. No code changed by this document.
+Status: Phases 0 and 1 shipped. Phases 2 and 3 not started.
+
+- **Phase 0 (shipped)** — the guards in "Write safety" below.
+- **Phase 1 (shipped)** — an _Auto-sync new comments_ toggle in both panels,
+  off by default, polling every 10s with backoff and visibility pausing. It runs
+  the read direction only; write-back stays on the Sync button, per the open
+  question answered below.
+- **Phase 2 (not started)** — automatic binding of the open sequence to a version.
+  Until it lands, auto-sync follows whichever version is selected in the panel,
+  and the `timeline-not-bound` refusal is what keeps a switched timeline from
+  doing damage.
+- **Phase 3 (not started)** — push accelerator.
 
 ## The short version
 
@@ -8,13 +19,13 @@ Almost everything needed is already built. `nle/premiere` and `nle/resolve`
 already read comments over the v1 API, map them onto markers, and reconcile
 adds/moves/removes idempotently through `nle/core`. What is missing is not the
 transport and not the mapping — it is the **trigger**. Both panels only ever act
-when a human clicks *Sync*.
+when a human clicks _Sync_.
 
 Turning that click into "automatic" is three separate problems, and only the
 first is easy:
 
 1. **Trigger** — how the panel learns a comment changed. (Easy. Poll.)
-2. **Binding** — how the panel knows the open sequence *is* the version it is
+2. **Binding** — how the panel knows the open sequence _is_ the version it is
    syncing. Today a human picks it from a dropdown. (Medium.)
 3. **Write safety** — what an unattended writer is allowed to do to a project a
    human is actively editing. (Hard, and the reason to be careful.)
@@ -27,16 +38,16 @@ described below, that is harmless in manual mode and severe in automatic mode.
 
 Verified in the tree:
 
-| Piece | Location | State |
-| --- | --- | --- |
-| Marker mapping, sentinels, reconcile | `nle/core/src/index.ts` | Done, 27 unit tests in `tests/unit/lib/nle-sync.test.ts` |
-| UMD copy loaded by the panels | `nle/core/nle-core.cjs`, `nle/premiere/nle-core.cjs` | Byte-parity asserted by test |
-| Premiere UXP panel | `nle/premiere/panel.js` | Manual sync |
-| Resolve Workflow Integration plugin | `nle/resolve/main.js` | Manual sync |
-| Bearer-token API for panels | `app/api/v1/**`, auth in `lib/v1-auth.ts` | Done |
-| Sequence ↔ version link | `app/api/v1/versions/[versionId]/sequence-link/route.ts`, `SequenceLink` model | Write-only from panel |
-| Change notification fan-out | `lib/comment-live.ts` (`notifyCommentChanged`) | Called at **every** comment mutation site |
-| SSE stream for the web client | `app/api/versions/[versionId]/comments/live/route.ts` | Session-cookie auth only |
+| Piece                                | Location                                                                       | State                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| Marker mapping, sentinels, reconcile | `nle/core/src/index.ts`                                                        | Done, 27 unit tests in `tests/unit/lib/nle-sync.test.ts` |
+| UMD copy loaded by the panels        | `nle/core/nle-core.cjs`, `nle/premiere/nle-core.cjs`                           | Byte-parity asserted by test                             |
+| Premiere UXP panel                   | `nle/premiere/panel.js`                                                        | Manual sync                                              |
+| Resolve Workflow Integration plugin  | `nle/resolve/main.js`                                                          | Manual sync                                              |
+| Bearer-token API for panels          | `app/api/v1/**`, auth in `lib/v1-auth.ts`                                      | Done                                                     |
+| Sequence ↔ version link              | `app/api/v1/versions/[versionId]/sequence-link/route.ts`, `SequenceLink` model | Write-only from panel                                    |
+| Change notification fan-out          | `lib/comment-live.ts` (`notifyCommentChanged`)                                 | Called at **every** comment mutation site                |
+| SSE stream for the web client        | `app/api/versions/[versionId]/comments/live/route.ts`                          | Session-cookie auth only                                 |
 
 That last pair matters. `notifyCommentChanged` is already invoked from all six
 mutation paths (web create, web patch/delete, v1 create, v1 patch, agent
@@ -148,11 +159,11 @@ under a human-clicked sync and become serious under a loop.
 
 ### 3.1 Mass auto-resolve when the wrong timeline is open — the important one
 
-`commentsRemovedFromTimeline(remote, local, previouslySyncedIds)` treats *any*
+`commentsRemovedFromTimeline(remote, local, previouslySyncedIds)` treats _any_
 previously-synced comment that is open remotely but absent from `local` as
 "deleted by the editor" and resolves it on the web.
 
-If a sync runs while the bound sequence is *not* the front timeline — a different
+If a sync runs while the bound sequence is _not_ the front timeline — a different
 sequence, a freshly created one, a project where the markers were never imported —
 then `local` is empty, and **every previously-synced comment gets resolved on the
 web app** in one pass. There is no confirmation and no undo.
@@ -164,9 +175,8 @@ Mitigations, all of which should land before any auto mode:
 
 - Refuse the write-back direction unless the current sequence matches the bound
   version (sentinel, or name + start TC + fps).
-- Refuse when `local` contains zero sentinel markers while `previousIds` is
-  non-empty — that is the signature of "wrong timeline", not "editor deleted
-  everything".
+- Refuse when none of `previousIds` is present on the timeline — that is the
+  signature of "wrong timeline", not "editor deleted everything".
 - Cap the number of comments a single sync may auto-resolve, and surface anything
   above the cap for confirmation.
 
@@ -204,7 +214,7 @@ offset parse failure (3.3). Persist base URL and token in panel storage so a
 panel can resume unattended after a restart.
 
 **Phase 1 — automatic pull.**
-Refactor `syncMarkers` to separate pull from write-back. Add an *Auto-sync*
+Refactor `syncMarkers` to separate pull from write-back. Add an _Auto-sync_
 toggle, off by default, driving a 10s poll with visibility pausing and backoff.
 Ship with write-back still manual.
 
@@ -219,19 +229,21 @@ limitation in the panel UI rather than pretending latency is uniform.
 
 ## Server-side changes this implies
 
-| Change | Needed for | Notes |
-| --- | --- | --- |
-| Reverse sequence-link lookup + `(userId, nle, sequenceName)` index | Phase 2 | New route + migration |
-| Version sentinel persisted per link | Phase 2 | Can reuse `SequenceLink`; no new model required |
-| `GET /api/v1/versions/[versionId]/comments/live` | Phase 3 | Mirror existing route, swap `auth()` for `withApiAuth` |
-| Deletions feed | Only if incremental polling is adopted | Otherwise keep full fetch |
+| Change                                                             | Needed for                             | Notes                                                  |
+| ------------------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------ |
+| Reverse sequence-link lookup + `(userId, nle, sequenceName)` index | Phase 2                                | New route + migration                                  |
+| Version sentinel persisted per link                                | Phase 2                                | Can reuse `SequenceLink`; no new model required        |
+| `GET /api/v1/versions/[versionId]/comments/live`                   | Phase 3                                | Mirror existing route, swap `auth()` for `withApiAuth` |
+| Deletions feed                                                     | Only if incremental polling is adopted | Otherwise keep full fetch                              |
 
 Phases 0 and 1 need **no server changes at all**.
 
 ## Open questions for the team
 
-1. Should timeline → web resolve ever be automatic, or stay an explicit action?
-   (Recommendation: stay explicit.)
+1. ~~Should timeline → web resolve ever be automatic, or stay an explicit
+   action?~~ **Decided: explicit.** Auto-sync is read-only; resolving a comment
+   still requires pressing Sync markers. This is what makes 3.1 survivable
+   rather than merely mitigated.
 2. Is the deployment target Vercel or self-hosted? It decides whether Phase 3 is
    worth building.
 3. Which edition mix of Resolve is in use? `nle/NLE_DECISION.md` records this as
