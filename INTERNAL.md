@@ -56,17 +56,19 @@ old columns or values in a later release.
 transcript and comment text to that provider. Leave the model at `mock` unless
 you intend that egress.
 
-On Vercel, `DATABASE_URL` must use the Supabase **session pooler** (IPv4), not
-the direct `db.<ref>.supabase.co` host. That host is IPv6-only, so serverless
-functions cannot reach it (`P1001`). Session pooler is
-`postgres.<ref>@aws-1-eu-west-1.pooler.supabase.com:5432` with
-`sslmode=no-verify`.
+On Vercel, use the Supabase pooler (IPv4), not the direct
+`db.<ref>.supabase.co` host, which is IPv6-only. `DATABASE_URL` can retain the
+**session pooler** address on port 5432 for Prisma migrations. The application's
+Prisma pool automatically uses **transaction pooling** on port 6543 for that
+same Supabase pooler host when `VERCEL=1`. Credentials, database and TLS options
+are preserved. Other database hosts and workers retain their configured URL.
 
 The session pooler admits only `pool_size` clients at once (15 on the current
-compute). Each Vercel isolate therefore opens **one** pooled connection and
-drops it after 5 idle seconds (`lib/db-pool.ts`). A pool of 20 per isolate
-exceeds that cap immediately (`EMAXCONNSESSION`) and takes down the dashboard
-and video player together.
+compute). Even one connection per Vercel isolate can exceed that cap, causing
+`EMAXCONNSESSION` while saving an uploaded video. Transaction pooling releases
+the backend between transactions. The application still caps each isolate at
+one client and closes idle clients after 5 seconds (`lib/db-pool.ts`); idle
+timers alone cannot protect session slots when Vercel freezes an isolate.
 
 Live comments use `LISTEN`/`NOTIFY` only off Vercel (Docker / a long-running
 Node process). A dedicated `LISTEN` connection per open review page used to pin
