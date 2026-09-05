@@ -221,14 +221,25 @@ describe('ASS output', () => {
   it('stops a backslash in the text from becoming an ASS control', () => {
     // libass reads \N, \n and \h as controls, so a backslash that arrived in
     // the words has to stop being one before the line break rewrite adds a
-    // real \N of its own.
+    // real \N of its own. Doubling it is not an escape — ASS has none — so the
+    // backslash is swapped for U+2216 SET MINUS, and a line that said `\N`
+    // must not leave a single `\N` anywhere in the document.
+    const literal = buildAssDocument([{ start: 0, end: 1, text: 'a\\Nb' }], style(), {
+      width: 1920,
+      height: 1080,
+    });
+    expect(literal).toContain('Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,a∖Nb');
+    expect(literal).not.toContain('\\N');
+
+    // A newline the operator actually wrote is still the one thing that turns
+    // into the control, and braces still lose their override meaning.
     const doc = buildAssDocument(
       [{ start: 0, end: 1, text: 'back\\slash {and} a\nbreak' }],
       style(),
       { width: 1920, height: 1080 }
     );
     expect(doc).toContain(
-      'Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,back\\\\slash (and) a\\Nbreak'
+      'Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,back∖slash (and) a\\Nbreak'
     );
   });
 

@@ -374,6 +374,10 @@ export const TranscriptPane = memo(function TranscriptPane({
 
   useEffect(() => {
     setShowTranslated(false);
+    // The note is about the line that was just saved on the version being left,
+    // so it has to go with it: left standing it reads as a claim about the
+    // version now on screen, whose captions nobody has touched.
+    setCaptionNote(null);
     void fetchTranscript();
   }, [fetchTranscript]);
 
@@ -579,9 +583,19 @@ export const TranscriptPane = memo(function TranscriptPane({
     if (result.captions === 'updated') {
       setCaptionNote(null);
       onCaptionsChanged?.();
+    } else if (result.captions === 'empty') {
+      // Nothing went wrong here at all: a pasted or imported transcript has no
+      // timings, and cues cannot be made out of text that is not timed. Saying
+      // "could not be rebuilt" would read as a failure to look into.
+      setCaptionNote('Line saved. There is no caption track to build: this transcript is untimed.');
+    } else if (result.captions === 'skipped') {
+      setCaptionNote(
+        'Line saved. The caption track was left alone: this version already has as many subtitle tracks as it can hold.'
+      );
     } else {
-      // Not an error: the correction is stored. The subtitles are the part that
-      // is behind, and saying so beats leaving the operator to discover it.
+      // Not an error the operator caused: the correction is stored. The
+      // subtitles are the part that is behind, and saying so beats leaving the
+      // operator to discover it.
       setCaptionNote('Line saved, but the caption track could not be rebuilt.');
     }
   };

@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { parseSegmentPatch, retimeSegmentWords } from '@/lib/transcript-edit';
+import type { TranscriptWord } from '@/lib/transcription/types';
+
+/**
+ * What the rest of the app assumes about a segment's words: one per word of the
+ * text, in order, never running backwards and never outside the line. A cue
+ * built from words that break any of these is a cue that draws at the wrong
+ * time or not at all.
+ */
+function expectWellTimed(
+  words: TranscriptWord[],
+  text: string,
+  startSec: number,
+  endSec: number
+): void {
+  expect(words.map((word) => word.text)).toEqual(text.split(' '));
+  let cursor = startSec;
+  for (const word of words) {
+    expect(word.start).toBeGreaterThanOrEqual(cursor);
+    expect(word.end).toBeGreaterThanOrEqual(word.start);
+    expect(word.end).toBeLessThanOrEqual(endSec);
+    cursor = word.end;
+  }
+}
 
 describe('retimeSegmentWords', () => {
   const words = [
@@ -64,6 +87,36 @@ describe('retimeSegmentWords', () => {
       { start: 1 + 2 / 3, end: 1 + 4 / 3, text: 'help' },
       { start: 1 + 4 / 3, end: 3, text: 'founders' },
     ]);
+  });
+
+  it('retimes a line of repeated words without losing or inventing one', () => {
+    // Every word matches every other by text, so the prefix run and the suffix
+    // run each look like the whole line. Only the `- prefix` in the suffix
+    // search keeps them from claiming the same words twice; without it a
+    // shortened line comes back with words the text no longer has, and a
+    // lengthened one repeats a timing.
+    const three = [
+      { start: 0, end: 1, text: 'a' },
+      { start: 1, end: 2, text: 'a' },
+      { start: 2, end: 3, text: 'a' },
+    ];
+
+    const shortened = retimeSegmentWords(three, 'a a', 0, 3);
+    expect(shortened).toEqual([
+      { start: 0, end: 1, text: 'a' },
+      { start: 1, end: 2, text: 'a' },
+    ]);
+    expectWellTimed(shortened, 'a a', 0, 3);
+
+    const lengthened = retimeSegmentWords(shortened, 'a a a', 0, 3);
+    // The two kept words hold their measured timings and the third is guessed
+    // into the tail of the line, not squeezed on top of one of them.
+    expect(lengthened).toEqual([
+      { start: 0, end: 1, text: 'a' },
+      { start: 1, end: 2, text: 'a' },
+      { start: 2, end: 3, text: 'a' },
+    ]);
+    expectWellTimed(lengthened, 'a a a', 0, 3);
   });
 
   it('spreads when the stored words are not timed', () => {

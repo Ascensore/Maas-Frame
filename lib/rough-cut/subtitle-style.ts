@@ -159,12 +159,13 @@ export function assTime(seconds: number): string {
 function assText(text: string): string {
   // Backslashes first: libass reads `\N`, `\n` and `\h` as controls, so one
   // that arrived in the text has to stop being one before the line break
-  // rewrite below adds a real `\N`. Braces would open an override block.
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/\{/g, '(')
-    .replace(/\}/g, ')')
-    .replace(/\r?\n/g, '\\N');
+  // rewrite below adds a real `\N`. Doubling it does not do that — ASS has no
+  // backslash escape, so libass draws the first one and then reads the second
+  // together with what follows, leaving `\\N` a hard break with a backslash in
+  // front of it. The only way out is to stop it being a backslash: U+2216 SET
+  // MINUS draws the same stroke and controls nothing. Braces would open an
+  // override block.
+  return text.replace(/\\/g, '∖').replace(/\{/g, '(').replace(/\}/g, ')').replace(/\r?\n/g, '\\N');
 }
 
 const ALIGNMENT: Record<BurnInPosition, number> = { bottom: 2, center: 5, top: 8 };

@@ -66,6 +66,23 @@ describe('TranscriptPane line editing', () => {
     vi.unstubAllGlobals();
   });
 
+  function pane(versionId: string, canManage: boolean) {
+    return (
+      <TranscriptPane
+        versionId={versionId}
+        getCurrentTime={() => 0}
+        canManage={canManage}
+        canTranscribe={false}
+        comments={[]}
+        onSeek={() => {}}
+        onCommentRange={() => {}}
+        onOpenThread={() => {}}
+        onCaptionsChanged={onCaptionsChanged}
+        draftRange={null}
+      />
+    );
+  }
+
   function renderPane(canManage = true) {
     return render(
       <TranscriptPane
@@ -223,6 +240,56 @@ describe('TranscriptPane line editing', () => {
       'Line saved, but the caption track could not be rebuilt.'
     );
     expect(onCaptionsChanged).not.toHaveBeenCalled();
+  });
+
+  it('says an untimed transcript has no captions to build, and drops the note with the version', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/versions/version-1/transcript/segments/segment-1') {
+        return jsonResponse({
+          data: {
+            segment: { ...SOURCE_SEGMENT, text: 'kuruculari bulduk', words: SAVED_WORDS },
+            captions: 'empty',
+            subtitle: null,
+          },
+        });
+      }
+      if (url === '/api/versions/version-1/transcript' && !init?.method) {
+        return jsonResponse(transcriptPayload());
+      }
+      if (url === '/api/versions/version-2/transcript' && !init?.method) {
+        return jsonResponse({ data: { transcript: null } });
+      }
+      return jsonResponse({ data: {} });
+    });
+    const view = render(pane('version-1', true));
+    await waitFor(() => {
+      expect(screen.getByText('kurucularla')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Edit line' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    // 'empty' is not a failure: there was nothing timed to cut cues out of, and
+    // the note has to say that rather than point at a rebuild that broke.
+    const note = screen.getByRole('status');
+    expect(note).toHaveTextContent(
+      'Line saved. There is no caption track to build: this transcript is untimed.'
+    );
+    expect(note).not.toHaveTextContent('could not be rebuilt');
+    expect(onCaptionsChanged).not.toHaveBeenCalled();
+
+    // The note belongs to the version it was saved on. Left standing on the
+    // next one it claims something about a transcript nobody has edited.
+    view.rerender(pane('version-2', true));
+    await waitFor(() => {
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    });
   });
 
   it('shows the API error and keeps the dialog open', async () => {

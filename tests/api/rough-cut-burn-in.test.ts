@@ -34,7 +34,7 @@ afterAll(async () => {
 
 type Uploaded = { key: string; contentType: string; body: string };
 
-function stubbedDeps(uploads: Uploaded[], deletions: string[] = []): BurnInDeps {
+function stubbedDeps(uploads: Uploaded[]): BurnInDeps {
   return {
     pool,
     run: async (command) =>
@@ -54,9 +54,9 @@ function stubbedDeps(uploads: Uploaded[], deletions: string[] = []): BurnInDeps 
     uploadObject: async (key, body, contentType) => {
       uploads.push({ key, contentType, body: body.toString('utf8') });
     },
-    deleteObject: async (key) => {
-      deletions.push(key);
-    },
+    // Nothing here drives the job into taking an upload back — the unit suite
+    // covers that against a fake pool — so this only has to exist.
+    deleteObject: async () => undefined,
     downloadVersionMedia: async () => undefined,
     readOutput: async () => Buffer.from('burned mp4'),
     readText: async () => TRACK_VTT,

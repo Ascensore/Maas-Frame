@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { readClientApiError } from '@/components/video-page/hooks/use-subtitles';
+import { readClientApiError } from '@/lib/client/api-error';
 import type { BurnInStyle } from '@/lib/rough-cut/subtitle-style';
 
 /**

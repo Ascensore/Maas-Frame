@@ -772,6 +772,19 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     // The island is back in the program, so it is no longer a cut; the range the
     // reviewer took out is.
     expect(programMarkers(await reviewed.text())).toEqual([['Cut: flubbed the line', 'RED']]);
+
+    // The same for the other export. The two serializers each build their own
+    // marker list, so an FCP7 export left on the assembled decisions would hand
+    // the editor the opposite pair of markers and nothing here would have said so.
+    const xml = await callRoute(
+      downloadRoughCut,
+      apiRequest(`/api/rough-cuts/${seeded.cut.id}/download?format=xml&cuts=1`),
+      { roughCutId: seeded.cut.id }
+    );
+    expect(xml.status).toBe(200);
+    const xmlBody = await xml.text();
+    expect(xmlBody).toContain('<name>Cut: flubbed the line</name>');
+    expect(xmlBody).not.toContain('dead air');
   });
 });
 

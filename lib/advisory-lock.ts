@@ -7,8 +7,15 @@ import type { Prisma } from '@prisma/client';
  * nothing to unlock and a crashed request cannot strand it. The key is any string: it is
  * hashed to the bigint the lock function takes, which is what lets a cuid name a lock.
  *
- * Two rules come with it, and both matter at every call site:
+ * Three rules come with it, and all of them matter at every call site:
  *
+ *  - `tx` has to be the transaction client of an interactive `db.$transaction(async (tx)
+ *    => ...)`, and everything the lock protects has to run inside that callback. Passing
+ *    `db` itself compiles — `PrismaClient` is structurally assignable to
+ *    `Prisma.TransactionClient` — and it does take the lock, in the implicit
+ *    single-statement transaction the `$executeRaw` runs in, which commits the instant
+ *    the statement returns. The call succeeds, nothing is serialised, and the race the
+ *    lock was added for is still there, so this is worth checking rather than assuming.
  *  - Whatever the lock protects has to be *read* after it is taken. Reading first and
  *    locking afterwards is the race the lock was supposed to close.
  *  - This database runs READ COMMITTED, where a statement taken after the lock sees the

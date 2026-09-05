@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { readClientApiError } from '@/lib/client/api-error';
 import {
   emptyOverrides,
   extraCutKey,
@@ -46,17 +47,6 @@ type ReviewPayload = {
 export type SourceRange = { sourceVersionId: string; inSeconds: number; outSeconds: number };
 
 export type SourcePoint = { sourceVersionId: string; seconds: number };
-
-function readClientApiError(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== 'object') return fallback;
-  const error = (payload as { error?: unknown }).error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object' && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
-  }
-  return fallback;
-}
 
 /** The edit under a timeline second, or null between programs. */
 function editAt(decisions: RoughCutDecisionList, seconds: number) {

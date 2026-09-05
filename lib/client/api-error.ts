@@ -43,6 +43,27 @@ export function apiRequestError(
 }
 
 /**
+ * The message out of a parsed `{ error }` body, for callers that put it in the
+ * pane itself rather than in a toast.
+ *
+ * Takes `unknown` because it is handed whatever `response.json()` produced,
+ * including the `null` a body that was not JSON comes back as. `error` is
+ * normally the string a route wrote with `apiErrors`; an object with a
+ * `message` is what a validation library's own error looks like when one
+ * reaches the client unwrapped, and reading it beats showing the fallback.
+ */
+export function readClientApiError(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message;
+  }
+  return fallback;
+}
+
+/**
  * Whether this failure is the trial ceiling, for callers that draw the way out
  * themselves rather than handing it to `toastApiError`.
  */

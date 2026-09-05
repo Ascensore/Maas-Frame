@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '@/lib/db';
-import { ProjectMemberRole, TranscriptStatus } from '@prisma/client';
+import { ProjectMemberRole, TranscriptStatus, type Prisma } from '@prisma/client';
 import { PATCH as patchSegment } from '@/app/api/versions/[versionId]/transcript/segments/[segmentId]/route';
 import { POST as buildCaptions } from '@/app/api/versions/[versionId]/transcript/captions/route';
 import { apiRequest, callRoute, readData, readError } from '../helpers/request';
@@ -272,6 +272,71 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
     expect(body.subtitle).toBeNull();
     const row = await db.transcriptSegment.findUniqueOrThrow({ where: { id: segment.id } });
     expect(row.text).toBe('we help founders');
+    expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
+  });
+
+  it('keeps the line and the search text together when the second write fails', async () => {
+    const scenario = await seedVersion();
+    const { transcript, segment } = await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+
+    // The route writes the line, then rewrites the transcript's search text from
+    // every sibling. Two writes outside a transaction would leave a corrected
+    // line that search cannot find, so the failure has to be injected into the
+    // second write of the route's own transaction — hence the wrapped `tx`
+    // rather than a stubbed route.
+    const realTransaction = db.$transaction.bind(db);
+    const spy = vi.spyOn(db, '$transaction').mockImplementation((async (
+      run: (tx: Prisma.TransactionClient) => Promise<unknown>
+    ) =>
+      realTransaction(async (tx) =>
+        run(
+          new Proxy(tx, {
+            get(target, prop) {
+              const value = Reflect.get(target, prop) as unknown;
+              if (prop !== 'transcript') {
+                return typeof value === 'function' ? value.bind(target) : value;
+              }
+              const delegate = value as Record<string, unknown>;
+              return new Proxy(delegate, {
+                get(model, name) {
+                  if (name === 'update') {
+                    return async () => {
+                      throw new Error('search text write failed');
+                    };
+                  }
+                  const inner = Reflect.get(model, name) as unknown;
+                  return typeof inner === 'function' ? inner.bind(model) : inner;
+                },
+              });
+            },
+          }) as Prisma.TransactionClient
+        )
+      )) as never);
+
+    let response: Response;
+    try {
+      response = await callRoute(
+        patchSegment,
+        patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+        { versionId: scenario.version.id, segmentId: segment.id }
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(response.status).toBe(500);
+    expect(await readError(response)).toContain('Failed to update the transcript line');
+
+    // Neither half landed: the line still says what it said, the search text
+    // still matches it, and no caption track was written from a half-saved
+    // transcript.
+    const row = await db.transcriptSegment.findUniqueOrThrow({ where: { id: segment.id } });
+    expect(row.text).toBe('we held founders');
+    expect(row.words).toEqual(MISHEARD_WORDS);
+    const stored = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    expect(stored.searchText).toBe('we held founders every week');
+    expect(r2.puts).toHaveLength(0);
     expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 

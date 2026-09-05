@@ -97,6 +97,8 @@ function harness(
     videos?: Array<{ id: string }>;
     /** Makes the carried-forward transcript fail without failing the render. */
     failTranscriptInsert?: boolean;
+    /** Makes `pool.connect()` reject, the way an exhausted pool does. */
+    failConnect?: boolean;
   } = {}
 ) {
   const queries: Query[] = [];
@@ -151,7 +153,10 @@ function harness(
     // It shares this `query`, so BEGIN/COMMIT land in `queries` in order.
     pool: {
       query,
-      connect: async () => ({ query, release: () => {} }),
+      connect: async () => {
+        if (options.failConnect) throw new Error('pool exhausted');
+        return { query, release: () => {} };
+      },
     } as unknown as Pool,
     run: async (command, args) => {
       runs.push({ command, args });
@@ -481,6 +486,50 @@ describe('burnInSubtitles', () => {
     expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
   });
 
+  it('burns only the timed words of a transcript that timed part of itself', async () => {
+    // A pasted paragraph appended to a recognised transcript: 0-0 with no word
+    // timings, next to a line that has both. The untimed words would otherwise
+    // join the first cue and be drawn over the opening of the picture; what
+    // was timed is still worth burning.
+    const h = harness({
+      segments: [
+        {
+          start_sec: 0,
+          end_sec: 2,
+          speaker: null,
+          text: 'one two',
+          words: [
+            { start: 0, end: 0.5, text: 'one' },
+            { start: 1, end: 2, text: 'two' },
+          ],
+        },
+        { start_sec: 0, end_sec: 0, speaker: null, text: 'A pasted paragraph.', words: [] },
+      ],
+    });
+
+    await burnInSubtitles(
+      h.deps,
+      'ver-1',
+      payloadOf({ maxWordsPerCue: 8 }, { kind: 'transcript', transcriptId: 't-1' })
+    );
+
+    expect(h.written[0]!.text.split('\n').filter((line) => line.startsWith('Dialogue:'))).toEqual([
+      'Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,one two',
+    ]);
+    // Only the picture loses the untimed line: the transcript carried onto the
+    // burned version is still the operator's, both lines of it.
+    const [, , , , texts] = h.find('INSERT INTO transcript_segments')?.params as [
+      string,
+      number[],
+      number[],
+      Array<string | null>,
+      string[],
+      string[],
+      number[],
+    ];
+    expect(texts).toEqual(['one two', 'A pasted paragraph.']);
+  });
+
   it('takes WebVTT markup and entities out of a track before drawing it', async () => {
     // parseSubtitleCues keeps this markup on purpose — its output is written
     // for a browser VTT parser — but libass draws every character it is given.
@@ -616,6 +665,26 @@ describe('burnInSubtitles', () => {
     expect(h.deleted).toEqual([uploaded!.key]);
     expect(h.all('INSERT INTO video_versions')).toHaveLength(0);
     expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
+  });
+
+  it('takes the uploaded file back when the pool cannot hand out a connection', async () => {
+    // The connection for the version flip is taken after the upload, so an
+    // exhausted pool orphans the same object a failed INSERT would. Taking it
+    // outside the try that discards leaves the file behind for good.
+    const h = harness({ failConnect: true });
+
+    await expect(
+      burnInSubtitles(h.deps, 'ver-1', payloadOf({}, { kind: 'transcript', transcriptId: 't-1' }))
+    ).rejects.toThrow(/pool exhausted/);
+
+    const uploaded = h.uploads.find((upload) => upload.key.startsWith('videos/'));
+    expect(uploaded).toBeDefined();
+    expect(h.deleted).toEqual([uploaded!.key]);
+    expect(h.all('INSERT INTO video_versions')).toHaveLength(0);
+    expect(h.all('INSERT INTO media_jobs')).toHaveLength(0);
+    // The working directory still goes: the finally that removes it is outside
+    // the transaction entirely.
+    expect(h.removed).toHaveLength(1);
   });
 
   it('keeps the render when the carried-forward transcript cannot be written', async () => {

@@ -6,6 +6,7 @@ import {
   writeStoredSubtitleLanguage,
 } from '@/components/video-page/hooks/subtitle-preference';
 import type { Subtitle } from '@/components/video-page/types';
+import { readClientApiError } from '@/lib/client/api-error';
 import { getSubtitleExtension } from '@/lib/subtitle-validation';
 import { getTranscriptUploadExtension, isTranscriptSegmentTimed } from '@/lib/transcript-import';
 
@@ -15,18 +16,6 @@ interface UseSubtitlesParams {
   videoRef: RefObject<HTMLVideoElement | null>;
   /** Only the providers we play through our own element can carry a track. */
   supportsSubtitles: boolean;
-}
-
-/** Exported for the sibling caption hooks, which read the same `{ error }` bodies. */
-export function readClientApiError(payload: unknown, fallback: string): string {
-  if (!payload || typeof payload !== 'object') return fallback;
-  const error = (payload as { error?: unknown }).error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object' && 'message' in error) {
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
-  }
-  return fallback;
 }
 
 /**

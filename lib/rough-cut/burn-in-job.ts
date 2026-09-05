@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import {
   parseSubtitleCues,
@@ -234,13 +234,18 @@ async function transcriptMaterial(
   }));
   // No duration to clamp against here: the words are the whole of what the
   // transcript timed, and the burn keeps the picture end to end.
-  const words = wordsFromSegments(segments, 0);
+  const timed = wordsFromSegments(segments, 0);
+  // Zero-length words go before the guard rather than into the cues: a
+  // transcript that timed only part of itself — an imported file appended to a
+  // recognised one, say — would otherwise scatter instant-long cues through
+  // the picture, and what it did time is still worth burning.
+  const words = timed.filter((word) => word.end > word.start);
   // A .txt or .docx transcript is stored READY with every segment 0-0 and no
-  // word timings, so this collapses to a pile of zero-length words at t=0:
-  // every cue would start and end at the same instant, libass would draw
-  // nothing, and the job would report a successful render of an unchanged
-  // picture. Refuse it while the operator can still be told why.
-  if (words.length > 0 && !words.some((word) => word.end > word.start)) {
+  // word timings, so that filter takes all of them: every cue would start and
+  // end at the same instant, libass would draw nothing, and the job would
+  // report a successful render of an unchanged picture. Refuse it while the
+  // operator can still be told why.
+  if (timed.length > 0 && words.length === 0) {
     throw new Error("This version's transcript has no timings to burn in");
   }
   return {
@@ -417,9 +422,13 @@ export async function burnInSubtitles(
     const objectKey = `videos/${filename}`;
     await deps.uploadObject(objectKey, body, 'video/mp4');
 
-    const client = await deps.pool.connect();
     let output: { videoId: string; versionId: string } | null = null;
+    let client: PoolClient | null = null;
     try {
+      // Taking the connection inside this try, not before it: a pool that
+      // cannot hand one out after the upload leaves exactly the same orphaned
+      // object as a failed INSERT does, and the catch below is what removes it.
+      client = await deps.pool.connect();
       await client.query('BEGIN');
       output = await addOutputVersion(client, {
         videoId: version.videoParentId,
@@ -433,13 +442,13 @@ export async function burnInSubtitles(
       });
       await client.query(output ? 'COMMIT' : 'ROLLBACK');
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      await client?.query('ROLLBACK').catch(() => undefined);
       // The file is uploaded but no row will ever name it, and pg-boss will
       // retry the whole render into a fresh key.
       await discardUpload(deps, objectKey);
       throw error;
     } finally {
-      client.release();
+      client?.release();
     }
     if (!output) {
       await discardUpload(deps, objectKey);

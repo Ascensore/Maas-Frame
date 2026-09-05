@@ -374,8 +374,11 @@ describe('POST /api/videos/[videoId]/burn-in', () => {
     expect(await db.mediaJob.count({ where: { kind: 'BURN_SUBTITLES' } })).toBe(1);
   });
 
-  // PENDING is covered by the pair of calls above; these are the other two statuses a
-  // burn-in can sit at while the worker has it, and each has to hold the next one off.
+  // PENDING is covered by 'refuses a second burn while the first is queued': the route
+  // enqueues at PENDING, so the second call there runs into one. The PENDING row in the
+  // test just above is a probe, and being ignored is the whole point of it. These are the
+  // other two statuses a burn-in can sit at while the worker has it, and each has to hold
+  // the next one off.
   it.each(['QUEUED', 'RUNNING'] as const)(
     'refuses a burn while an earlier one is %s',
     async (status) => {
