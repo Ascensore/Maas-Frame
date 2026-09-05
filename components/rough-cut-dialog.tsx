@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
@@ -29,6 +30,7 @@ import {
 import type { RoughCutLayout } from '@/lib/rough-cut/types';
 import type { EditorialProjectType } from '@/lib/rough-cut/brief';
 import { PROJECT_TYPE_LABELS } from '@/components/editorial-briefs-card';
+import { SCRIPT_MAX_CHARS } from '@/lib/rough-cut/script';
 import { isWaitingForTranscript } from '@/lib/rough-cut/workspace';
 
 export type RoughCutDialogVideo = {
@@ -134,6 +136,7 @@ export function RoughCutDialog({
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [briefs, setBriefs] = useState<RoughCutDialogBrief[]>([]);
   const [briefId, setBriefId] = useState<string>('inherit');
+  const [script, setScript] = useState('');
   const [layout, setLayout] = useState<RoughCutLayout | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
   const [cameraOverride, setCameraOverride] = useState<Record<string, string>>({});
@@ -297,8 +300,11 @@ export function RoughCutDialog({
       clipOrder: effectiveLayout === 'SEQUENTIAL' ? clipOrder : undefined,
       cameraRoles: effectiveLayout === 'MULTICAM' ? roles : undefined,
       wideCameraRole: effectiveLayout === 'MULTICAM' ? focusRole : undefined,
+      script: script.trim() || undefined,
     });
   };
+
+  const waitingForTranscript = isWaitingForTranscript(status ?? '', roughCut?.warnings);
 
   return (
     <Dialog
@@ -307,6 +313,7 @@ export function RoughCutDialog({
         if (!next) {
           setLayout(null);
           setBriefId('inherit');
+          setScript('');
           setOrderOverride(null);
           setCameraOverride({});
           setFocusOverride(null);
@@ -462,10 +469,10 @@ export function RoughCutDialog({
           {status === 'PENDING' || status === 'RUNNING' ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {status === 'PENDING'
-                ? 'Queued…'
-                : isWaitingForTranscript(status, roughCut?.warnings)
-                  ? 'Waiting for the transcript…'
+              {waitingForTranscript
+                ? 'Waiting for the transcript…'
+                : status === 'PENDING'
+                  ? 'Queued…'
                   : 'Assembling the rough cut…'}
             </div>
           ) : null}
@@ -508,6 +515,25 @@ export function RoughCutDialog({
               </Select>
             </div>
           ) : null}
+
+          <div className="space-y-2">
+            <label htmlFor="rough-cut-script" className="text-sm font-medium">
+              Original script (optional)
+            </label>
+            <Textarea
+              id="rough-cut-script"
+              value={script}
+              onChange={(event) => setScript(event.target.value)}
+              maxLength={SCRIPT_MAX_CHARS}
+              rows={5}
+              placeholder="Paste the copy the speaker read, one line or sentence per beat."
+              disabled={busy || !!status}
+            />
+            <p className="text-xs text-muted-foreground">
+              Takes are matched against the script: the take closest to each line is kept, and lines
+              with no clean take are flagged after assembly.
+            </p>
+          </div>
 
           {profilesError ? <p className="text-sm text-muted-foreground">{profilesError}</p> : null}
         </div>

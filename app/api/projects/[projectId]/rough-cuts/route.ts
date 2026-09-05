@@ -33,7 +33,10 @@ import {
   previewCameraRoles,
   toLayoutGuessClips,
 } from '@/lib/rough-cut/load';
+import { SCRIPT_MAX_CHARS } from '@/lib/rough-cut/script';
 import { enqueueAssembleRoughCut, shapeRoughCut } from '@/lib/rough-cut/serialize';
+import { waitingForTranscriptWarning } from '@/lib/rough-cut/transcript-source';
+import { ensureTranscriptsForVersions } from '@/lib/transcription/ensure';
 
 type RouteParams = { params: Promise<{ projectId: string }> };
 
@@ -69,7 +72,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     });
 
     return withCacheControl(
-      successResponse({ roughCuts: rows.map(shapeRoughCut) }),
+      successResponse({ roughCuts: rows.map((row) => shapeRoughCut(row)) }),
       'private, no-store'
     );
   } catch (error) {
@@ -150,6 +153,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         requestedBriefId = brief.id;
       }
     }
+
+    let script: string | null = null;
+    if (body && body.script !== undefined && body.script !== null) {
+      if (typeof body.script !== 'string') {
+        return apiErrors.badRequest('script must be a string');
+      }
+      const trimmed = body.script.trim();
+      if (trimmed.length > SCRIPT_MAX_CHARS) {
+        return apiErrors.badRequest(`script must be ${SCRIPT_MAX_CHARS} characters or fewer`);
+      }
+      script = trimmed || null;
+    }
+
     const requestedProjectType =
       body?.projectType === undefined ? null : parseEditorialProjectType(body.projectType);
     if (body?.projectType !== undefined && !requestedProjectType) {
@@ -245,6 +261,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
+    // Transcription first: every clip must have a transcript on the way
+    // before the run is queued. The assembler parks the run until they are
+    // READY (lib/rough-cut/assemble-job.ts).
+    const readiness = await ensureTranscriptsForVersions(
+      fileBacked.map((video) => ({
+        id: video.versions[0]!.id,
+        providerId: video.versions[0]!.providerId,
+        kind: 'VIDEO' as const,
+      }))
+    );
+    const pendingTitles = fileBacked
+      .filter((video) => readiness.pending.includes(video.versions[0]!.id))
+      .map((video) => video.title);
+
     const created = await db.roughCut.create({
       data: {
         projectId,
@@ -258,6 +288,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         }) as Prisma.InputJsonValue,
         requestedById: session.user.id,
         layout,
+        script,
+        warnings:
+          pendingTitles.length > 0
+            ? ([waitingForTranscriptWarning(pendingTitles)] as Prisma.InputJsonValue)
+            : undefined,
         profileSnapshot: snapshotWithAssembly(profile, {
           clipOrder: clipOrderParsed.value,
           cameraRoles: cameraRolesParsed.value,
@@ -279,6 +314,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           layout,
           guessedLayout: guess.layout,
           guessReason: guess.reason,
+          transcripts: {
+            ready: readiness.ready.length,
+            pending: readiness.pending.length,
+            enqueued: readiness.enqueued.length,
+            failed: readiness.failed.length,
+          },
         },
         HttpStatus.CREATED
       ),

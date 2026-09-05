@@ -39,7 +39,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!loaded.access.hasAccess) return apiErrors.forbidden('Access denied');
 
     return withCacheControl(
-      successResponse({ roughCut: shapeRoughCut(loaded.row) }),
+      successResponse({ roughCut: shapeRoughCut(loaded.row, { includeScript: true }) }),
       'private, no-store'
     );
   } catch (error) {

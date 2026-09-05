@@ -265,6 +265,43 @@ describe('useRoughCut', () => {
     );
   });
 
+  it('includes the script in the POST body only when one is passed', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects/proj-1/rough-cuts' && init?.method === 'POST') {
+        return jsonResponse(roughCutPayload('READY'), 201);
+      }
+      return jsonResponse({ error: 'unexpected' }, 500);
+    });
+
+    const { result } = renderHook(() => useRoughCut());
+    await act(async () => {
+      await result.current.start({
+        projectId: 'proj-1',
+        folderId: null,
+        script: 'Hello there.',
+      });
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/projects/proj-1/rough-cuts',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ folderId: null, script: 'Hello there.' }),
+      })
+    );
+
+    await act(async () => {
+      await result.current.start({ projectId: 'proj-1', folderId: null });
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/projects/proj-1/rough-cuts',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ folderId: null }),
+      })
+    );
+  });
+
   it('DELETEs the current cut on cancel and clears it', async () => {
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

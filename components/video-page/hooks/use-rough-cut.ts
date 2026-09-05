@@ -182,6 +182,7 @@ export function useRoughCut() {
       clipOrder?: string[];
       cameraRoles?: Record<string, string>;
       wideCameraRole?: string;
+      script?: string;
     }) => {
       if (isStarting) return 'A rough cut is already running';
       setIsStarting(true);
@@ -202,6 +203,7 @@ export function useRoughCut() {
               ? { cameraRoles: options.cameraRoles }
               : {}),
             ...(options.wideCameraRole ? { wideCameraRole: options.wideCameraRole } : {}),
+            ...(options.script ? { script: options.script } : {}),
           }),
         });
         const payload = await response.json().catch(() => null);

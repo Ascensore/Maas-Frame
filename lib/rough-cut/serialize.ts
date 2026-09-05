@@ -57,28 +57,38 @@ export function shapeEditorialBrief(row: {
   };
 }
 
-export function shapeRoughCut(row: {
-  id: string;
-  status: string;
-  projectId: string;
-  folderId: string | null;
-  profileId: string | null;
-  briefId?: string | null;
-  requestedById: string;
-  layout: string;
-  frameRateNum: number | null;
-  frameRateDen: number | null;
-  dropFrame: boolean;
-  profileSnapshot: Prisma.JsonValue;
-  briefSnapshot?: Prisma.JsonValue | null;
-  syncReport: Prisma.JsonValue | null;
-  decisions: Prisma.JsonValue | null;
-  warnings: Prisma.JsonValue | null;
-  error: string | null;
-  outputVideoId?: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}) {
+/**
+ * The script can be long, so only the single-run GET asks for it; every list
+ * makes do with `hasScript`.
+ */
+export function shapeRoughCut(
+  row: {
+    id: string;
+    status: string;
+    projectId: string;
+    folderId: string | null;
+    profileId: string | null;
+    briefId?: string | null;
+    requestedById: string;
+    layout: string;
+    frameRateNum: number | null;
+    frameRateDen: number | null;
+    dropFrame: boolean;
+    profileSnapshot: Prisma.JsonValue;
+    briefSnapshot?: Prisma.JsonValue | null;
+    syncReport: Prisma.JsonValue | null;
+    decisions: Prisma.JsonValue | null;
+    warnings: Prisma.JsonValue | null;
+    script?: string | null;
+    overrides?: Prisma.JsonValue | null;
+    renderedOverrides?: Prisma.JsonValue | null;
+    error: string | null;
+    outputVideoId?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  options: { includeScript?: boolean } = {}
+) {
   return {
     id: row.id,
     status: row.status,
@@ -100,6 +110,9 @@ export function shapeRoughCut(row: {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     hasDecisions: row.decisions !== null,
+    hasScript: Boolean(row.script),
+    script: options.includeScript ? (row.script ?? null) : undefined,
+    hasOverrides: row.overrides != null,
   };
 }
 

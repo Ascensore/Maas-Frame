@@ -820,16 +820,14 @@ export function EditWorkspaceClient({
                         <td className="py-2 pr-3">{formatTimestamp(cut.createdAt)}</td>
                         <td className="py-2 pr-3">{layoutLabel(cut.layout)}</td>
                         <td className="py-2 pr-3">
-                          {waiting ? (
+                          {isWaitingForTranscript(cut.status, cut.warnings) ? (
+                            'Waiting for the transcript…'
+                          ) : waiting ? (
                             <span>Waiting for the media worker</span>
                           ) : cut.status === 'PENDING' ? (
                             'Queued…'
                           ) : cut.status === 'RUNNING' ? (
-                            isWaitingForTranscript(cut.status, cut.warnings) ? (
-                              'Waiting for the transcript…'
-                            ) : (
-                              'Running…'
-                            )
+                            'Running…'
                           ) : cut.status === 'READY' ? (
                             cut.outputVideoId ? (
                               'Ready'
