@@ -123,6 +123,9 @@ interface PlayerCoreProps {
   onGenerateSubtitles: (language: string) => Promise<string | null>;
   isUploadingSubtitle: boolean;
   isGeneratingSubtitles: boolean;
+  /** Opens the burn-in dialog. Absent when this version cannot be burned into. */
+  onBurnIn?: () => void;
+  burnInRunning?: boolean;
   playbackSpeed: number;
   playbackSpeedBounds: { min: number; max: number; snapTo?: number[] };
   handleSpeedNudge: (delta: number) => void;
@@ -213,6 +216,8 @@ export const PlayerCore = memo(function PlayerCore({
   onGenerateSubtitles,
   isUploadingSubtitle,
   isGeneratingSubtitles,
+  onBurnIn,
+  burnInRunning,
   playbackSpeed,
   playbackSpeedBounds,
   handleSpeedNudge,
@@ -608,6 +613,8 @@ export const PlayerCore = memo(function PlayerCore({
                   onGenerateSubtitles={onGenerateSubtitles}
                   isUploadingSubtitle={isUploadingSubtitle}
                   isGeneratingSubtitles={isGeneratingSubtitles}
+                  onBurnIn={onBurnIn}
+                  burnInRunning={burnInRunning}
                 />
 
                 <div className="flex items-center">

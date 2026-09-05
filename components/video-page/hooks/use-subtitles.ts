@@ -17,7 +17,8 @@ interface UseSubtitlesParams {
   supportsSubtitles: boolean;
 }
 
-function readClientApiError(payload: unknown, fallback: string): string {
+/** Exported for the sibling caption hooks, which read the same `{ error }` bodies. */
+export function readClientApiError(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object') return fallback;
   const error = (payload as { error?: unknown }).error;
   if (typeof error === 'string' && error.trim()) return error;

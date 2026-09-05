@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import Hls from 'hls.js';
 import { usePathname, useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { type AnnotationStroke, type AnnotationCanvasHandle } from '@/components/annotation-canvas';
 import { PlayerCore } from '@/components/video-page/player-core';
@@ -49,6 +50,9 @@ import type {
 import { useApprovals } from '@/components/video-page/hooks/use-approvals';
 import { useVideoAssets } from '@/components/video-page/hooks/use-video-assets';
 import { useSubtitles } from '@/components/video-page/hooks/use-subtitles';
+import { useBurnIn } from '@/components/video-page/hooks/use-burn-in';
+import type { BurnInStyle } from '@/lib/rough-cut/subtitle-style';
+import { BurnInDialog } from '@/components/video-page/burn-in-dialog';
 import { useYoutubeCaptions } from '@/components/video-page/hooks/use-youtube-captions';
 import { resolvePublicBunnyCdnHostname } from '@/lib/bunny-cdn';
 import { canAutoTranscribe } from '@/lib/review-kind';
@@ -150,6 +154,7 @@ export function VideoPageContent({
   const [selectedCompareVersions, setSelectedCompareVersions] = useState<Set<string>>(new Set());
   const [showApprovalRequestDialog, setShowApprovalRequestDialog] = useState(false);
   const [showApprovalsPanel, setShowApprovalsPanel] = useState(false);
+  const [burnInOpen, setBurnInOpen] = useState(false);
   const router = useRouter();
 
   const {
@@ -398,6 +403,32 @@ export function VideoPageContent({
   });
   const canManageCaptions = canShareVideo || canManageSubtitles;
   const canGenerateCaptions = supportsSubtitles && canManageCaptions;
+  // A burn-in adds a version to this very video, so the page reloads its own
+  // data rather than asking the operator to.
+  const burnIn = useBurnIn({
+    videoId,
+    versionId: activeVersionId,
+    onDone: () => {
+      toast.success('Subtitled version ready');
+      void reloadVideo();
+    },
+  });
+  useEffect(() => {
+    if (burnIn.error) toast.error(burnIn.error);
+  }, [burnIn.error]);
+  const openBurnIn = useCallback(() => setBurnInOpen(true), []);
+  const { start: queueBurnIn } = burnIn;
+  const startBurnIn = useCallback(
+    async (style: Partial<BurnInStyle>, subtitleId?: string) => {
+      const message = await queueBurnIn(style, subtitleId);
+      if (!message) {
+        toast.success('Burning subtitles in. A new version appears here when it is done.');
+        setBurnInOpen(false);
+      }
+      return message;
+    },
+    [queueBurnIn]
+  );
   const activeVersionDuration = activeVersion?.duration;
   const bunnyCdnHostname = useMemo(() => resolvePublicBunnyCdnHostname(), []);
   const embedUrl = useMemo(() => {
@@ -1180,6 +1211,8 @@ export function VideoPageContent({
             onGenerateSubtitles={generateSubtitles}
             isUploadingSubtitle={isUploadingSubtitle}
             isGeneratingSubtitles={isGeneratingSubtitles}
+            onBurnIn={canManageCaptions && supportsSubtitles ? openBurnIn : undefined}
+            burnInRunning={burnIn.isRunning}
             playbackSpeed={playbackSpeed}
             playbackSpeedBounds={playbackSpeedBounds}
             handleSpeedNudge={handleSpeedNudge}
@@ -1387,6 +1420,15 @@ export function VideoPageContent({
       />
 
       <ImagePreviewDialog previewImage={previewImage} onClose={() => setPreviewImage(null)} />
+
+      <BurnInDialog
+        open={burnInOpen}
+        onOpenChange={setBurnInOpen}
+        starting={burnIn.starting}
+        canStart={supportsSubtitles}
+        subtitles={subtitles}
+        onStart={startBurnIn}
+      />
 
       <CompareVersionsDialog
         open={showCompareDialog}

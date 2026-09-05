@@ -1,0 +1,415 @@
+'use client';
+
+import { useCallback, useState } from 'react';
+import { Flame, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { BurnInPreview } from '@/components/video-page/burn-in-preview';
+import type { SubtitleTrackOption } from '@/components/video-page/types';
+import {
+  BURN_IN_FONTS,
+  burnInStyleSchema,
+  type BurnInFontId,
+  type BurnInPosition,
+  type BurnInStyle,
+} from '@/lib/rough-cut/subtitle-style';
+
+/**
+ * The knobs behind a burned-in caption, with a picture of what they do.
+ *
+ * Every bound and every default comes out of `burnInStyleSchema`, so a slider
+ * cannot offer a value the API would refuse and the dialog cannot drift from
+ * the renderer when the schema moves.
+ */
+
+interface BurnInDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Resolves to an error message to show inline, or null when the job was queued. */
+  onStart: (style: Partial<BurnInStyle>, subtitleId?: string) => Promise<string | null>;
+  starting: boolean;
+  /** False disables the button and says why: there is nothing here to burn into. */
+  canStart: boolean;
+  /** The version's caption tracks, offered as an alternative to its transcript. */
+  subtitles: SubtitleTrackOption[];
+}
+
+const DEFAULT_STYLE: BurnInStyle = burnInStyleSchema.parse({});
+
+/** The transcript, which is what the API picks when no `subtitleId` is sent. */
+const TRANSCRIPT_SOURCE = '__transcript__';
+
+const CANNOT_START_REASON = 'Subtitles can only be burned into an uploaded video file.';
+
+const POSITION_LABELS: Record<BurnInPosition, string> = {
+  bottom: 'Bottom',
+  center: 'Centre',
+  top: 'Top',
+};
+
+const PLAYBACK_RATES = [0.9, 1, 1.1, 1.25, 1.5];
+
+type NumericStyleKey =
+  | 'fontSize'
+  | 'outlineWidth'
+  | 'backgroundOpacity'
+  | 'marginVertical'
+  | 'maxWordsPerCue'
+  | 'maxCueSeconds';
+
+/** The slider's ends, read off the schema rather than written down twice. */
+function bounds(key: NumericStyleKey): { min: number; max: number } {
+  const field = burnInStyleSchema.shape[key].def.innerType;
+  return { min: field.minValue ?? 0, max: field.maxValue ?? 0 };
+}
+
+export function BurnInDialog({
+  open,
+  onOpenChange,
+  onStart,
+  starting,
+  canStart,
+  subtitles,
+}: BurnInDialogProps) {
+  const [style, setStyle] = useState<BurnInStyle>(DEFAULT_STYLE);
+  const [source, setSource] = useState<string>(TRANSCRIPT_SOURCE);
+  const [error, setError] = useState<string | null>(null);
+
+  // A track deleted since the dialog last opened must not stay selected: the
+  // POST would answer 404 for a source nobody can see any more. Derived rather
+  // than corrected in an effect, so no render ever shows the stale choice.
+  const chosenSource =
+    source === TRANSCRIPT_SOURCE || subtitles.some((track) => track.id === source)
+      ? source
+      : TRANSCRIPT_SOURCE;
+
+  const set = useCallback(<K extends keyof BurnInStyle>(key: K, value: BurnInStyle[K]) => {
+    setStyle((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const close = useCallback(() => {
+    setError(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
+
+  const handleStart = useCallback(async () => {
+    setError(null);
+    const message = await onStart(
+      style,
+      chosenSource === TRANSCRIPT_SOURCE ? undefined : chosenSource
+    );
+    if (message) setError(message);
+  }, [chosenSource, onStart, style]);
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (next) {
+          onOpenChange(true);
+          return;
+        }
+        // A queued job is not cancellable, so the dialog stays put until the
+        // POST has answered one way or the other.
+        if (!starting) close();
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Burn subtitles into a new version</DialogTitle>
+          <DialogDescription>
+            The captions are rendered into the picture and the result is added as a new version of
+            this video, labelled Subtitled. The version you are watching now is left exactly as it
+            is.
+          </DialogDescription>
+        </DialogHeader>
+
+        <BurnInPreview style={style} />
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="burn-in-source">Caption source</Label>
+            <Select value={chosenSource} onValueChange={setSource}>
+              <SelectTrigger id="burn-in-source">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={TRANSCRIPT_SOURCE}>Transcript</SelectItem>
+                {subtitles.map((track) => (
+                  <SelectItem key={track.id} value={track.id}>
+                    {track.label} ({track.language})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="burn-in-font">Font</Label>
+            <Select
+              value={style.font}
+              onValueChange={(value) => set('font', value as BurnInFontId)}
+            >
+              <SelectTrigger id="burn-in-font">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {BURN_IN_FONTS.map((entry) => (
+                  <SelectItem key={entry.id} value={entry.id}>
+                    {entry.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <RangeField
+            id="burn-in-font-size"
+            label="Font size"
+            value={style.fontSize}
+            step={1}
+            {...bounds('fontSize')}
+            display={`${style.fontSize} pt`}
+            hint="Measured on a 1080-line frame and scaled to the real height."
+            onChange={(value) => set('fontSize', Math.round(value))}
+          />
+
+          <div className="grid grid-cols-2 gap-3">
+            <ColorField
+              id="burn-in-text-colour"
+              label="Text colour"
+              value={style.textColor}
+              onChange={(value) => set('textColor', value)}
+            />
+            <ColorField
+              id="burn-in-outline-colour"
+              label="Outline colour"
+              value={style.outlineColor}
+              onChange={(value) => set('outlineColor', value)}
+            />
+          </div>
+
+          <RangeField
+            id="burn-in-outline-width"
+            label="Outline width"
+            value={style.outlineWidth}
+            step={0.5}
+            {...bounds('outlineWidth')}
+            display={`${style.outlineWidth}`}
+            onChange={(value) => set('outlineWidth', value)}
+          />
+
+          <RangeField
+            id="burn-in-background-opacity"
+            label="Box behind text"
+            value={style.backgroundOpacity}
+            step={0.1}
+            {...bounds('backgroundOpacity')}
+            display={
+              style.backgroundOpacity === 0
+                ? 'Off'
+                : `${Math.round(style.backgroundOpacity * 100)}%`
+            }
+            hint="Zero leaves the outline alone; above it a box is drawn in the outline colour."
+            onChange={(value) => set('backgroundOpacity', value)}
+          />
+
+          <div className="space-y-1.5">
+            <Label htmlFor="burn-in-position">Position</Label>
+            <Select
+              value={style.position}
+              onValueChange={(value) => set('position', value as BurnInPosition)}
+            >
+              <SelectTrigger id="burn-in-position">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(POSITION_LABELS) as BurnInPosition[]).map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {POSITION_LABELS[value]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <RangeField
+            id="burn-in-margin"
+            label="Vertical margin"
+            value={style.marginVertical}
+            step={1}
+            {...bounds('marginVertical')}
+            display={`${style.marginVertical} px`}
+            onChange={(value) => set('marginVertical', Math.round(value))}
+          />
+
+          <RangeField
+            id="burn-in-words"
+            label="Caption speed: fewer words = faster changes"
+            value={style.maxWordsPerCue}
+            step={1}
+            {...bounds('maxWordsPerCue')}
+            display={`${style.maxWordsPerCue} words`}
+            onChange={(value) => set('maxWordsPerCue', Math.round(value))}
+          />
+
+          <RangeField
+            id="burn-in-cue-seconds"
+            label="Longest caption"
+            value={style.maxCueSeconds}
+            step={0.5}
+            {...bounds('maxCueSeconds')}
+            display={`${style.maxCueSeconds}s`}
+            onChange={(value) => set('maxCueSeconds', value)}
+          />
+
+          <div className="space-y-1.5">
+            <Label htmlFor="burn-in-rate">Playback speed</Label>
+            <Select
+              value={String(style.playbackRate)}
+              onValueChange={(value) => set('playbackRate', Number(value))}
+            >
+              <SelectTrigger id="burn-in-rate">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PLAYBACK_RATES.map((rate) => (
+                  <SelectItem key={rate} value={String(rate)}>
+                    {rate}&times;
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-end gap-4 text-xs">
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={style.bold}
+                onChange={(event) => set('bold', event.target.checked)}
+              />
+              Bold
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                className="accent-primary"
+                checked={style.uppercase}
+                onChange={(event) => set('uppercase', event.target.checked)}
+              />
+              UPPERCASE
+            </label>
+          </div>
+        </div>
+
+        {!canStart && <p className="text-muted-foreground text-xs">{CANNOT_START_REASON}</p>}
+        {error && (
+          <p role="alert" className="text-destructive text-xs">
+            {error}
+          </p>
+        )}
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={close} disabled={starting}>
+            Cancel
+          </Button>
+          <Button onClick={() => void handleStart()} disabled={starting || !canStart}>
+            {starting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Flame className="mr-2 h-4 w-4" />
+            )}
+            Burn in
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RangeField({
+  id,
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step,
+  display,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  display: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <Label htmlFor={id}>{label}</Label>
+        <span className="text-muted-foreground text-xs tabular-nums">{display}</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        className="accent-primary w-full"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      {hint && <p className="text-muted-foreground text-[11px]">{hint}</p>}
+    </div>
+  );
+}
+
+function ColorField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          id={id}
+          type="color"
+          className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent p-0"
+          value={value.toLowerCase()}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <span className="text-muted-foreground text-xs uppercase tabular-nums">{value}</span>
+      </div>
+    </div>
+  );
+}

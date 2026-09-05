@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
-import { Captions, Loader2, Sparkles, Trash2, Upload } from 'lucide-react';
+import { Captions, Flame, Loader2, Sparkles, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -100,6 +100,15 @@ interface SubtitleControlsProps {
   onGenerateSubtitles: (language: string) => Promise<string | null>;
   isUploadingSubtitle: boolean;
   isGeneratingSubtitles: boolean;
+  /**
+   * Opens the burn-in dialog. Absent for a player whose page cannot burn — a
+   * YouTube embed, or a viewer without the permission — and the entry is then
+   * not drawn at all rather than drawn disabled: it is the page, not this
+   * control, that knows whether the version has a master to re-encode.
+   */
+  onBurnIn?: () => void;
+  /** A burn-in is already in flight for this version; a second one is refused. */
+  burnInRunning?: boolean;
 }
 
 export const SubtitleControls = memo(function SubtitleControls({
@@ -114,6 +123,8 @@ export const SubtitleControls = memo(function SubtitleControls({
   onGenerateSubtitles,
   isUploadingSubtitle,
   isGeneratingSubtitles,
+  onBurnIn,
+  burnInRunning = false,
 }: SubtitleControlsProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -284,6 +295,19 @@ export const SubtitleControls = memo(function SubtitleControls({
                 <Sparkles className="h-3.5 w-3.5 mr-2" />
                 Generate with AI
               </DropdownMenuItem>
+              {onBurnIn && (
+                // onSelect rather than onClick: Radix skips it for a disabled
+                // item, where onClick only stops firing because CSS removed the
+                // pointer events. A running burn must not be startable twice.
+                <DropdownMenuItem onSelect={() => onBurnIn()} disabled={burnInRunning}>
+                  {burnInRunning ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                  ) : (
+                    <Flame className="h-3.5 w-3.5 mr-2" />
+                  )}
+                  {burnInRunning ? 'Burning in…' : 'Burn subtitles into a new version'}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
             </>
           )}
