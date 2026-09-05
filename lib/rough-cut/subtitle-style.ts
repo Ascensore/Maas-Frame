@@ -177,6 +177,15 @@ export function regroupWordsIntoCues(words: TimedWord[], style: BurnInStyle): Su
   });
 }
 
+/**
+ * The version label a burn-in lands under. Shared so the dialog promises the
+ * label the job actually writes: it used to say "Subtitled" whatever the
+ * playback rate, and a re-timed render arrives as "Subtitled 1.25x".
+ */
+export function burnInVersionLabel(playbackRate: number): string {
+  return playbackRate === 1 ? 'Subtitled' : `Subtitled ${playbackRate}x`;
+}
+
 export function scaleCueTimes(cues: SubtitleCue[], rate: number): SubtitleCue[] {
   if (rate === 1) return cues;
   return cues.map((cue) => ({
@@ -214,14 +223,14 @@ function assText(text: string): string {
   // backslash escape, so libass draws the first one and then reads the second
   // together with what follows, leaving `\\N` a hard break with a backslash in
   // front of it. The only way out is to stop it being a backslash: U+2216 SET
-  // MINUS draws the same stroke and controls nothing. Where the chosen family
-  // has no glyph for it — Liberation, Roboto and Open Sans most likely do,
-  // DejaVu certainly does — libass falls back per glyph through fontconfig and
-  // draws it from another face, so the worst case is one character in a
-  // different typeface rather than a tofu box. The Dockerfile's `fc-match`
-  // loop does not cover this: it asserts that each family resolves, not that
-  // any of them covers a particular codepoint. Braces would open an override
-  // block.
+  // MINUS draws the same stroke and controls nothing. DejaVu covers it;
+  // Liberation, Roboto and Open Sans most likely do not. Where the chosen
+  // family has no glyph, libass falls back per glyph through fontconfig and
+  // draws it from another installed face, so the worst case is one character
+  // in a different typeface rather than a tofu box. The Dockerfile's
+  // `fc-match` loop does not cover this either way: it asserts that each
+  // family resolves, not that any of them covers a particular codepoint.
+  // Braces would open an override block.
   return text.replace(/\\/g, '∖').replace(/\{/g, '(').replace(/\}/g, ')').replace(/\r?\n/g, '\\N');
 }
 

@@ -515,9 +515,10 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                       Editorial guidelines
                     </Label>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Free text for this project&apos;s rough cuts: what to keep, what to drop, the
-                      tone, anything the brief does not say. Every rough cut records the text it was
-                      made with.
+                      Notes for the people reviewing this project&apos;s rough cuts. Every rough cut
+                      records the text it was made with, and it travels with the run and its
+                      exports. The assembler does not read it: what shapes a cut is the editorial
+                      brief and the &ldquo;Original script&rdquo; you paste when you start a run.
                     </p>
                   </div>
                   <Textarea
@@ -528,7 +529,7 @@ export default function ProjectSettingsPageClient({ projectId }: ProjectSettings
                     }
                     rows={5}
                     maxLength={PROJECT_GUIDELINES_MAX}
-                    placeholder="Keep the founder's origin story in full. Drop any mention of the old pricing. Short, punchy pacing."
+                    placeholder="For reviewers: the client signed off on the shorter intro. Flag anything that mentions the old pricing."
                     disabled={isSaving}
                   />
                 </div>

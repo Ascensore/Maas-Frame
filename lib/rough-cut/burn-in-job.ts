@@ -16,6 +16,7 @@ import { addOutputVersion } from './output-version';
 import {
   buildAssDocument,
   burnInFfmpegArgs,
+  burnInVersionLabel,
   burnInStyleSchema,
   regroupWordsIntoCues,
   scaleCueTimes,
@@ -212,9 +213,12 @@ async function transcriptMaterial(
         `SELECT id, language FROM transcripts WHERE id = $1 AND version_id = $2 AND status = 'READY'`,
         [transcriptId, versionId]
       )
-    : await deps.pool.query(
+    : // Newest, matching the route's own fallback and the transcript the pane
+      // shows: a version with two READY transcripts must not burn one set of
+      // words while the operator reads another.
+      await deps.pool.query(
         `SELECT id, language FROM transcripts WHERE version_id = $1 AND status = 'READY'
-         ORDER BY created_at ASC LIMIT 1`,
+         ORDER BY created_at DESC LIMIT 1`,
         [versionId]
       );
   const transcript = transcriptRes.rows[0];
@@ -260,8 +264,11 @@ async function transcriptMaterial(
   // word timings, so that filter takes all of them: every cue would start and
   // end at the same instant, libass would draw nothing, and the job would
   // report a successful render of an unchanged picture. Refuse it while the
-  // operator can still be told why.
-  if (segments.length > 0 && words.length === 0) {
+  // operator can still be told why. On `usable`, not on `words`: a READY
+  // transcript whose lines are timed but blank has nothing to draw either, and
+  // it is the caller's "no transcript or caption track" that describes that,
+  // not a complaint about timings.
+  if (segments.length > 0 && usable.length === 0) {
     throw new Error("This version's transcript has no timings to burn in");
   }
   return {
@@ -451,7 +458,7 @@ export async function burnInSubtitles(
         objectKey,
         originalUrl: `/api/upload/video/${filename}`,
         sizeBytes: body.byteLength,
-        label: rate === 1 ? 'Subtitled' : `Subtitled ${rate}x`,
+        label: burnInVersionLabel(rate),
         title: version.title,
         // The picture is as long as the source unless it was re-timed.
         duration: version.duration != null ? Math.round(version.duration / rate) : null,

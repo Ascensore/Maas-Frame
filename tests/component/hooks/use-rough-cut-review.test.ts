@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import {
-  useRoughCutReview,
-  ROUGH_CUT_REVIEW_POLL_MS,
-} from '@/components/video-page/hooks/use-rough-cut-review';
+import { useRoughCutReview } from '@/components/video-page/hooks/use-rough-cut-review';
 import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
+
+/**
+ * The hook's own polling interval, written by hand as the contract rather than
+ * imported from it. Advancing the fake clock by the constant the hook reads
+ * would follow any change to it, so a poll slowed to a minute would still pass
+ * here; this way it goes red and someone decides whether that was intended.
+ */
+const POLL_MS = 4000;
 
 const VIDEO_ID = 'vid-out';
 const OTHER_VIDEO_ID = 'vid-two';
@@ -516,7 +521,7 @@ describe('useRoughCutReview', () => {
 
     const callsAfterRender = fetchMock.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
     });
     expect(fetchMock.mock.calls.length).toBe(callsAfterRender + 1);
     expect(result.current.renderStatus).toBe('running');
@@ -531,7 +536,7 @@ describe('useRoughCutReview', () => {
     renderStatus = 'idle';
     renderedOverrides = { version: 1, cuts: { [ISLAND_KEY]: 'restore' }, extraCuts: [] };
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
     });
     expect(result.current.renderStatus).toBe('idle');
     expect(onRendered).toHaveBeenCalledTimes(1);
@@ -539,7 +544,7 @@ describe('useRoughCutReview', () => {
 
     const callsAfterDone = fetchMock.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS * 3);
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3);
     });
     expect(fetchMock.mock.calls.length).toBe(callsAfterDone);
     expect(onRendered).toHaveBeenCalledTimes(1);
@@ -584,7 +589,7 @@ describe('useRoughCutReview', () => {
     overrides = saved;
     renderedOverrides = saved;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
     });
 
     expect(result.current.draft).toEqual(saved);
@@ -628,7 +633,7 @@ describe('useRoughCutReview', () => {
 
     const callsAfterRefusal = fetchMock.mock.calls.length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(ROUGH_CUT_REVIEW_POLL_MS);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
     });
     expect(fetchMock.mock.calls.length).toBe(callsAfterRefusal + 1);
   });

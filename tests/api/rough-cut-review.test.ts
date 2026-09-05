@@ -182,6 +182,11 @@ describe('PUT /api/rough-cuts/[roughCutId]/overrides', () => {
       version: 1,
       cuts: { [seeded.islandKey]: 'restore' },
       extraCuts: [
+        // `extraCutKey` is the module under test's own function, so this pins the
+        // route's handling of the key rather than the key convention itself. That
+        // convention is anchored by hand elsewhere: `manual:v1:50-75` in
+        // tests/unit/lib/rough-cut-overrides.test.ts, and `ver-a:25-87` for an
+        // island in tests/unit/lib/rough-cut-program.test.ts.
         {
           key: extraCutKey(seeded.sourceVersion.id, 7.01, 8.02, RATE),
           sourceVersionId: seeded.sourceVersion.id,
@@ -751,6 +756,11 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
           version: 1,
           cuts: { [seeded.islandKey]: 'restore' },
           extraCuts: [
+            // `extraCutKey` is the module under test's own function, so this pins the
+            // route's handling of the key rather than the key convention itself. That
+            // convention is anchored by hand elsewhere: `manual:v1:50-75` in
+            // tests/unit/lib/rough-cut-overrides.test.ts, and `ver-a:25-87` for an
+            // island in tests/unit/lib/rough-cut-program.test.ts.
             {
               key: extraCutKey(seeded.sourceVersion.id, 7, 8, RATE),
               sourceVersionId: seeded.sourceVersion.id,

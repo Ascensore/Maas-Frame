@@ -5,6 +5,7 @@ import {
   BURN_IN_FONTS,
   buildAssDocument,
   burnInFfmpegArgs,
+  burnInVersionLabel,
   escapeFfmpegFilterPath,
   parseBurnInStyle,
   regroupWordsIntoCues,
@@ -504,5 +505,17 @@ describe('burnInFfmpegArgs', () => {
     expect(scaleCueTimes([{ start: 2, end: 4, text: 'x' }], 2)).toEqual([
       { start: 1, end: 2, text: 'x' },
     ]);
+  });
+});
+
+describe('burnInVersionLabel', () => {
+  it('names the rate whenever the render re-times the picture', () => {
+    // The dialog promises this label before the job writes it, so the two read
+    // the same rule. A dialog that always said "Subtitled" would send an
+    // operator looking for a version that is filed under "Subtitled 1.25x".
+    expect(burnInVersionLabel(1)).toBe('Subtitled');
+    expect(burnInVersionLabel(1.25)).toBe('Subtitled 1.25x');
+    expect(burnInVersionLabel(0.5)).toBe('Subtitled 0.5x');
+    expect(burnInVersionLabel(2)).toBe('Subtitled 2x');
   });
 });

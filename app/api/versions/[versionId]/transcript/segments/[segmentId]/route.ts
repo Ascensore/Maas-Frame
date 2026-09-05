@@ -56,7 +56,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
     const segment = await db.transcriptSegment.findFirst({
       where: { id: segmentId, transcript: { versionId } },
-      include: { transcript: { select: { id: true } } },
+      include: { transcript: { select: { id: true, translatedTexts: true } } },
     });
     if (!segment) return apiErrors.notFound('Transcript line');
 
@@ -88,9 +88,26 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         orderBy: { position: 'asc' },
         select: { text: true },
       });
+      // A translation is one array on the transcript, indexed by segment
+      // position, so a corrected line otherwise keeps a translation of the words
+      // it used to say — and the overlay would show that to the next reader as
+      // if it were current. Blanking this one entry is enough:
+      // `overlayTranslatedSegmentTexts` falls back to the stored text for an
+      // empty string, so the line reads as the correction while every other line
+      // keeps the translation it already had. Retranslating is the operator's
+      // call, not a side effect of fixing a word.
+      const translations = segment.transcript.translatedTexts;
+      const stale =
+        Array.isArray(translations) && segment.position < translations.length
+          ? translations.map((entry, index) => (index === segment.position ? '' : entry))
+          : null;
+
       await tx.transcript.update({
         where: { id: segment.transcript.id },
-        data: { searchText: siblings.map((sibling) => sibling.text).join(' ') },
+        data: {
+          searchText: siblings.map((sibling) => sibling.text).join(' '),
+          ...(stale ? { translatedTexts: stale as Prisma.InputJsonValue } : {}),
+        },
       });
 
       return row;

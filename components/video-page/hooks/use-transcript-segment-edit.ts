@@ -80,8 +80,10 @@ export function useTranscriptSegmentEdit(versionId: string | null) {
         // An unrecognised value is treated as "not rebuilt", so a caller that
         // trusts 'updated' never skips a refresh it needed.
         const known: readonly CaptionOutcome[] = ['updated', 'skipped', 'empty', 'quota'];
-        const reported = data?.captions as CaptionOutcome | undefined;
-        const captions: CaptionOutcome = reported && known.includes(reported) ? reported : 'failed';
+        const reported = data?.captions;
+        const captions: CaptionOutcome = known.includes(reported as CaptionOutcome)
+          ? (reported as CaptionOutcome)
+          : 'failed';
         return { segment, captions };
       } catch {
         setError('Failed to save the line');

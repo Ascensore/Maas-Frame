@@ -489,7 +489,7 @@ describe('POST /api/videos/[videoId]/burn-in, choosing the transcript', () => {
       segments: SEGMENTS,
     });
     // Written rather than assumed: two inserts can land in the same millisecond, and
-    // "oldest" would then be whichever the planner returned first.
+    // "newest" would then be whichever the planner returned first.
     await db.transcript.update({
       where: { id: older.id },
       data: { createdAt: new Date('2024-01-01T00:00:00.000Z') },
@@ -522,7 +522,10 @@ describe('POST /api/videos/[videoId]/burn-in, choosing the transcript', () => {
     });
   });
 
-  it('takes the oldest transcript when no language is given', async () => {
+  it('takes the newest transcript when no language is given', async () => {
+    // The same one the pane displays and the captions route builds from. Burning
+    // the oldest would hand the operator a superseded pass of the words while the
+    // page in front of them showed the current one.
     const scenario = await seedTwoTranscripts();
 
     const response = await callRoute(
@@ -534,7 +537,7 @@ describe('POST /api/videos/[videoId]/burn-in, choosing the transcript', () => {
     expect(response.status).toBe(202);
     const job = await db.mediaJob.findFirstOrThrow();
     expect(job.payload).toMatchObject({
-      source: { kind: 'transcript', transcriptId: scenario.older.id },
+      source: { kind: 'transcript', transcriptId: scenario.newer.id },
     });
   });
 

@@ -152,9 +152,12 @@ async function seedCompetingTranscripts(
     language: 'de',
     segments: [{ startSec: 0, endSec: 2, text: 'guten tag alle', words: [] }],
   });
+  // Newest of the three on purpose: the job takes the newest transcript, so a
+  // stranger dated *after* both is the one a missing `version_id` filter would
+  // reach for. Dated before them it would prove nothing.
   await db.transcript.update({
     where: { id: stranger.id },
-    data: { createdAt: new Date('2020-01-01T00:00:00.000Z') },
+    data: { createdAt: new Date('2025-01-01T00:00:00.000Z') },
   });
   return { older, newer, other, stranger };
 }
@@ -237,7 +240,7 @@ describe('burnInSubtitles against the real schema', () => {
     expect(jobs.map((job) => [job.kind, job.status])).toEqual([['PROBE_MEDIA', 'PENDING']]);
   });
 
-  it('burns the oldest READY transcript of this version when the payload names none', async () => {
+  it('burns the newest READY transcript of this version when the payload names none', async () => {
     const seeded = await seedTranscribedVersion();
     await seedCompetingTranscripts(seeded);
 
@@ -254,10 +257,11 @@ describe('burnInSubtitles against the real schema', () => {
     expect(burned.versionNumber).toBe(10);
 
     const transcript = await db.transcript.findFirstOrThrow({ where: { versionId: burned.id } });
-    // The English one: older than the French transcript on this same version,
-    // while the older German one belongs to a different version entirely.
-    expect(transcript.language).toBe('en');
-    expect(transcript.searchText).toBe('one two three four five six');
+    // The French one: newer than the English transcript on this same version,
+    // while the newer German one belongs to a different version entirely and is
+    // the one an unscoped query would have picked.
+    expect(transcript.language).toBe('fr');
+    expect(transcript.searchText).toBe('bonjour tout le monde');
   });
 
   it('burns a caption track when the operator picked one, over the transcript on the same version', async () => {

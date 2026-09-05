@@ -553,6 +553,10 @@ export function RoughCutDialog({
                 ? 'This brief keeps a single take, so the script is recorded but not used to pick takes.'
                 : 'Takes are matched against the script: the take closest to each line is kept, and lines with no clean take are flagged after assembly.'}
             </p>
+            <p className="text-xs text-muted-foreground">
+              This script is what guides take selection. The project&apos;s editorial guidelines are
+              recorded with the run for reviewers, but the assembler does not read them.
+            </p>
           </div>
 
           {profilesError ? <p className="text-sm text-muted-foreground">{profilesError}</p> : null}

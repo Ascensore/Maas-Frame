@@ -417,7 +417,8 @@ describe('burnInSubtitles', () => {
     expect(fallback?.params).toEqual(['ver-1']);
     expect(fallback?.sql).toContain('version_id = $1');
     expect(fallback?.sql).toContain("status = 'READY'");
-    expect(fallback?.sql).toContain('ORDER BY created_at ASC');
+    // Newest, the same one the route falls back to and the pane shows.
+    expect(fallback?.sql).toContain('ORDER BY created_at DESC');
 
     // A stored URL that is not one our upload API wrote names no object we
     // could fetch, and is refused instead of being turned into a key.

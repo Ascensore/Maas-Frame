@@ -290,4 +290,22 @@ describe('persistDerivedTranscript', () => {
     const vtt = uploads.find((upload) => upload.key.startsWith('subtitles/'));
     expect(vtt?.body).toBe('WEBVTT\n\n00:00:01.000 --> 00:00:03.000\none two\n');
   });
+
+  it('writes no caption track at all when nothing in the transcript is timed', async () => {
+    // A header with no cues is worse than no track: the player lists it, offers
+    // it in the subtitle menu, and then shows nothing for the whole video.
+    const { deps, uploads } = fakePool();
+
+    await persistDerivedTranscript(deps, {
+      versionId: 'version-1',
+      language: 'en',
+      provider: 'burn-in',
+      segments: [
+        { startSec: 0, endSec: 0, speaker: null, text: 'A pasted paragraph.', words: [] },
+        { startSec: 0, endSec: 0, speaker: null, text: 'And the one after it.', words: [] },
+      ],
+    });
+
+    expect(uploads.filter((upload) => upload.key.startsWith('subtitles/'))).toEqual([]);
+  });
 });

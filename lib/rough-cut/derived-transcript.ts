@@ -280,6 +280,10 @@ export async function persistDerivedTranscript(
   // lib/transcript-import.ts, because the worker image copies this directory
   // on its own.
   const cues = options.segments.filter((segment) => segment.endSec > segment.startSec);
+  // Nothing timed at all: a `WEBVTT` header with no cues is a track the player
+  // lists, offers in the menu and then shows nothing for. Leaving the version
+  // without one says the same thing honestly.
+  if (cues.length === 0) return { transcriptId };
   try {
     await upsertCaptionTrack(deps, {
       versionId: options.versionId,

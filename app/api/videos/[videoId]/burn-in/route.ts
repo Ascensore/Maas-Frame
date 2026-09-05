@@ -95,8 +95,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
  *     else. It never falls back to a caption track: burning the wrong language into the
  *     picture is worse than refusing, so a version with only caption tracks is told to
  *     ask for one by id.
- *  3. Neither: the oldest READY transcript, which is what the job itself resolves a null
- *     transcriptId to, and only if there is none, the version's oldest caption track.
+ *  3. Neither: the newest READY transcript — the one the transcript pane shows and the
+ *     one `POST .../transcript/captions` builds from, so the operator burns the words
+ *     they are looking at — and only if there is none, the version's oldest caption
+ *     track. The job resolves a null transcriptId the same way.
  *
  * Every one of those rows is checked to belong to this version before its id goes into a
  * payload. `requestedById` is recorded for auditing — who asked for this render — and
@@ -229,11 +231,13 @@ async function resolveSource(
     return { value: { kind: 'transcript', transcriptId: transcript.id } };
   }
 
-  // The oldest READY transcript, which is the one the job itself resolves a null
-  // transcriptId to, so the two cannot pick different words.
+  // The newest READY transcript. It is the one the pane displays and the one the
+  // captions route builds from, so a version carrying two of them burns the words
+  // the operator is reading rather than a superseded pass. The job resolves a null
+  // transcriptId the same way, so the two cannot pick different words.
   const transcript = await db.transcript.findFirst({
     where: { versionId, status: TranscriptStatus.READY },
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: 'desc' },
     select: { id: true },
   });
   if (transcript) return { value: { kind: 'transcript', transcriptId: transcript.id } };

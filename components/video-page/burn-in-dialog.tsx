@@ -25,6 +25,7 @@ import {
   BURN_IN_BOUNDS,
   BURN_IN_FONTS,
   burnInStyleSchema,
+  burnInVersionLabel,
   type BurnInFontId,
   type BurnInPosition,
   type BurnInStyle,
@@ -121,8 +122,8 @@ export function BurnInDialog({
           <DialogTitle>Burn subtitles into a new version</DialogTitle>
           <DialogDescription>
             The captions are rendered into the picture and the result is added as a new version of
-            this video, labelled Subtitled. The version you are watching now is left exactly as it
-            is.
+            this video, labelled {burnInVersionLabel(style.playbackRate)}. The version you are
+            watching now is left exactly as it is.
           </DialogDescription>
         </DialogHeader>
 
@@ -269,6 +270,7 @@ export function BurnInDialog({
           <RangeField
             id="burn-in-cue-seconds"
             label="Longest caption"
+            hint="A caption changes when it hits this many seconds or the word limit, whichever comes first."
             value={style.maxCueSeconds}
             step={0.5}
             {...BURN_IN_BOUNDS.maxCueSeconds}

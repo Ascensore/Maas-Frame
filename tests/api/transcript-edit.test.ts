@@ -353,6 +353,57 @@ describe('PATCH /api/versions/[versionId]/transcript/segments/[segmentId]', () =
     expect(await db.videoSubtitle.count({ where: { versionId: scenario.version.id } })).toBe(0);
   });
 
+  it('blanks the edited line\u2019s translation and leaves the other lines\u2019 alone', async () => {
+    // The translation is one array on the transcript, indexed by segment
+    // position. Left alone, the overlay would keep showing a translation of the
+    // words the line used to say, presented as the current one.
+    const scenario = await seedVersion();
+    const { transcript, segment } = await seedMisheardLine(scenario.version.id);
+    await db.transcript.update({
+      where: { id: transcript.id },
+      data: {
+        translationLanguage: 'en',
+        translationStatus: TranscriptStatus.READY,
+        translatedTexts: ['we held founders', 'every week'],
+      },
+    });
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+
+    expect(response.status).toBe(200);
+    const stored = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    // Position 0 is blanked, which `overlayTranslatedSegmentTexts` reads as
+    // "no translation for this line" and falls back to the corrected original.
+    // Position 1 was not touched, so the rest of the pass survives an edit.
+    expect(stored.translatedTexts).toEqual(['', 'every week']);
+    // The translation itself is still on: clearing it wholesale would make
+    // fixing one word cost a retranslation of the interview.
+    expect(stored.translationStatus).toBe(TranscriptStatus.READY);
+    expect(stored.translationLanguage).toBe('en');
+  });
+
+  it('leaves an untranslated transcript alone when a line is edited', async () => {
+    const scenario = await seedVersion();
+    const { transcript, segment } = await seedMisheardLine(scenario.version.id);
+    signedInAs(scenario.owner);
+
+    const response = await callRoute(
+      patchSegment,
+      patchRequest(scenario.version.id, segment.id, { text: 'we help founders' }),
+      { versionId: scenario.version.id, segmentId: segment.id }
+    );
+
+    expect(response.status).toBe(200);
+    const stored = await db.transcript.findUniqueOrThrow({ where: { id: transcript.id } });
+    expect(stored.translatedTexts).toBeNull();
+    expect(stored.translationStatus).toBeNull();
+  });
+
   it('reports captions: quota when the account is full, and still saves the line', async () => {
     // A full account is the one cause of a missed rebuild the operator can
     // clear themselves. Reported as a plain 'failed' it reads as a bug to file,
