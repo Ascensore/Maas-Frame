@@ -117,7 +117,7 @@ export function BurnInDialog({
         if (!next) close();
       }}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[90vh] auto-rows-max overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Burn subtitles into a new version</DialogTitle>
           <DialogDescription>

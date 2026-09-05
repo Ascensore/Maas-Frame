@@ -58,6 +58,12 @@ describe('BurnInDialog', () => {
     onStart.mockClear();
   });
 
+  it('keeps the preview and controls in non-shrinking rows when the dialog scrolls', () => {
+    renderDialog();
+
+    expect(screen.getByRole('dialog')).toHaveClass('auto-rows-max');
+  });
+
   it('offers each numeric control across exactly the range the API accepts', () => {
     renderDialog();
 
