@@ -998,6 +998,190 @@ describe('assembleRoughCut editorial pass', () => {
     ]);
   });
 
+  it('places placeholder markers on the kept program across a sequential cut', async () => {
+    // Clip 2 is Italian, so its cue list differs; clip 3 has an empty
+    // transcript and falls back to voice activity, which has no words.
+    const h = harness({
+      layout: 'SEQUENTIAL',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-a', title: 'Clip 1', position: 0, duration: 20 }),
+        video({ version_id: 'ver-b', title: 'Clip 2', position: 1, duration: 20 }),
+        video({ version_id: 'ver-c', title: 'Clip 3', position: 2, duration: 20 }),
+      ],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+        { id: 't-b', version_id: 'ver-b', status: 'READY', created_at: NOW_DATE(), language: 'it' },
+        { id: 't-c', version_id: 'ver-c', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: {
+        't-a': [spokenSegment(0, 'as you can see our ARR doubled.')],
+        't-b': [spokenSegment(0, 'ecco la KPI dashboard.')],
+      },
+      vad: { 'ver-c': [{ start: 0, end: 3 }] },
+      briefSnapshot: briefSnapshotFor('ASCENSORE'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-a', 0, 2.7, 0, 2.7],
+      ['ver-b', 2.7, 4.2, 0, 1.5],
+      ['ver-c', 4.2, 7.2, 0, 3],
+    ]);
+    // Clip 2 sits at 20 s on the sequential axis; its markers still land at
+    // the packed program position, not at 20.x.
+    expect(
+      result?.decisions?.markers?.map((marker) => [
+        marker.key,
+        marker.kind,
+        Number(marker.timelineSeconds.toFixed(3)),
+        marker.durationSeconds === null ? null : Number(marker.durationSeconds.toFixed(3)),
+        marker.title,
+      ])
+    ).toEqual([
+      ['ver-a:BROLL:0', 'BROLL', 0, 2.7, 'B-roll: as you can see'],
+      ['ver-a:INFOGRAPHIC:48', 'INFOGRAPHIC', 2, 0.7, 'Infographic: ARR'],
+      ['ver-b:BROLL:0', 'BROLL', 2.7, 1.5, 'B-roll: ecco'],
+      ['ver-b:INFOGRAPHIC:19', 'INFOGRAPHIC', 3.5, 0.7, 'Infographic: KPI'],
+    ]);
+    expect(result?.decisions?.markers?.[1]?.reason).toEqual({
+      code: 'MARKER_JARGON',
+      summary: '“ARR” in “as you can see our ARR doubled.”',
+    });
+  });
+
+  it('clips a marker at a mid-beat dead-air cut and starts the next one after it', async () => {
+    // "as you can see the" … 1 s stall … "KPI dashboard is live." is one beat
+    // under the medium policy (0.8 s inside limit) with a DEAD_AIR cut inside it.
+    const text = 'as you can see the KPI dashboard is live.';
+    const words = text.split(' ').map((word, index) => {
+      const stall = index >= 5 ? 1 : 0;
+      return { start: index * 0.4 + stall, end: index * 0.4 + 0.3 + stall, text: word };
+    });
+    const segment: SegmentRow = {
+      start_sec: 0,
+      end_sec: words[words.length - 1]!.end,
+      speaker: null,
+      text,
+      words,
+    };
+    const h = harness({
+      layout: 'LINEAR',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 4.5 })],
+      transcripts: [
+        { id: 't-a', version_id: 'ver-a', status: 'READY', created_at: NOW_DATE(), language: 'en' },
+      ],
+      segments: { 't-a': [segment] },
+      briefSnapshot: briefSnapshotFor('TALKING_HEAD', {
+        markers: { infographicOnJargon: true, brollOnIllustration: true },
+      }),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([
+      ['ver-a', 0, 1.9, 0, 1.9],
+      ['ver-a', 1.9, 3.4, 3, 4.5],
+    ]);
+    expect(result?.decisions?.cuts?.map((cut) => cut.reason.summary)).toEqual([
+      '1.1s of dead air mid-sentence',
+    ]);
+    expect(
+      result?.decisions?.markers?.map((marker) => [
+        marker.key,
+        Number(marker.timelineSeconds.toFixed(3)),
+        Number(marker.durationSeconds?.toFixed(3)),
+      ])
+    ).toEqual([
+      ['ver-a:BROLL:0', 0, 1.9],
+      ['ver-a:INFOGRAPHIC:72', 1.9, 1.5],
+    ]);
+  });
+
+  it('drops a marker whose take was rejected and writes none for a run without a brief', async () => {
+    const line = 'as you can see the KPI dashboard is live now';
+    const fixture = (briefSnapshot: unknown) =>
+      harness({
+        layout: 'LINEAR',
+        createdAt: ONE_MINUTE_AGO,
+        videos: [video({ version_id: 'ver-a', title: 'Cam A', duration: 30 })],
+        transcripts: [
+          {
+            id: 't-a',
+            version_id: 'ver-a',
+            status: 'READY',
+            created_at: NOW_DATE(),
+            language: 'en',
+          },
+        ],
+        segments: {
+          't-a': [spokenSegment(0, `um ${line} um`), spokenSegment(10, line)],
+        },
+        briefSnapshot,
+      });
+
+    const withTakes = fixture(
+      briefSnapshotFor('TALKING_HEAD', {
+        markers: { infographicOnJargon: true, brollOnIllustration: true },
+      })
+    );
+    await assembleRoughCut(withTakes.deps, 'cut-1');
+    const selected = withTakes.persisted()?.decisions;
+    expect(selected?.cuts?.map((cut) => cut.reason.code)).toContain('REJECTED_TAKE');
+    expect(selected?.markers?.map((marker) => [marker.key, marker.timelineSeconds])).toEqual([
+      ['ver-a:BROLL:240', 0],
+      ['ver-a:INFOGRAPHIC:288', 2],
+    ]);
+
+    const bare = fixture(null);
+    await assembleRoughCut(bare.deps, 'cut-1');
+    expect(bare.persisted()?.decisions).not.toHaveProperty('markers');
+  });
+
+  it('places a multicam marker from the session transcript on the packed program', async () => {
+    const h = harness({
+      layout: 'MULTICAM',
+      createdAt: ONE_MINUTE_AGO,
+      videos: [
+        video({ version_id: 'ver-wide', title: 'Wide', position: 0 }),
+        video({ version_id: 'ver-a', title: 'Cam A', position: 1 }),
+      ],
+      transcripts: [
+        {
+          id: 't-wide',
+          version_id: 'ver-wide',
+          status: 'READY',
+          created_at: NOW_DATE(),
+          language: 'en',
+        },
+      ],
+      segments: { 't-wide': [spokenSegment(2, 'as you can see the KPI dashboard')] },
+      rms: (versionId) => (versionId === 'ver-a' ? 1 : 0.2),
+      briefSnapshot: briefSnapshotFor('ASCENSORE'),
+    });
+
+    await assembleRoughCut(h.deps, 'cut-1');
+
+    const result = h.persisted();
+    // The leading 2 s of dead air is gone and the speaker camera is up, yet
+    // the wide camera's transcript still places the markers.
+    expect(timing(result?.decisions?.edits ?? [])).toEqual([['ver-a', 0, 2.7, 2, 4.7]]);
+    expect(
+      result?.decisions?.markers?.map((marker) => [
+        marker.key,
+        Number(marker.timelineSeconds.toFixed(3)),
+        Number(marker.durationSeconds?.toFixed(3)),
+      ])
+    ).toEqual([
+      ['ver-wide:BROLL:48', 0, 2.7],
+      ['ver-wide:INFOGRAPHIC:96', 2, 0.7],
+    ]);
+  });
+
   it('holds the primary camera for a brief that does not follow the speaker', async () => {
     const h = harness({
       layout: 'MULTICAM',

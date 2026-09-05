@@ -45,4 +45,35 @@ describe('parseRoughCutDecisionList', () => {
       })
     ).toBeNull();
   });
+
+  it('accepts placeholder markers and rejects an unknown kind or reason code', () => {
+    const marker = {
+      key: 'ver-a:INFOGRAPHIC:24',
+      kind: 'INFOGRAPHIC',
+      timelineSeconds: 1,
+      durationSeconds: null,
+      title: 'Infographic: KPI',
+      reason: { code: 'MARKER_JARGON', summary: '“KPI”' },
+    };
+    expect(parseRoughCutDecisionList({ ...VALID, markers: [marker] })).toEqual({
+      ...VALID,
+      markers: [marker],
+    });
+    expect(
+      parseRoughCutDecisionList({ ...VALID, markers: [{ ...marker, kind: 'LOWER_THIRD' }] })
+    ).toBeNull();
+    expect(
+      parseRoughCutDecisionList({
+        ...VALID,
+        markers: [{ ...marker, reason: { code: 'DEAD_AIR', summary: '' } }],
+      })
+    ).toBeNull();
+    expect(
+      parseRoughCutDecisionList({ ...VALID, markers: [{ ...marker, timelineSeconds: -1 }] })
+    ).toBeNull();
+    expect(
+      parseRoughCutDecisionList({ ...VALID, markers: [{ ...marker, durationSeconds: -1 }] })
+    ).toBeNull();
+    expect(parseRoughCutDecisionList({ ...VALID, markers: [{ ...marker, key: '' }] })).toBeNull();
+  });
 });

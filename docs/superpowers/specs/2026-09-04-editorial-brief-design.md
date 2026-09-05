@@ -396,10 +396,24 @@ format because it has no stable keys.
    a linear cut does. Every edit carries a `reason`; every removal is a keyed cut island on the
    decision list (item 4's additive fields, minus markers). Runs made before briefs existed
    keep the medium policy with no take selection.
-4. Additive decision-list fields with reasons; placeholder markers.
+4. Additive decision-list fields with reasons; placeholder markers. **Done.** Reasons and cut
+   islands landed with phase 3; `lib/rough-cut/markers.ts` adds the placeholder markers. Both
+   rules run over the surviving beats of every transcript clip (a clip on the VAD fallback has
+   no words and gets none), one marker per beat per kind at the first matching word, running to
+   the end of the beat. Markers are found in source time and placed only once the edits are
+   final, through the continuous axis (source point plus clip offset) that both layouts share,
+   so a marker on removed material is dropped and a multicam marker from the session transcript
+   still lands at the packed program position when another camera is up. Keys are
+   `${versionId}:${kind}:${wordFrame}`. Runs without a brief get no markers.
 5. Overrides route, `applyOverrides`, re-materialize, regenerate with pins.
 6. Cut-review UI on the output video page with source-proxy preview.
-7. Markers in FCP7 XML / OTIO; cut islands as opt-in marker set.
+7. Markers in FCP7 XML / OTIO; cut islands as opt-in marker set. **Done**, together with 4.
+   `lib/rough-cut/export-markers.ts` builds one marker list for both writers: OTIO gets
+   `Marker.2` entries on the Program track (blue infographic, green B-roll, red cut) with the key
+   and reason under `metadata.openframe`; FCP7 XML gets sequence-level `<marker>` elements after
+   `<media>`, `out` −1 for a point. With `?cuts=1` on the download route each cut island becomes
+   a point marker at the start of the first edit after it on the continuous axis, else at the end
+   of the last edit before it. A run without markers exports byte-for-byte as before.
 
 ### v2 — Layered show edit
 

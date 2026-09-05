@@ -34,6 +34,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (format !== 'otio' && format !== 'xml') {
       return apiErrors.badRequest('Invalid format. Use "otio" or "xml"');
     }
+    // Cut islands are only exported as markers on request; the default file
+    // carries the program and its placeholder markers.
+    const includeCuts = request.nextUrl.searchParams.get('cuts') === '1';
 
     const row = await db.roughCut.findUnique({
       where: { id: roughCutId },
@@ -93,12 +96,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             decisions,
             clips,
             handleFrames: profile.handleFrames,
+            includeCuts,
           })
         : buildOtioFile({
             name,
             decisions,
             clips,
             handleFrames: profile.handleFrames,
+            includeCuts,
           });
 
     const fileBase = sanitizeExportName(row.folder?.name || row.project.name);

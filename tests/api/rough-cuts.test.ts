@@ -1126,6 +1126,80 @@ describe('GET /api/rough-cuts/[roughCutId]/download', () => {
     expect(body).toContain('file://localhost/./media/01-Cam%20A-v1.mp4');
   });
 
+  it('exports placeholder markers always and cut islands only with ?cuts=1', async () => {
+    const scenario = await seedProject();
+    const video = await createVideo({ projectId: scenario.project.id, title: 'Cam A' });
+    const version = await createVersion({
+      videoParentId: video.id,
+      providerId: 'r2',
+      originalUrl: '/api/upload/video/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.mp4',
+    });
+    const decisions = sampleDecisions(video.id, version.id);
+    const cut = await createRoughCut({
+      projectId: scenario.project.id,
+      requestedById: scenario.owner.id,
+      status: 'READY',
+      decisions: {
+        ...decisions,
+        cuts: [
+          {
+            key: `${version.id}:48-72`,
+            sourceVersionId: version.id,
+            inSeconds: 2,
+            outSeconds: 3,
+            reason: { code: 'DEAD_AIR', summary: '1.0s of dead air after the last word' },
+            transcriptText: null,
+          },
+        ],
+        markers: [
+          {
+            key: `${version.id}:INFOGRAPHIC:24`,
+            kind: 'INFOGRAPHIC',
+            timelineSeconds: 1,
+            durationSeconds: 1,
+            title: 'Infographic: KPI',
+            reason: { code: 'MARKER_JARGON', summary: '“KPI” in “our KPI”' },
+          },
+        ],
+      },
+    });
+    signedInAs(scenario.owner);
+
+    const plain = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=xml`),
+      { roughCutId: cut.id }
+    );
+    expect(plain.status).toBe(200);
+    const plainBody = await plain.text();
+    expect(plainBody).toContain('<name>Infographic: KPI</name>');
+    expect(plainBody).not.toContain('Cut: 1.0s of dead air');
+
+    const xmlWithCuts = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=xml&cuts=1`),
+      { roughCutId: cut.id }
+    );
+    expect(xmlWithCuts.status).toBe(200);
+    expect(await xmlWithCuts.text()).toContain(
+      '<name>Cut: 1.0s of dead air after the last word</name>'
+    );
+
+    const withCuts = await callRoute(
+      downloadRoughCutRoute,
+      apiRequest(`/api/rough-cuts/${cut.id}/download?format=otio&cuts=1`),
+      { roughCutId: cut.id }
+    );
+    expect(withCuts.status).toBe(200);
+    const otio = JSON.parse(await withCuts.text()) as {
+      tracks: { children: Array<{ markers?: Array<{ name: string; color: string }> }> };
+    };
+    expect(otio.tracks.children[0]?.markers?.map((marker) => [marker.name, marker.color])).toEqual([
+      ['Infographic: KPI', 'BLUE'],
+      ['Cut: 1.0s of dead air after the last word', 'RED'],
+    ]);
+  });
+
   it('returns 500 when READY decisions cannot be parsed and leaves the row', async () => {
     const scenario = await seedProject();
     const cut = await createRoughCut({
