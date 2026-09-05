@@ -429,6 +429,13 @@ export function VideoPageContent({
     if (burnIn.error) toast.error(burnIn.error);
   }, [burnIn.error]);
   const openBurnIn = useCallback(() => setBurnInOpen(true), []);
+  // Whether the dialog is still on screen by the time the POST answers. It can
+  // be dismissed mid-flight on purpose, and a refusal that arrives after that
+  // has nowhere to be shown unless the page says it.
+  const burnInOpenRef = useRef(burnInOpen);
+  useEffect(() => {
+    burnInOpenRef.current = burnInOpen;
+  }, [burnInOpen]);
   const { start: queueBurnIn } = burnIn;
   const startBurnIn = useCallback(
     async (style: Partial<BurnInStyle>, subtitleId?: string) => {
@@ -436,7 +443,11 @@ export function VideoPageContent({
       if (!message) {
         toast.success('Burning subtitles in. A new version appears here when it is done.');
         setBurnInOpen(false);
+        return null;
       }
+      // Only when the dialog has gone: while it is open it shows the refusal
+      // inline, and toasting as well would report one failure twice.
+      if (!burnInOpenRef.current) toast.error(message);
       return message;
     },
     [queueBurnIn]
@@ -1438,7 +1449,6 @@ export function VideoPageContent({
           open={burnInOpen}
           onOpenChange={setBurnInOpen}
           starting={burnIn.starting}
-          canStart={canBurnIn}
           subtitles={subtitles}
           onStart={startBurnIn}
         />

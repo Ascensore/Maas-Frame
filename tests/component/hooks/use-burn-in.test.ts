@@ -421,12 +421,83 @@ describe('useBurnIn', () => {
       await vi.advanceTimersByTimeAsync(POLL_MS);
     });
     expect(result.current.error).toBe(LOST);
+    // The job is let go with it, or the menu entry stays stuck on "Burning
+    // in..." for as long as the page is open. Starting another is how the
+    // operator finds out what really happened; the route answers 409 if the
+    // first one is still going.
+    expect(result.current.job).toBeNull();
+    expect(result.current.isRunning).toBe(false);
 
     const settled = gets().length;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(POLL_MS * 5);
     });
     expect(gets()).toHaveLength(settled);
+  });
+
+  it('gives up just as readily on twenty answers that carry no job', async () => {
+    vi.useFakeTimers();
+    // 200 with `job: null` is what the route says once the row is gone. It is
+    // not an answer about the job being followed, and a poll loop that treats
+    // it as one runs for as long as the tab stays open.
+    queueOnPost()(() => jsonResponse({ data: { job: null } }));
+
+    const { result } = renderBurnIn();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await result.current.start({});
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * (GIVE_UP_AFTER - 1));
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.isRunning).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    expect(result.current.error).toBe(LOST);
+    expect(result.current.isRunning).toBe(false);
+
+    const settled = gets().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * 5);
+    });
+    expect(gets()).toHaveLength(settled);
+  });
+
+  it('starts the failure count again after any answer that does carry a job', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    queueOnPost()(() => {
+      polls += 1;
+      // Nineteen failures, one good answer, then eighteen more. Thirty-seven
+      // failed polls in total: without the reset the twenty-first would have
+      // given up, and a burn that survives a flaky ten minutes would be
+      // reported as lost.
+      if (polls === GIVE_UP_AFTER) {
+        return jsonResponse({ data: { job: { id: 'job-1', status: 'RUNNING', error: null } } });
+      }
+      return jsonResponse({ error: 'bad gateway' }, 502);
+    });
+
+    const { result } = renderBurnIn();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await result.current.start({});
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * (GIVE_UP_AFTER * 2 - 2));
+    });
+    expect(polls).toBe(GIVE_UP_AFTER * 2 - 2);
+    expect(result.current.error).toBeNull();
+    expect(result.current.isRunning).toBe(true);
   });
 
   it('touches the network for nobody who is not allowed to burn', async () => {

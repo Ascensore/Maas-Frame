@@ -47,8 +47,6 @@ interface BurnInDialogProps {
   /** Resolves to an error message to show inline, or null when the job was queued. */
   onStart: (style: Partial<BurnInStyle>, subtitleId?: string) => Promise<string | null>;
   starting: boolean;
-  /** False disables the button and says why: there is nothing here to burn into. */
-  canStart: boolean;
   /** The version's caption tracks, offered as an alternative to its transcript. */
   subtitles: SubtitleTrackOption[];
 }
@@ -57,8 +55,6 @@ const DEFAULT_STYLE: BurnInStyle = burnInStyleSchema.parse({});
 
 /** The transcript, which is what the API picks when no `subtitleId` is sent. */
 const TRANSCRIPT_SOURCE = '__transcript__';
-
-const CANNOT_START_REASON = 'Subtitles can only be burned into an uploaded video file.';
 
 const POSITION_LABELS: Record<BurnInPosition, string> = {
   bottom: 'Bottom',
@@ -73,7 +69,6 @@ export function BurnInDialog({
   onOpenChange,
   onStart,
   starting,
-  canStart,
   subtitles,
 }: BurnInDialogProps) {
   const [style, setStyle] = useState<BurnInStyle>(DEFAULT_STYLE);
@@ -139,19 +134,21 @@ export function BurnInDialog({
             label="Caption source"
             hint="Transcript uses this version's own words; a track burns that file instead."
           >
-            <Select value={chosenSource} onValueChange={setSource}>
-              <SelectTrigger id="burn-in-source">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={TRANSCRIPT_SOURCE}>Transcript</SelectItem>
-                {subtitles.map((track) => (
-                  <SelectItem key={track.id} value={track.id}>
-                    {track.label} ({track.language})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {(describedBy) => (
+              <Select value={chosenSource} onValueChange={setSource}>
+                <SelectTrigger id="burn-in-source" aria-describedby={describedBy}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={TRANSCRIPT_SOURCE}>Transcript</SelectItem>
+                  {subtitles.map((track) => (
+                    <SelectItem key={track.id} value={track.id}>
+                      {track.label} ({track.language})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </Field>
 
           <Field
@@ -159,21 +156,23 @@ export function BurnInDialog({
             label="Font"
             hint="Rendered with the font installed on the worker, not on this machine."
           >
-            <Select
-              value={style.font}
-              onValueChange={(value) => set('font', value as BurnInFontId)}
-            >
-              <SelectTrigger id="burn-in-font">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {BURN_IN_FONTS.map((entry) => (
-                  <SelectItem key={entry.id} value={entry.id}>
-                    {entry.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {(describedBy) => (
+              <Select
+                value={style.font}
+                onValueChange={(value) => set('font', value as BurnInFontId)}
+              >
+                <SelectTrigger id="burn-in-font" aria-describedby={describedBy}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BURN_IN_FONTS.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id}>
+                      {entry.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </Field>
 
           <RangeField
@@ -228,21 +227,23 @@ export function BurnInDialog({
           />
 
           <Field id="burn-in-position" label="Position">
-            <Select
-              value={style.position}
-              onValueChange={(value) => set('position', value as BurnInPosition)}
-            >
-              <SelectTrigger id="burn-in-position">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(POSITION_LABELS) as BurnInPosition[]).map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {POSITION_LABELS[value]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {(describedBy) => (
+              <Select
+                value={style.position}
+                onValueChange={(value) => set('position', value as BurnInPosition)}
+              >
+                <SelectTrigger id="burn-in-position" aria-describedby={describedBy}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(POSITION_LABELS) as BurnInPosition[]).map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {POSITION_LABELS[value]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </Field>
 
           <RangeField
@@ -280,21 +281,23 @@ export function BurnInDialog({
             label="Playback speed"
             hint="Re-times the picture and the audio too, not just the captions. The preview does not show it."
           >
-            <Select
-              value={String(style.playbackRate)}
-              onValueChange={(value) => set('playbackRate', Number(value))}
-            >
-              <SelectTrigger id="burn-in-rate">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PLAYBACK_RATES.map((rate) => (
-                  <SelectItem key={rate} value={String(rate)}>
-                    {rate}&times;
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {(describedBy) => (
+              <Select
+                value={String(style.playbackRate)}
+                onValueChange={(value) => set('playbackRate', Number(value))}
+              >
+                <SelectTrigger id="burn-in-rate" aria-describedby={describedBy}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLAYBACK_RATES.map((rate) => (
+                    <SelectItem key={rate} value={String(rate)}>
+                      {rate}&times;
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </Field>
 
           <div className="flex items-end gap-4 text-xs">
@@ -319,7 +322,6 @@ export function BurnInDialog({
           </div>
         </div>
 
-        {!canStart && <p className="text-muted-foreground text-xs">{CANNOT_START_REASON}</p>}
         {error && (
           <p role="alert" className="text-destructive text-xs">
             {error}
@@ -330,7 +332,7 @@ export function BurnInDialog({
           <Button variant="ghost" onClick={close}>
             Cancel
           </Button>
-          <Button onClick={() => void handleStart()} disabled={starting || !canStart}>
+          <Button onClick={() => void handleStart()} disabled={starting}>
             {starting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
@@ -348,6 +350,10 @@ export function BurnInDialog({
  * Label, control, and room underneath for what the control actually does. The
  * hint is where a setting says the part its name does not: that the playback
  * speed re-times the whole video, say, which nothing else on screen admits.
+ *
+ * The control is handed the hint's id rather than rendered beside it, so a
+ * screen reader reads the warning as part of the field instead of leaving it
+ * as loose text after the control it belongs to.
  */
 function Field({
   id,
@@ -360,16 +366,21 @@ function Field({
   label: string;
   hint?: string;
   aside?: string;
-  children: ReactNode;
+  children: (describedBy: string | undefined) => ReactNode;
 }) {
+  const hintId = hint ? `${id}-hint` : undefined;
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-2">
         <Label htmlFor={id}>{label}</Label>
         {aside && <span className="text-muted-foreground text-xs tabular-nums">{aside}</span>}
       </div>
-      {children}
-      {hint && <p className="text-muted-foreground text-[11px]">{hint}</p>}
+      {children(hintId)}
+      {hint && (
+        <p id={hintId} className="text-muted-foreground text-[11px]">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
@@ -397,16 +408,19 @@ function RangeField({
 }) {
   return (
     <Field id={id} label={label} hint={hint} aside={display}>
-      <input
-        id={id}
-        type="range"
-        className="accent-primary w-full"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
+      {(describedBy) => (
+        <input
+          id={id}
+          type="range"
+          className="accent-primary w-full"
+          aria-describedby={describedBy}
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+      )}
     </Field>
   );
 }
@@ -424,16 +438,18 @@ function ColorField({
 }) {
   return (
     <Field id={id} label={label}>
-      <div className="flex items-center gap-2">
-        <input
-          id={id}
-          type="color"
-          className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent p-0"
-          value={value.toLowerCase()}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <span className="text-muted-foreground text-xs uppercase tabular-nums">{value}</span>
-      </div>
+      {() => (
+        <div className="flex items-center gap-2">
+          <input
+            id={id}
+            type="color"
+            className="h-8 w-10 cursor-pointer rounded border-0 bg-transparent p-0"
+            value={value.toLowerCase()}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          <span className="text-muted-foreground text-xs uppercase tabular-nums">{value}</span>
+        </div>
+      )}
     </Field>
   );
 }

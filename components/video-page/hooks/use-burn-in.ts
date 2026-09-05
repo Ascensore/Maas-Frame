@@ -153,6 +153,11 @@ export function useBurnIn(options: {
       if (failuresRef.current < BURN_IN_MAX_POLL_FAILURES) return;
       setLost(true);
       setError(LOST_MESSAGE);
+      // Let the job go too. `isRunning` falling is what puts the menu entry
+      // back within reach, and starting another is how the operator finds out
+      // what really happened: the route holds the lock and answers 409 if the
+      // first one is somehow still going.
+      setJob(null);
     };
     const poll = async () => {
       if (inFlightRef.current) return;
@@ -166,7 +171,14 @@ export function useBurnIn(options: {
           return;
         }
         const next = readJob(payload);
-        if (!next) return;
+        // A 200 carrying no job is not an answer about the job being followed:
+        // the row has gone. Counted like a failed request, or it escapes both
+        // counters and polls for as long as the tab stays open. Only a real
+        // job clears the run of failures.
+        if (!next) {
+          giveUp();
+          return;
+        }
         failuresRef.current = 0;
         setJob(next);
         announce(next);

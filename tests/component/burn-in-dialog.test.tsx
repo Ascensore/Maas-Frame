@@ -43,7 +43,6 @@ function renderDialog(overrides: Partial<ComponentProps<typeof BurnInDialog>> = 
       onOpenChange={vi.fn()}
       onStart={onStart}
       starting={false}
-      canStart
       subtitles={TRACKS}
       {...overrides}
     />
@@ -142,26 +141,41 @@ describe('BurnInDialog', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it('warns that the playback speed re-times the video, which the preview cannot show', () => {
+  it('warns that the playback speed re-times the video, and says so to a screen reader', () => {
     renderDialog();
 
-    expect(
-      screen.getByText(
-        'Re-times the picture and the audio too, not just the captions. The preview does not show it.'
-      )
-    ).toBeVisible();
+    const warning =
+      'Re-times the picture and the audio too, not just the captions. The preview does not show it.';
+    expect(screen.getByText(warning)).toBeVisible();
+
+    // Loose text under a control is text nobody hears. The control has to
+    // point at it, or the one setting with a consequence outside the picture
+    // is the one setting a screen reader skips.
+    const describedBy = screen
+      .getByRole('combobox', { name: 'Playback speed' })
+      .getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    // The dialog renders through a portal, so this is looked up on the
+    // document rather than in the render container.
+    expect(document.getElementById(describedBy!)).toHaveTextContent(warning);
   });
 
-  it('refuses to start, with the reason, when the version has no file to burn into', async () => {
-    renderDialog({ canStart: false });
+  it('offers only playback speeds the route would accept', async () => {
+    renderDialog();
 
-    const button = screen.getByRole('button', { name: /Burn in/ });
-    expect(button).toBeDisabled();
-    expect(
-      screen.getByText('Subtitles can only be burned into an uploaded video file.')
-    ).toBeVisible();
+    await userEvent.click(screen.getByRole('combobox', { name: 'Playback speed' }));
+    const rates = screen
+      .getAllByRole('option')
+      .map((option) => Number(option.textContent?.replace('\u00d7', '')));
 
-    await userEvent.click(button);
-    expect(onStart).not.toHaveBeenCalled();
+    expect(rates.length).toBeGreaterThan(1);
+    // Normal speed has to be reachable, and it is the default.
+    expect(rates).toContain(1);
+    for (const rate of rates) {
+      expect(Number.isFinite(rate), String(rate)).toBe(true);
+      // The schema is the route's own gate: an option outside 0.5-2 would be
+      // answered with a validation error the operator cannot act on.
+      expect(burnInStyleSchema.safeParse({ playbackRate: rate }).success, String(rate)).toBe(true);
+    }
   });
 });
