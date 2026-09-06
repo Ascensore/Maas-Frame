@@ -2,9 +2,11 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import pg from 'pg';
 import { db } from '@/lib/db';
 import { POST } from '@/app/api/comments/[commentId]/edit-task/route';
-import { GET } from '@/app/api/versions/[versionId]/edit-tasks/route';
+import { GET, POST as batchPost } from '@/app/api/versions/[versionId]/edit-tasks/route';
 import { executeAgentRun } from '@/lib/agents/run-review';
 import { materializeRoughCut } from '@/lib/rough-cut/materialize-job';
+import { GET as nativeDraftGet } from '@/app/api/v1/comments/[commentId]/edit-draft/route';
+import { generateApiToken } from '@/lib/api-token';
 import {
   addProjectMember,
   createComment,
@@ -95,6 +97,13 @@ function action(commentId: string, value: string) {
 function list(versionId: string) {
   return callRoute(GET, apiRequest(`/api/versions/${versionId}/edit-tasks`), { versionId });
 }
+function batch(versionId: string, commentIds: string[]) {
+  return callRoute(
+    batchPost,
+    apiRequest(`/api/versions/${versionId}/edit-tasks`, { method: 'POST', body: { commentIds } }),
+    { versionId }
+  );
+}
 async function renderDraft(commentId: string) {
   const task = await db.commentEditTask.findUniqueOrThrow({ where: { commentId } });
   await executeAgentRun(task.agentRunId!);
@@ -116,6 +125,324 @@ async function renderDraft(commentId: string) {
 }
 
 describe('comment editing tasks', () => {
+  it('requires editing permission for batch execution and leaves queued tasks untouched on refusal', async () => {
+    const s = await seed();
+    await action(s.comment.id, 'queue');
+    signedOut();
+    expect((await batch(s.version.id, [s.comment.id, 'other'])).status).toBe(401);
+    signedInAs(await createUser());
+    expect((await batch(s.version.id, [s.comment.id, 'other'])).status).toBe(403);
+    expect(
+      (await db.commentEditTask.findUniqueOrThrow({ where: { commentId: s.comment.id } })).status
+    ).toBe('QUEUED');
+    expect(await db.agentRun.count()).toBe(0);
+  });
+  it('runs two queued comments into one draft and accepts both atomically', async () => {
+    const s = await seed();
+    const second = await createComment({
+      versionId: s.version.id,
+      authorId: s.owner.id,
+      content: 'Remove this pause too',
+      timestamp: 6,
+      timestampEnd: 7,
+    });
+    await action(s.comment.id, 'queue');
+    await action(second.id, 'queue');
+    expect((await batch(s.version.id, [s.comment.id, second.id])).status).toBe(200);
+    generateEditPlan.mockImplementation(async ({ context }) => ({
+      version: 1,
+      operations: [
+        { op: 'cut', start: context.comments[0].timestamp, end: context.comments[0].timestampEnd },
+      ],
+    }));
+    const { planned } = await renderDraft(s.comment.id);
+    const tasks = await db.commentEditTask.findMany({ orderBy: { commentId: 'asc' } });
+    expect(tasks).toHaveLength(2);
+    expect(new Set(tasks.map((t) => t.agentRunId)).size).toBe(1);
+    expect(new Set(tasks.map((t) => t.roughCutId))).toEqual(new Set([planned.roughCutId]));
+    expect(new Set(tasks.map((t) => t.outputVersionId)).size).toBe(1);
+    expect(tasks[0].outputVersionId).not.toBeNull();
+    expect(await db.mediaJob.count({ where: { kind: 'MATERIALIZE_ROUGH_CUT' } })).toBe(1);
+    const output = await db.roughCut.findUniqueOrThrow({ where: { id: planned.roughCutId! } });
+    expect((output.decisions as any).edits.at(-1).timelineEndSeconds).toBe(7);
+    expect((await action(second.id, 'accept')).status).toBe(200);
+    expect(
+      await db.comment.count({ where: { id: { in: [s.comment.id, second.id] }, isResolved: true } })
+    ).toBe(2);
+    expect(await db.commentEditTask.count({ where: { status: 'ACCEPTED' } })).toBe(2);
+  });
+  it('refuses a changed batch member at acceptance without resolving any of the other feedback', async () => {
+    const s = await seed();
+    const second = await createComment({
+      versionId: s.version.id,
+      authorId: s.owner.id,
+      content: 'Remove',
+      timestamp: 6,
+      timestampEnd: 7,
+    });
+    await action(s.comment.id, 'queue');
+    await action(second.id, 'queue');
+    await batch(s.version.id, [s.comment.id, second.id]);
+    generateEditPlan.mockImplementation(async ({ context }) => ({
+      version: 1,
+      operations: [
+        { op: 'cut', start: context.comments[0].timestamp, end: context.comments[0].timestampEnd },
+      ],
+    }));
+    await renderDraft(s.comment.id);
+    await db.comment.update({ where: { id: second.id }, data: { content: 'Actually keep this' } });
+    expect((await action(s.comment.id, 'accept')).status).toBe(409);
+    expect(await db.comment.count({ where: { isResolved: true } })).toBe(0);
+    expect(await db.commentEditTask.count({ where: { status: 'ACCEPTED' } })).toBe(0);
+  });
+  it('rejects overlapping batches and concurrent duplicate starts', async () => {
+    const s = await seed();
+    const second = await createComment({
+      versionId: s.version.id,
+      authorId: s.owner.id,
+      content: 'Remove',
+      timestamp: 3,
+      timestampEnd: 5,
+    });
+    await action(s.comment.id, 'queue');
+    await action(second.id, 'queue');
+    expect((await batch(s.version.id, [s.comment.id, second.id])).status).toBe(409);
+    expect(await db.agentRun.count()).toBe(0);
+    await db.comment.update({ where: { id: second.id }, data: { timestamp: 6, timestampEnd: 7 } });
+    await action(second.id, 'queue');
+    const responses = await Promise.all([
+      batch(s.version.id, [s.comment.id, second.id]),
+      batch(s.version.id, [second.id, s.comment.id]),
+    ]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(await db.agentRun.count()).toBe(1);
+    expect(await db.commentEditTask.count({ where: { status: 'PLANNING' } })).toBe(2);
+  });
+  it('snapshots the selected project upload and graphic colors, then creates an overlay draft', async () => {
+    const s = await seed();
+    const response = await callRoute(
+      POST,
+      apiRequest(`/api/comments/${s.comment.id}/edit-task`, {
+        method: 'POST',
+        body: { action: 'run', options: { assetVersionId: s.source.id, accent: '#123456' } },
+      }),
+      { commentId: s.comment.id }
+    );
+    expect(response.status).toBe(200);
+    generateEditPlan.mockResolvedValue({
+      version: 1,
+      operations: [
+        { op: 'broll', start: 2, end: 4, sourceIn: 0, assetVersionId: s.source.id },
+        {
+          op: 'graphic',
+          start: 2,
+          end: 4,
+          presetId: 'lower-third',
+          title: 'Speaker',
+          subtitle: '',
+        },
+      ],
+    });
+    const task = await db.commentEditTask.findUniqueOrThrow({ where: { commentId: s.comment.id } });
+    await executeAgentRun(task.agentRunId!);
+    const rendered = await db.commentEditTask.findUniqueOrThrow({
+      where: { id: task.id },
+      include: { roughCut: true },
+    });
+    expect(rendered.status).toBe('RENDERING');
+    expect((rendered.roughCut!.decisions as any).effects).toEqual([
+      {
+        kind: 'broll',
+        start: 2,
+        end: 4,
+        sourceIn: 0,
+        sourceVersionId: s.source.id,
+        preset: 'cover-muted-v1',
+      },
+      {
+        kind: 'graphic',
+        start: 2,
+        end: 4,
+        title: 'Speaker',
+        subtitle: '',
+        preset: expect.objectContaining({ id: 'lower-third', version: 1, accent: '#123456' }),
+      },
+    ]);
+    expect((rendered.roughCut!.decisions as any).edits).toEqual(s.decisions.edits);
+    expect(generateEditPlan.mock.calls[0][0].context.brief).toContain(s.source.id);
+    const upload = vi.fn(async () => {});
+    const readOutput = vi.fn(async (path: string) =>
+      Buffer.from(path.endsWith('/styled.mp4') ? 'styled' : 'base')
+    );
+    const run = vi.fn(async (command: string) => ({
+      code: 0,
+      stderr: '',
+      stdout:
+        command === 'ffprobe' ? JSON.stringify({ streams: [{ width: 1920, height: 1080 }] }) : '',
+    }));
+    await materializeRoughCut(
+      {
+        pool,
+        run,
+        downloadObject: async () => {},
+        uploadObject: upload,
+        objectKeyFromProvider: (v) => v.videoId,
+        readOutput,
+      },
+      rendered.roughCutId!
+    );
+    expect(run.mock.calls.map((c) => c[0])).toEqual(['ffmpeg', 'ffprobe', 'ffmpeg']);
+    expect(readOutput.mock.calls[0][0]).toMatch(/\/styled\.mp4$/);
+    expect(upload).toHaveBeenCalledWith(
+      expect.stringMatching(/^videos\//),
+      Buffer.from('styled'),
+      'video/mp4'
+    );
+    const completed = await db.commentEditTask.findUniqueOrThrow({ where: { id: task.id } });
+    expect(completed.outputVersionId).not.toBeNull();
+    expect(
+      (await db.roughCut.findUniqueOrThrow({ where: { id: rendered.roughCutId! } }))
+        .renderedDecisions
+    ).toMatchObject({
+      effects: (rendered.roughCut!.decisions as any).effects,
+      edits: s.decisions.edits,
+    });
+  });
+  it('publishes no output when the styled render fails', async () => {
+    const s = await seed();
+    await action(s.comment.id, 'run');
+    generateEditPlan.mockResolvedValue({
+      version: 1,
+      operations: [
+        {
+          op: 'graphic',
+          start: 2,
+          end: 4,
+          presetId: 'lower-third',
+          title: 'Speaker',
+          subtitle: '',
+        },
+      ],
+    });
+    const task = await db.commentEditTask.findUniqueOrThrow({ where: { commentId: s.comment.id } });
+    await executeAgentRun(task.agentRunId!);
+    const planned = await db.commentEditTask.findUniqueOrThrow({ where: { id: task.id } });
+    const upload = vi.fn(async () => {});
+    const versionsBefore = await db.videoVersion.count();
+    await expect(
+      materializeRoughCut(
+        {
+          pool,
+          downloadObject: async () => {},
+          uploadObject: upload,
+          objectKeyFromProvider: (v) => v.videoId,
+          run: async (cmd, args) => ({
+            code: args.at(-1)?.endsWith('/styled.mp4') ? 1 : 0,
+            stderr: 'encoding failed',
+            stdout:
+              cmd === 'ffprobe' ? JSON.stringify({ streams: [{ width: 1920, height: 1080 }] }) : '',
+          }),
+          readOutput: async () => Buffer.from('wrong'),
+        },
+        planned.roughCutId!
+      )
+    ).rejects.toThrow('encoding failed');
+    expect(upload).not.toHaveBeenCalled();
+    expect(await db.videoVersion.count()).toBe(versionsBefore);
+    expect(
+      (await db.commentEditTask.findUniqueOrThrow({ where: { id: task.id } })).outputVersionId
+    ).toBeNull();
+    expect((await db.comment.findUniqueOrThrow({ where: { id: s.comment.id } })).isResolved).toBe(
+      false
+    );
+  });
+  it('exports the pinned native draft with bearer authentication and denies strangers and unlisted media', async () => {
+    const s = await seed();
+    await action(s.comment.id, 'run');
+    const { planned } = await renderDraft(s.comment.id);
+    const request = (suffix = '', token?: string) =>
+      callRoute(
+        nativeDraftGet,
+        apiRequest(`/api/v1/comments/${s.comment.id}/edit-draft${suffix}`, {
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        }),
+        { commentId: s.comment.id }
+      );
+    signedOut();
+    expect((await request()).status).toBe(401);
+    signedInAs(await createUser());
+    expect((await request()).status).toBe(403);
+    const token = generateApiToken();
+    await db.apiToken.create({
+      data: {
+        userId: s.owner.id,
+        name: 'editor',
+        tokenHash: token.hash,
+        tokenPrefix: token.prefix,
+      },
+    });
+    signedOut();
+    const response = await request('', token.raw);
+    expect(response.status).toBe(200);
+    const body = await readData<{
+      draft: { xml: string; media: Array<{ versionId: string; downloadPath: string }> };
+    }>(response);
+    expect(body.draft.xml).toContain('<duration>225</duration>');
+    const pinned = await db.commentEditTask.findUniqueOrThrow({ where: { id: planned.id } });
+    expect(body.draft.media.map((m) => m.versionId).sort()).toEqual(
+      [s.source.id, pinned.outputVersionId!].sort()
+    );
+    expect(body.draft.media.find((m) => m.versionId === s.source.id)!.downloadPath).toBe(
+      `/api/v1/comments/${s.comment.id}/edit-draft?source=${s.source.id}`
+    );
+    expect((await request('?source=foreign', token.raw)).status).toBe(403);
+    await db.roughCut.update({
+      where: { id: planned.roughCutId! },
+      data: { decisions: {}, renderedDecisions: {} },
+    });
+    expect(
+      (await readData<{ draft: { xml: string } }>(await request('', token.raw))).draft.xml
+    ).toBe(body.draft.xml);
+    expect((await db.comment.findUniqueOrThrow({ where: { id: s.comment.id } })).isResolved).toBe(
+      false
+    );
+  });
+  it('rejects a cross-project B-roll selection without creating any work', async () => {
+    const s = await seed();
+    const other = await seedVersion({ providerId: 'r2', duration: 10 });
+    signedInAs(s.owner);
+    const response = await callRoute(
+      POST,
+      apiRequest(`/api/comments/${s.comment.id}/edit-task`, {
+        method: 'POST',
+        body: { action: 'run', options: { assetVersionId: other.version.id } },
+      }),
+      { commentId: s.comment.id }
+    );
+    expect(response.status).toBe(400);
+    expect(await db.commentEditTask.count()).toBe(0);
+    expect(await db.agentRun.count()).toBe(0);
+    expect(await db.mediaJob.count()).toBe(0);
+  });
+  it('offers only tagged project uploads for automatic selection and refuses an invented asset', async () => {
+    const s = await seed();
+    await db.video.update({
+      where: { id: s.source.videoParentId },
+      data: { metadata: { usage: 'broll', subject: 'beach' } },
+    });
+    await action(s.comment.id, 'run');
+    generateEditPlan.mockResolvedValue({
+      version: 1,
+      operations: [{ op: 'broll', start: 2, end: 4, sourceIn: 0, assetVersionId: 'invented' }],
+    });
+    const task = await db.commentEditTask.findUniqueOrThrow({ where: { commentId: s.comment.id } });
+    expect((task.snapshot as any).assets.map((a: any) => a.versionId)).toEqual([s.source.id]);
+    await expect(executeAgentRun(task.agentRunId!)).rejects.toThrow('available B-roll');
+    expect(await db.mediaJob.count()).toBe(0);
+    expect(
+      (await db.commentEditTask.findUniqueOrThrow({ where: { id: task.id } })).roughCutId
+    ).toBeNull();
+  });
   it('refuses anonymous actions and listing without creating a task or resolving the comment', async () => {
     const s = await seed();
     signedOut();

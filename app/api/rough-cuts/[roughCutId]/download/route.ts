@@ -70,6 +70,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     if (!stored) {
       return apiErrors.internalError('Rough cut decisions are missing or invalid');
     }
+    if (stored.effects?.length) {
+      return apiErrors.badRequest(
+        'Use “Continue in Premiere or Resolve” on the AI draft comment to include its graphics and B-roll.'
+      );
+    }
 
     // What the editor opens is the program the reviewer has approved so far:
     // the saved overrides, which is what the next render will produce and not

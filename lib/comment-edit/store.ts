@@ -5,7 +5,14 @@ import { lockResourceInTransaction } from '@/lib/advisory-lock';
 import { getAgentModelId, isAgentsFeatureEnabled } from '@/lib/feature-flags';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import { findActiveMaterializeJob } from '@/lib/rough-cut/review';
-import { commentEditSnapshotSchema, type CommentEditSnapshot } from './plan';
+import {
+  commentEditSnapshotSchema,
+  validateBatchSnapshots,
+  type CommentEditSnapshot,
+  type EditOptions,
+} from './plan';
+import { GRAPHIC_PRESETS } from '@/lib/rough-cut/effects';
+import { listEditAssets } from './library';
 import type { CommentEditAction, CommentEditView } from './types';
 
 export class CommentEditError extends Error {
@@ -89,17 +96,84 @@ export async function listCommentEdits(versionId: string) {
     where: { comment: { versionId } },
     include: taskInclude,
   });
-  return Promise.all(tasks.map((task) => serializeCommentEdit(task)));
+  return Promise.all(
+    tasks.map(async (task) => ({
+      ...(await serializeCommentEdit(task)),
+      batchSize: task.agentRunId ? tasks.filter((t) => t.agentRunId === task.agentRunId).length : 1,
+    }))
+  );
 }
 
-async function snapshotComment(
+export async function runCommentEditBatch(versionId: string, userId: string, ids: string[]) {
+  await loadCommentEditAccess(versionId, userId);
+  if (!isAgentsFeatureEnabled()) throw new CommentEditError('AI agents are disabled', 403);
+  const commentIds = [...new Set(ids)].sort();
+  if (commentIds.length !== ids.length || ids.length < 2 || ids.length > 20)
+    throw new CommentEditError('Choose between 2 and 20 distinct queued comments.');
+  await db.$transaction(
+    async (tx) => {
+      for (const id of commentIds) await lockResourceInTransaction(tx, `comment-edit:${id}`);
+      const tasks = await tx.commentEditTask.findMany({
+        where: { commentId: { in: commentIds } },
+        include: { comment: true },
+        orderBy: { commentId: 'asc' },
+      });
+      if (
+        tasks.length !== ids.length ||
+        tasks.some(
+          (t) =>
+            t.status !== 'QUEUED' ||
+            t.comment.versionId !== versionId ||
+            t.comment.isResolved ||
+            t.comment.parentId
+        )
+      )
+        throw new CommentEditError(
+          'Every batch comment must be queued, unresolved and on this version.',
+          409
+        );
+      const snapshots = tasks.map((t) => commentEditSnapshotSchema.parse(t.snapshot));
+      try {
+        validateBatchSnapshots(snapshots);
+      } catch (error) {
+        throw new CommentEditError(error instanceof Error ? error.message : 'Invalid batch', 409);
+      }
+      const run = await tx.agentRun.create({
+        data: {
+          versionId,
+          kind: 'EDIT',
+          agentSlug: 'edit',
+          model: getAgentModelId(),
+          triggeredById: userId,
+          payload: { commentIds },
+        },
+      });
+      await tx.commentEditTask.updateMany({
+        where: { commentId: { in: commentIds } },
+        data: {
+          status: 'PLANNING',
+          agentRunId: run.id,
+          roughCutId: null,
+          renderJobId: null,
+          outputVersionId: null,
+          error: null,
+        },
+      });
+    },
+    { timeout: 15000 }
+  );
+  return listCommentEdits(versionId);
+}
+
+export async function snapshotComment(
   tx: Prisma.TransactionClient,
   comment: {
     content: string | null;
     timestamp: number;
     timestampEnd: number | null;
     versionId: string;
-  }
+  },
+  options: EditOptions = {}
 ): Promise<CommentEditSnapshot> {
   if (
     !comment.content?.trim() ||
@@ -134,7 +208,12 @@ async function snapshotComment(
       'Re-render this OpenFrame rough cut before using AI edits. This version has no matching source map.',
       409
     );
-  const sourceIds = [...new Set(decisions.edits.map((edit) => edit.sourceVersionId))];
+  const sourceIds = [
+    ...new Set([
+      ...decisions.edits.map((edit) => edit.sourceVersionId),
+      ...(decisions.effects ?? []).flatMap((e) => (e.kind === 'broll' ? [e.sourceVersionId] : [])),
+    ]),
+  ];
   const sources = await tx.videoVersion.count({
     where: {
       id: { in: sourceIds },
@@ -152,13 +231,30 @@ async function snapshotComment(
   const duration = decisions.edits.at(-1)?.timelineEndSeconds ?? 0;
   if (end <= start || end > duration + 1e-6)
     throw new CommentEditError('Mark a range of at least one frame inside the rendered video.');
-  return { versionId: comment.versionId, content: comment.content.trim(), start, end, decisions };
+  const assets = await listEditAssets(version.video.projectId, tx, options.assetVersionId, true);
+  if (options.assetVersionId && !assets.some((a) => a.versionId === options.assetVersionId))
+    throw new CommentEditError(
+      'The selected B-roll must be an active uploaded video in this project.'
+    );
+  return {
+    versionId: comment.versionId,
+    content: comment.content.trim(),
+    start,
+    end,
+    decisions,
+    presets: GRAPHIC_PRESETS.map((p) => ({
+      ...p,
+      ...(options.accent ? { accent: options.accent } : {}),
+    })),
+    assets,
+  };
 }
 
 export async function actOnCommentEdit(
   commentId: string,
   userId: string,
-  action: CommentEditAction
+  action: CommentEditAction,
+  options: EditOptions = {}
 ) {
   const original = await db.comment.findUnique({ where: { id: commentId } });
   if (!original) throw new CommentEditError('Comment not found', 404);
@@ -167,7 +263,24 @@ export async function actOnCommentEdit(
     throw new CommentEditError('AI agents are disabled', 403);
   return db.$transaction(
     async (tx) => {
-      await lockResourceInTransaction(tx, `comment-edit:${commentId}`);
+      // Batch acceptance/handoff locks the complete group in the same order as execution.
+      const before = await tx.commentEditTask.findUnique({ where: { commentId } });
+      const group =
+        before?.agentRunId && ['accept', 'human'].includes(action)
+          ? await tx.commentEditTask.findMany({
+              where: { agentRunId: before.agentRunId },
+              orderBy: { commentId: 'asc' },
+            })
+          : [];
+      const groupIds = group.length ? group.map((t) => t.commentId) : [commentId];
+      for (const id of groupIds) await lockResourceInTransaction(tx, `comment-edit:${id}`);
+      if (
+        group.length &&
+        (await tx.commentEditTask.count({
+          where: { commentId: { in: groupIds }, agentRunId: before!.agentRunId },
+        })) !== group.length
+      )
+        throw new CommentEditError('The shared assignment changed. Refresh and try again.', 409);
       const comment = await tx.comment.findUniqueOrThrow({ where: { id: commentId } });
       if (comment.parentId)
         throw new CommentEditError('Start an AI edit from a timeline comment, not a reply.');
@@ -176,6 +289,8 @@ export async function actOnCommentEdit(
         include: taskInclude,
       });
       const view = existing ? await serializeCommentEdit(existing, tx) : null;
+      if (before?.agentRunId !== existing?.agentRunId)
+        throw new CommentEditError('The assignment changed. Refresh and try again.', 409);
       if (view && ['PLANNING', 'RENDERING'].includes(view.status))
         throw new CommentEditError(
           'This edit is still running. Wait for its result before changing assignment.',
@@ -184,22 +299,42 @@ export async function actOnCommentEdit(
       if (action === 'accept') {
         if (view?.status !== 'READY' || !existing)
           throw new CommentEditError('A rendered draft is required before accepting.', 409);
-        const snapshot = commentEditSnapshotSchema.parse(existing.snapshot);
-        const fps = snapshot.decisions.rate.num / snapshot.decisions.rate.den;
-        if (
-          comment.content?.trim() !== snapshot.content ||
-          Math.abs(comment.timestamp - snapshot.start) > 1 / fps ||
-          comment.timestampEnd === null ||
-          Math.abs(comment.timestampEnd - snapshot.end) > 1 / fps
-        ) {
-          throw new CommentEditError(
-            'The comment changed after this draft was requested. Review the new feedback before running it again.',
-            409
-          );
+        const members = await tx.commentEditTask.findMany({
+          where: { commentId: { in: groupIds } },
+          include: { comment: true },
+        });
+        for (const member of members) {
+          if (
+            member.agentRunId !== existing.agentRunId ||
+            member.status !== 'RENDERING' ||
+            member.outputVersionId !== existing.outputVersionId
+          )
+            throw new CommentEditError(
+              'The shared draft changed. Refresh and review it again.',
+              409
+            );
+          const comment = member.comment;
+          const snapshot = commentEditSnapshotSchema.parse(member.snapshot);
+          const fps = snapshot.decisions.rate.num / snapshot.decisions.rate.den;
+          if (
+            comment.content?.trim() !== snapshot.content ||
+            Math.abs(comment.timestamp - snapshot.start) > 1 / fps ||
+            comment.timestampEnd === null ||
+            Math.abs(comment.timestampEnd - snapshot.end) > 1 / fps
+          ) {
+            throw new CommentEditError(
+              'The comment changed after this draft was requested. Review the new feedback before running it again.',
+              409
+            );
+          }
         }
-        await tx.comment.update({
-          where: { id: commentId },
+        await tx.comment.updateMany({
+          where: { id: { in: groupIds } },
           data: { isResolved: true, resolvedAt: new Date() },
+        });
+        await tx.commentEditTask.updateMany({
+          where: { commentId: { in: groupIds } },
+          data: { status: 'ACCEPTED' },
         });
         return serializeCommentEdit(
           await tx.commentEditTask.update({
@@ -211,9 +346,13 @@ export async function actOnCommentEdit(
         );
       }
       if (action === 'human') {
-        await tx.comment.update({
-          where: { id: commentId },
+        await tx.comment.updateMany({
+          where: { id: { in: groupIds } },
           data: { isResolved: false, resolvedAt: null },
+        });
+        await tx.commentEditTask.updateMany({
+          where: { commentId: { in: groupIds } },
+          data: { status: 'HUMAN', error: null },
         });
         const task = await tx.commentEditTask.upsert({
           where: { commentId },
@@ -233,7 +372,7 @@ export async function actOnCommentEdit(
       const snapshot =
         action === 'run' && existing?.status === 'QUEUED'
           ? commentEditSnapshotSchema.parse(existing.snapshot)
-          : await snapshotComment(tx, comment);
+          : await snapshotComment(tx, comment, options);
       const run =
         action === 'run'
           ? await tx.agentRun.create({

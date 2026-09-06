@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import type { CommentEditAction, CommentEditView } from '@/lib/comment-edit/types';
+import type { CommentEditAction, CommentEditView, EditLibraryView } from '@/lib/comment-edit/types';
+import type { EditOptions } from '@/lib/comment-edit/plan';
 
 const labels: Record<CommentEditView['status'], string> = {
   HUMAN: 'For human editor',
   QUEUED: 'Queued for AI',
-  PLANNING: 'AI is planning the cut…',
+  PLANNING: 'AI is planning the edit…',
   RENDERING: 'Rendering AI draft…',
   READY: 'AI draft ready for review',
   ACCEPTED: 'AI draft accepted',
@@ -22,15 +23,20 @@ export function CommentEditControls({
   resolved,
   agentsEnabled,
   onAction,
+  library,
 }: {
   task?: CommentEditView;
   busy: boolean;
   eligible: boolean;
   resolved: boolean;
   agentsEnabled: boolean;
-  onAction: (action: CommentEditAction) => void;
+  onAction: (action: CommentEditAction, options?: EditOptions) => void;
+  library?: EditLibraryView;
 }) {
   const [preview, setPreview] = useState(false);
+  const [assetVersionId, setAssetVersionId] = useState('');
+  const [accent, setAccent] = useState('#D7FF3F');
+  const options = { ...(assetVersionId ? { assetVersionId } : {}), accent };
   const status = task?.status ?? 'HUMAN';
   const running = status === 'PLANNING' || status === 'RENDERING';
   return (
@@ -49,6 +55,52 @@ export function CommentEditControls({
       {task?.instruction && status !== 'HUMAN' && (
         <p className="text-xs text-muted-foreground">Requested: {task.instruction}</p>
       )}
+      {task?.batchSize && task.batchSize > 1 && (
+        <p className="text-xs text-muted-foreground">
+          Shared draft for {task.batchSize} comments. Accepting or handing off applies to the whole
+          batch.
+        </p>
+      )}
+      {library &&
+        !running &&
+        !resolved &&
+        !['QUEUED', 'READY', 'ACCEPTED'].includes(status) &&
+        agentsEnabled && (
+          <details className="text-xs">
+            <summary className="cursor-pointer">Graphics & B-roll presets</summary>
+            <div className="mt-2 space-y-2">
+              <p>Ask for a lower third or callout in your feedback, including the exact text.</p>
+              <label className="flex items-center gap-2">
+                Accent color{' '}
+                <input
+                  type="color"
+                  aria-label="Graphic accent color"
+                  value={accent}
+                  onChange={(e) => setAccent(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                B-roll source
+                <select
+                  className="mt-1 w-full rounded border bg-background p-1"
+                  value={assetVersionId}
+                  onChange={(e) => setAssetVersionId(e.target.value)}
+                >
+                  <option value="">AI selects from videos marked as B-roll</option>
+                  {library.assets.map((asset) => (
+                    <option key={asset.versionId} value={asset.versionId}>
+                      {asset.title} ({asset.duration.toFixed(1)}s)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-muted-foreground">
+                For automatic selection, add metadata “usage” = “broll” to uploaded videos and give
+                them descriptive titles. B-roll covers the picture and keeps speech audio.
+              </p>
+            </div>
+          </details>
+        )}
       {task?.removedSeconds != null && ['READY', 'ACCEPTED'].includes(status) && (
         <p className="text-xs text-muted-foreground">
           Removed {task.removedSeconds.toFixed(2)}s. Your original video is preserved.
@@ -61,7 +113,7 @@ export function CommentEditControls({
               size="sm"
               variant="outline"
               disabled={busy || (!eligible && status !== 'QUEUED')}
-              onClick={() => onAction('run')}
+              onClick={() => onAction('run', status === 'QUEUED' ? undefined : options)}
             >
               Run with AI
             </Button>
@@ -70,7 +122,7 @@ export function CommentEditControls({
                 size="sm"
                 variant="ghost"
                 disabled={busy || !eligible}
-                onClick={() => onAction('queue')}
+                onClick={() => onAction('queue', options)}
               >
                 Queue for AI
               </Button>
@@ -100,7 +152,7 @@ export function CommentEditControls({
       </div>
       {!eligible && !task && !resolved && agentsEnabled && (
         <p className="text-xs text-muted-foreground">
-          AI cuts need text feedback and a marked In/Out range.
+          AI edits need text feedback and a marked In/Out range.
         </p>
       )}
       {preview && task?.previewUrl && (
@@ -111,6 +163,25 @@ export function CommentEditControls({
           src={task.previewUrl}
           aria-label="AI edited draft"
         />
+      )}
+      {task?.previewUrl && (
+        <details className="text-xs">
+          <summary className="cursor-pointer">Continue in Premiere or Resolve</summary>
+          <p className="mt-2">
+            In the OpenFrame editor panel, paste this comment ID and choose Import AI draft:
+          </p>
+          <input
+            className="my-1 w-full rounded border bg-background p-1"
+            aria-label="Comment ID for native editor"
+            readOnly
+            value={task.commentId}
+            onFocus={(e) => e.target.select()}
+          />
+          <p className="text-muted-foreground">
+            Creates a new timeline with editable cuts and B-roll. Graphics use rendered overlay
+            sections.
+          </p>
+        </details>
       )}
     </div>
   );

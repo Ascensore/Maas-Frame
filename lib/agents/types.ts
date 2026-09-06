@@ -50,7 +50,16 @@ export type ReviewFindings = {
 
 export type EditPlanOperation =
   | { op: 'cut'; start: number; end: number }
-  | { op: 'keep'; start: number; end: number };
+  | { op: 'keep'; start: number; end: number }
+  | {
+      op: 'graphic';
+      start: number;
+      end: number;
+      presetId: 'lower-third' | 'callout';
+      title: string;
+      subtitle: string;
+    }
+  | { op: 'broll'; start: number; end: number; assetVersionId: string; sourceIn: number };
 
 export type EditPlan = {
   version: 1;

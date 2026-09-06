@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
@@ -14,6 +14,7 @@ import { materializeFfmpegArgs } from './materialize';
 import { addOutputVersion, createOutputVideo } from './output-version';
 import { effectiveDecisions, parseRoughCutOverrides } from './overrides';
 import type { RoughCutDecisionList } from './types';
+import { effectFfmpegArgs, graphicsAss } from './effect-render';
 
 /**
  * Render the program a run describes, after the reviewer's decisions, and
@@ -72,7 +73,12 @@ export async function materializeRoughCut(
     throw new Error('Nothing is left in the program after the reviewer’s cuts');
   }
 
-  const versionIds = [...new Set(effective.edits.map((edit) => edit.sourceVersionId))];
+  const versionIds = [
+    ...new Set([
+      ...effective.edits.map((edit) => edit.sourceVersionId),
+      ...(effective.effects ?? []).flatMap((e) => (e.kind === 'broll' ? [e.sourceVersionId] : [])),
+    ]),
+  ];
   const versionsRes = await deps.pool.query(
     `SELECT id, "providerId", "videoId", "originalUrl" FROM video_versions WHERE id = ANY($1::text[])`,
     [versionIds]
@@ -115,8 +121,41 @@ export async function materializeRoughCut(
     const encoded = await deps.run('ffmpeg', materializeFfmpegArgs(segments, outputPath));
     if (encoded.code !== 0) throw new Error(encoded.stderr || 'ffmpeg concat failed');
 
+    let finalPath = outputPath;
+    if (effective.effects?.length) {
+      const probe = await deps.run('ffprobe', [
+        '-v',
+        'error',
+        '-select_streams',
+        'v:0',
+        '-show_entries',
+        'stream=width,height',
+        '-of',
+        'json',
+        outputPath,
+      ]);
+      if (probe.code !== 0) throw new Error('Could not inspect the program dimensions');
+      const stream = JSON.parse(probe.stdout).streams?.[0];
+      const assPath = join(dir, 'graphics.ass');
+      await writeFile(assPath, graphicsAss(effective.effects));
+      finalPath = join(dir, 'styled.mp4');
+      const styled = await deps.run(
+        'ffmpeg',
+        effectFfmpegArgs({
+          input: outputPath,
+          output: finalPath,
+          effects: effective.effects,
+          files: localByVersion,
+          width: stream?.width,
+          height: stream?.height,
+          assPath,
+        })
+      );
+      if (styled.code !== 0)
+        throw new Error(styled.stderr || 'Could not render graphics and B-roll');
+    }
     const readOutput = deps.readOutput ?? ((path: string) => readFile(path));
-    const body = await readOutput(outputPath);
+    const body = await readOutput(finalPath);
     const filename = `${randomUUID()}.mp4`;
     const objectKey = `videos/${filename}`;
     await deps.uploadObject(objectKey, body, 'video/mp4');

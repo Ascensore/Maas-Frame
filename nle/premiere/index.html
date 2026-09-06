@@ -33,7 +33,12 @@
     <label class="check"><input type="checkbox" id="auto" /> Auto-sync new comments</label>
     <p class="hint">Auto-sync only brings comments in. Deleting a marker resolves its comment on the web when you press Sync markers.</p>
     <div class="status" id="status"></div>
+    <label>AI draft comment ID</label>
+    <input id="draftCommentId" placeholder="Copy from the draft's native editor controls" />
+    <button id="importDraft">Import AI draft</button>
+    <p class="hint">Creates a new timeline. Choose a permanent folder for its downloaded media. Graphics are rendered overlays; cuts and B-roll stay editable.</p>
     <script src="nle-core.cjs"></script>
+    <script src="native-edit.cjs"></script>
     <script src="panel.js"></script>
   </body>
 </html>

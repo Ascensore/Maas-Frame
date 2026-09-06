@@ -1,5 +1,6 @@
 {
   "name": "@openframe/resolve-plugin",
   "private": true,
-  "type": "module"
+  "type": "commonjs",
+  "main": "main.js"
 }

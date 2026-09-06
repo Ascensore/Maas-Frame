@@ -5,10 +5,14 @@ import { apiErrors, successResponse, withCacheControl } from '@/lib/api-response
 import { rateLimit } from '@/lib/rate-limit';
 import { refuseIfAgentRunLimited } from '@/lib/agents/limit';
 import { db } from '@/lib/db';
-import { actOnCommentEdit, CommentEditError } from '@/lib/comment-edit/store';
+import { actOnCommentEdit, CommentEditError, listCommentEdits } from '@/lib/comment-edit/store';
 import { logError } from '@/lib/logger';
+import { editOptionsSchema } from '@/lib/comment-edit/plan';
 
-const bodySchema = z.object({ action: z.enum(['human', 'queue', 'run', 'accept']) });
+const bodySchema = z.object({
+  action: z.enum(['human', 'queue', 'run', 'accept']),
+  options: editOptionsSchema.optional(),
+});
 
 export async function POST(
   request: NextRequest,
@@ -32,9 +36,20 @@ export async function POST(
         if (refusal) return refusal;
       }
     }
+    const task = await actOnCommentEdit(
+      commentId,
+      session.user.id,
+      body.data.action,
+      body.data.options
+    );
+    const comment = await db.comment.findUniqueOrThrow({
+      where: { id: commentId },
+      select: { versionId: true },
+    });
     return withCacheControl(
       successResponse({
-        task: await actOnCommentEdit(commentId, session.user.id, body.data.action),
+        task,
+        tasks: await listCommentEdits(comment.versionId),
       }),
       'private, no-store'
     );

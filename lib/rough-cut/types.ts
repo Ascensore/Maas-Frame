@@ -1,3 +1,5 @@
+import type { TimelineEffect } from './effects';
+
 export const ROUGH_CUT_OVERLAP = ['WIDE', 'HOLD', 'SPEAKER'] as const;
 export const ROUGH_CUT_SYNC = ['AUTO', 'TIMECODE', 'WAVEFORM'] as const;
 export const ROUGH_CUT_LAYOUTS = ['MULTICAM', 'SEQUENTIAL', 'LINEAR'] as const;
@@ -106,6 +108,7 @@ export type Marker = {
 
 export type RoughCutDecisionList = {
   version: 1;
+  effects?: TimelineEffect[];
   edits: EditDecision[];
   clips: Array<{
     versionId: string;

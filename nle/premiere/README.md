@@ -68,3 +68,16 @@ comment times. Review files are treated as starting at `00:00:00:00`. If the
 start timecode cannot be read at all, auto-sync pauses rather than placing every
 marker an hour from its comment; a manual sync still proceeds, and says the
 offset was assumed.
+# AI draft import
+
+The panel can import a ready OpenFrame AI draft as a new 1080p sequence. Copy its comment ID
+from **Continue in Premiere or Resolve**, paste it into **AI draft comment ID**, then click
+**Import AI draft**. Choose a permanent folder for its media. The plugin downloads media in
+bounded chunks and imports the generated XML using Premiere's UXP `Project.importFiles` API.
+It checks that the expected sequence was created and does not overwrite the active sequence.
+
+Cuts and B-roll remain source-editable. Speech and graphic composites use the exact reviewed
+draft; graphic text/style changes currently require a new render in OpenFrame. Keep the media
+folder with your project. Updating the panel requires reloading it in the UXP Developer Tool;
+the manifest now requests access to a folder chosen by the user. Automated adapter tests do
+not replace a live import check in your Premiere installation.

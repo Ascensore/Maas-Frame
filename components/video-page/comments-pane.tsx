@@ -47,7 +47,8 @@ import type { ImageAttachTarget } from '@/components/video-page/hooks/use-commen
 import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
 import { agentDisplayName } from '@/lib/agents/catalog';
 import { CommentEditControls } from '@/components/video-page/comment-edit-controls';
-import type { CommentEditAction, CommentEditView } from '@/lib/comment-edit/types';
+import type { CommentEditAction, CommentEditView, EditLibraryView } from '@/lib/comment-edit/types';
+import type { EditOptions } from '@/lib/comment-edit/plan';
 import type {
   Comment,
   CommentReply,
@@ -60,7 +61,9 @@ interface CommentsPaneProps {
   editTasks?: CommentEditView[];
   editTaskBusyIds?: string[];
   editTaskError?: string | null;
-  onEditTaskAction?: (commentId: string, action: CommentEditAction) => void;
+  editLibrary?: EditLibraryView;
+  onRunEditBatch?: () => void;
+  onEditTaskAction?: (commentId: string, action: CommentEditAction, options?: EditOptions) => void;
   isMobileCommentsOpen: boolean;
   setIsMobileCommentsOpen: (open: boolean) => void;
   isFullscreenMode: boolean;
@@ -163,6 +166,8 @@ export const CommentsPane = memo(function CommentsPane({
   editTasks = [],
   editTaskBusyIds = [],
   editTaskError,
+  editLibrary,
+  onRunEditBatch,
   onEditTaskAction,
   isMobileCommentsOpen,
   setIsMobileCommentsOpen,
@@ -379,6 +384,23 @@ export const CommentsPane = memo(function CommentsPane({
 
           {activePane === 'comments' && (
             <div className="flex w-full items-center justify-end gap-2 flex-wrap">
+              {agentsEnabled &&
+                !isGuest &&
+                onRunEditBatch &&
+                editTasks.filter((t) => t.status === 'QUEUED').length > 1 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      editTaskBusyIds.length > 0 ||
+                      editTasks.filter((t) => t.status === 'QUEUED').length > 20
+                    }
+                    onClick={onRunEditBatch}
+                  >
+                    Run {editTasks.filter((t) => t.status === 'QUEUED').length} queued comments
+                    together
+                  </Button>
+                )}
               {agentsEnabled && !isGuest && onRunAgentReview && (
                 <Button
                   variant="outline"
@@ -802,7 +824,10 @@ export const CommentsPane = memo(function CommentsPane({
                           )}
                           resolved={comment.isResolved}
                           agentsEnabled={agentsEnabled}
-                          onAction={(action) => onEditTaskAction(comment.id, action)}
+                          library={editLibrary}
+                          onAction={(action, options) =>
+                            onEditTaskAction(comment.id, action, options)
+                          }
                         />
                       </>
                     )}
