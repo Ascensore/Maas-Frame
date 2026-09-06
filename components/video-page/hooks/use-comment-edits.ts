@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import type { CommentEditAction, CommentEditView } from '@/lib/comment-edit/types';
+import type { CommentEditAction, CommentEditView, EditLibraryView } from '@/lib/comment-edit/types';
+import type { EditOptions } from '@/lib/comment-edit/plan';
 
 export function useCommentEdits(
   versionId: string | null,
@@ -13,6 +14,7 @@ export function useCommentEdits(
     versionId: string | null;
     tasks: CommentEditView[];
     error: string | null;
+    library?: EditLibraryView;
   }>({ versionId: null, tasks: [], error: null });
   const [busyIds, setBusyIds] = useState<string[]>([]);
   const pending = useRef(new Set<string>());
@@ -38,7 +40,12 @@ export function useCommentEdits(
           revision === mutationRevision.current &&
           pending.current.size === 0
         )
-          setState({ versionId, tasks: payload.data.tasks, error: null });
+          setState({
+            versionId,
+            tasks: payload.data.tasks,
+            library: payload.data.library,
+            error: null,
+          });
       } catch (error) {
         if (!stopped && current === generation.current)
           setState((old) => ({
@@ -58,7 +65,7 @@ export function useCommentEdits(
   }, [versionId, enabled]);
 
   const act = useCallback(
-    async (commentId: string, action: CommentEditAction) => {
+    async (commentId: string, action: CommentEditAction, options?: EditOptions) => {
       if (!enabled || !versionId || pending.current.has(commentId)) return false;
       pending.current.add(commentId);
       mutationRevision.current++;
@@ -68,7 +75,7 @@ export function useCommentEdits(
         const response = await fetch(`/api/comments/${commentId}/edit-task`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action }),
+          body: JSON.stringify({ action, ...(options ? { options } : {}) }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error ?? 'Could not update editing task');
@@ -76,7 +83,8 @@ export function useCommentEdits(
           setState((old) => ({
             versionId,
             error: null,
-            tasks: [
+            library: old.versionId === versionId ? old.library : undefined,
+            tasks: payload.data.tasks ?? [
               ...(old.versionId === versionId
                 ? old.tasks.filter((task) => task.commentId !== commentId)
                 : []),
@@ -97,10 +105,42 @@ export function useCommentEdits(
     [versionId, enabled, onResolved]
   );
 
+  const runBatch = useCallback(async () => {
+    const ids = (state.versionId === versionId ? state.tasks : [])
+      .filter((t) => t.status === 'QUEUED')
+      .map((t) => t.commentId);
+    if (!enabled || !versionId || ids.length < 2 || pending.current.size) return false;
+    ids.forEach((id) => pending.current.add(id));
+    mutationRevision.current++;
+    setBusyIds([...pending.current]);
+    const current = generation.current;
+    try {
+      const response = await fetch(`/api/versions/${versionId}/edit-tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commentIds: ids }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Could not run the batch');
+      if (current === generation.current)
+        setState((old) => ({ ...old, versionId, tasks: payload.data.tasks, error: null }));
+      return true;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not run the batch');
+      return false;
+    } finally {
+      ids.forEach((id) => pending.current.delete(id));
+      mutationRevision.current++;
+      setBusyIds([...pending.current]);
+    }
+  }, [enabled, versionId, state]);
+
   return {
     tasks: state.versionId === versionId ? state.tasks : [],
     error: state.versionId === versionId ? state.error : null,
     busyIds,
     act,
+    runBatch,
+    library: state.versionId === versionId ? state.library : undefined,
   };
 }

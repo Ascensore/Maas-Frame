@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { timelineEffectSchema } from './effects';
 import type { FrameRate } from '../timecode';
 import { assignStackedTracks } from './camera-roles';
 import { buildRoughCutTargetUrl } from './media-paths';
@@ -56,6 +57,7 @@ const clipSchema = z.object({
 
 export const roughCutDecisionListSchema = z.object({
   version: z.literal(1),
+  effects: z.array(timelineEffectSchema).max(500).optional(),
   edits: z.array(editSchema),
   clips: z.array(clipSchema),
   rate: z.object({

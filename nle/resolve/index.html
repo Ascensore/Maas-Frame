@@ -26,6 +26,10 @@
     <label class="check"><input type="checkbox" id="auto" /> Auto-sync new comments</label>
     <p class="hint">Auto-sync only brings comments in. Deleting a marker resolves its comment on the web when you press Sync markers.</p>
     <div class="status" id="status"></div>
+    <label>AI draft comment ID</label>
+    <input id="draftCommentId" placeholder="Copy from the draft's native editor controls" />
+    <button id="importDraft">Import AI draft</button>
+    <p class="hint">Creates a new timeline with editable cuts and B-roll. Graphics are rendered overlays. Keep the downloaded media folder.</p>
     <script src="nle-core.cjs"></script>
     <script>
       const { ipcRenderer } = require('electron');
@@ -35,6 +39,15 @@
       const setStatus = (message) => {
         el('status').textContent = message;
       };
+      el('importDraft').addEventListener('click', async () => {
+        el('importDraft').disabled = true;
+        setStatus('Downloading draft media…');
+        try {
+          const result = await ipcRenderer.invoke('import-ai-draft', { baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim() });
+          setStatus(result.message);
+        } catch (error) { setStatus(error.message); }
+        finally { el('importDraft').disabled = false; }
+      });
 
       // Auto-sync has to survive a plugin reload without a human retyping a token.
       const loadSettings = () => {

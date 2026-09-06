@@ -23,6 +23,6 @@
     "network": {
       "domains": "all"
     },
-    "localFileSystem": "plugin"
+    "localFileSystem": "request"
   }
 }

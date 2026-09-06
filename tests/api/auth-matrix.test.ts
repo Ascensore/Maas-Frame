@@ -124,6 +124,7 @@ import * as v1SequenceLinkRoute from '@/app/api/v1/versions/[versionId]/sequence
 import * as v1SequenceLinkLookupRoute from '@/app/api/v1/sequence-link/lookup/route';
 import * as v1CommentsLiveRoute from '@/app/api/v1/versions/[versionId]/comments/live/route';
 import * as v1CommentRoute from '@/app/api/v1/comments/[commentId]/route';
+import * as v1EditDraftRoute from '@/app/api/v1/comments/[commentId]/edit-draft/route';
 import * as assetDownloadRoute from '@/app/api/videos/[videoId]/assets/[assetId]/download/route';
 import * as assetRoute from '@/app/api/videos/[videoId]/assets/[assetId]/route';
 import * as assetsBunnyInitRoute from '@/app/api/videos/[videoId]/assets/bunny-init/route';
@@ -198,7 +199,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 112;
+const EXPECTED_ROUTE_MODULE_COUNT = 113;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -886,6 +887,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     body: { isResolved: true },
   },
   {
+    file: 'v1/comments/[commentId]/edit-draft/route.ts',
+    module: v1EditDraftRoute,
+    url: (f) => `/api/v1/comments/${f.commentId}/edit-draft`,
+    params: (f) => ({ commentId: f.commentId }),
+  },
+  {
     file: 'versions/[versionId]/transcript/captions/route.ts',
     module: versionTranscriptCaptionsRoute,
     url: (f) => `/api/versions/${f.versionId}/transcript/captions`,
@@ -986,6 +993,7 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: versionEditTasksRoute,
     url: (f) => `/api/versions/${f.versionId}/edit-tasks`,
     params: (f) => ({ versionId: f.versionId }),
+    body: { commentIds: ['one', 'two'] },
   },
   {
     file: 'versions/[versionId]/agent-runs/route.ts',

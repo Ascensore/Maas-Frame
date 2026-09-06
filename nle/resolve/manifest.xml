@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BlackmagicDesign>
+  <Plugin>
+    <Id>com.ascensore.openframe</Id>
+    <Name>OpenFrame review and AI editing</Name>
+    <Version>0.2.0</Version>
+    <Description>Timeline feedback and reviewable AI draft imports</Description>
+    <FilePath>main.js</FilePath>
+  </Plugin>
+</BlackmagicDesign>

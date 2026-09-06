@@ -6,13 +6,27 @@ editors should import the EDL from the review page (Download EDL).
 Studio install (macOS example):
 
 1. Copy this folder to:
-   `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/OpenFrame`
+   `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/OpenFrame`
+   Copy the matching `WorkflowIntegration.node` from your installed Resolve SDK's
+   `Developer/Workflow Integrations/Examples/SamplePlugin/` into the same folder. On macOS,
+   the SDK is in `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/`.
+   Use the binary bundled with that Resolve installation; it is not distributed in this repo.
 2. Restart Resolve.
-3. Workspace → Workflow Integrations → Review markers.
+3. Workspace → Workflow Integrations → OpenFrame review and AI editing.
 4. Paste an API token from Settings.
 
-The folder is self-contained — it carries its own `nle-core.cjs`, so copying just
-this directory is enough. The app URL, token and version id are remembered.
+The folder carries its JavaScript helpers and registration manifest. The native
+WorkflowIntegration module above is also required. The app URL, token and version id are remembered.
+
+## AI draft import
+
+Copy the comment ID from a ready AI draft's **Continue in Premiere or Resolve** controls.
+Paste it into **AI draft comment ID**, then click **Import AI draft** and choose a permanent
+media folder. It downloads the referenced media and imports a new 1080p timeline. Cuts and
+B-roll remain editable; audio and graphic composites come from the exact reviewed draft.
+Keep the downloaded folder. The original timeline is preserved and comments stay unresolved
+until you accept the draft in OpenFrame. This adapter has automated tests; validate a real
+project in your installed Resolve Studio before production use.
 
 The plugin writes timeline markers with `customData` JSON `{"ofId":"<commentId>"}`
 so a second sync is idempotent.

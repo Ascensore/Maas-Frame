@@ -35,6 +35,79 @@ afterEach(() => {
 });
 
 describe('comment editing controls', () => {
+  it('submits one batch with only queued ids and blocks a second submission while pending', async () => {
+    const pending = deferred<Response>();
+    const queued = [
+      task('QUEUED'),
+      { ...task('QUEUED'), commentId: 'comment-2' },
+      { ...task('HUMAN'), commentId: 'comment-3' },
+    ];
+    fetchMock.mockImplementation((_url, init) =>
+      init?.method === 'POST' ? pending.promise : Promise.resolve(json({ data: { tasks: queued } }))
+    );
+    const { result } = renderHook(() => useCommentEdits('version-1', true, resolved));
+    await waitFor(() => expect(result.current.tasks).toHaveLength(3));
+    let run!: Promise<boolean>;
+    act(() => {
+      run = result.current.runBatch();
+    });
+    await act(async () => {
+      expect(await result.current.runBatch()).toBe(false);
+    });
+    expect(fetchMock.mock.calls.filter((c) => c[1]?.method === 'POST')).toEqual([
+      [
+        '/api/versions/version-1/edit-tasks',
+        expect.objectContaining({
+          body: JSON.stringify({ commentIds: ['comment-1', 'comment-2'] }),
+        }),
+      ],
+    ]);
+    expect(result.current.busyIds).toEqual(['comment-1', 'comment-2']);
+    await act(async () => {
+      pending.resolve(json({ data: { tasks: queued.map((t) => ({ ...t, status: 'PLANNING' })) } }));
+      await run;
+    });
+    expect(result.current.tasks[0].status).toBe('PLANNING');
+    expect(result.current.busyIds).toEqual([]);
+  });
+  it('ignores a batch response after switching versions and sends selected preset options', async () => {
+    const pending = deferred<Response>();
+    fetchMock.mockImplementation((url, init) =>
+      init?.method === 'POST'
+        ? pending.promise
+        : Promise.resolve(
+            json({
+              data: {
+                tasks: url.includes('version-1')
+                  ? [task('QUEUED'), { ...task('QUEUED'), commentId: 'comment-2' }]
+                  : [],
+              },
+            })
+          )
+    );
+    const { result, rerender } = renderHook(({ id }) => useCommentEdits(id, true, resolved), {
+      initialProps: { id: 'version-1' },
+    });
+    await waitFor(() => expect(result.current.tasks).toHaveLength(2));
+    let run!: Promise<boolean>;
+    act(() => {
+      run = result.current.runBatch();
+    });
+    rerender({ id: 'version-2' });
+    await act(async () => {
+      pending.resolve(json({ data: { tasks: [task('PLANNING')] } }));
+      await run;
+    });
+    expect(result.current.tasks).toEqual([]);
+    fetchMock.mockResolvedValue(json({ data: { task: task('PLANNING') } }));
+    await act(async () => {
+      await result.current.act('comment-3', 'run', { accent: '#123456', assetVersionId: 'beach' });
+    });
+    expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({
+      action: 'run',
+      options: { accent: '#123456', assetVersionId: 'beach' },
+    });
+  });
   it('runs the selected comment, displays the returned status, and blocks duplicate clicks', async () => {
     const pending = deferred<Response>();
     fetchMock.mockImplementation((_url, init) =>
@@ -68,7 +141,7 @@ describe('comment editing controls', () => {
     await act(async () => {
       pending.resolve(json({ data: { task: task('PLANNING') } }));
     });
-    expect(screen.getByRole('status')).toHaveTextContent('AI is planning the cut');
+    expect(screen.getByRole('status')).toHaveTextContent('AI is planning the edit');
     expect(screen.queryByRole('button', { name: 'Run with AI' })).not.toBeInTheDocument();
   });
   it('previews the exact draft and accepts through the task route before refreshing comments', async () => {
@@ -125,7 +198,7 @@ describe('comment editing controls', () => {
     );
     expect(screen.getByRole('button', { name: 'Run with AI' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Queue for AI' })).toBeDisabled();
-    expect(screen.getByText(/AI cuts need text feedback/)).toBeInTheDocument();
+    expect(screen.getByText(/AI edits need text feedback/)).toBeInTheDocument();
   });
 });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { remapEffects, type TimelineMapping } from './effects';
 import { framesToSeconds, secondsToFrames, type FrameRate } from '../timecode';
 import { cutIslandKey, packTimeline } from './program';
 import type {
@@ -405,11 +406,28 @@ export function applyOverridesWithReport(
     .filter((edit) => edit.outSeconds - edit.inSeconds > EPSILON)
     .sort((a, b) => axis(a) - axis(b));
   const packed = packTimeline(mergeContiguous(edits));
+  const mapping: TimelineMapping[] = [];
+  let outputCursor = 0;
+  for (const edit of edits) {
+    const duration = edit.outSeconds - edit.inSeconds;
+    if (edit.reason !== RESTORED)
+      mapping.push({
+        start: edit.timelineStartSeconds,
+        end: edit.timelineStartSeconds + duration,
+        output: outputCursor,
+      });
+    outputCursor += duration;
+  }
   const markers = decisions.markers
     ? replaceMarkers(decisions.markers, decisions.edits, packed)
     : null;
   return {
-    decisions: { ...decisions, edits: packed, ...(markers ? { markers } : {}) },
+    decisions: {
+      ...decisions,
+      edits: packed,
+      ...(markers ? { markers } : {}),
+      ...(decisions.effects ? { effects: remapEffects(decisions.effects, mapping) } : {}),
+    },
     restoredKeys,
     staleCutKeys: stale,
     skippedIslands,

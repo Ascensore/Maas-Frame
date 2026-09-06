@@ -1,6 +1,8 @@
 const { app } = require('electron');
 const path = require('path');
 const nleCore = require('./nle-core.cjs');
+const importDraft = require('./import-draft.cjs');
+let workflow;
 
 function parseCustomData(raw) {
   if (!raw || typeof raw !== 'string' || !raw.startsWith('{')) return null;
@@ -62,13 +64,24 @@ async function persistSequenceLink(baseUrl, token, versionId, body) {
 }
 
 async function createWindow() {
-  const { BrowserWindow, ipcMain } = require('electron');
+  const { BrowserWindow, ipcMain, dialog } = require('electron');
   const win = new BrowserWindow({
     width: 420,
     height: 640,
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
   await win.loadFile(path.join(__dirname, 'index.html'));
+  let importing = false;
+  ipcMain.handle('import-ai-draft', async (_event, input) => {
+    if (importing) throw new Error('A draft import is already running.');
+    importing = true;
+    try {
+      return await importDraft({ ...input, resolve: app.resolve, chooseDirectory: async () => {
+        const chosen = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Keep AI draft media here' });
+        return chosen.canceled ? null : chosen.filePaths[0];
+      } });
+    } finally { importing = false; }
+  });
 
   // The renderer drives the loop but only the main process can talk to Resolve,
   // so identifying the front timeline has to come back across IPC.
@@ -262,4 +275,11 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(() => createWindow());
+app.whenReady().then(() => {
+  try {
+    workflow = require('./WorkflowIntegration.node');
+    if (workflow.Initialize('com.ascensore.openframe')) app.resolve = workflow.GetResolve();
+  } catch (error) { console.error('Resolve workflow initialization failed:', error.message); }
+  return createWindow();
+});
+app.on('before-quit', () => { if (workflow) workflow.CleanUp(); });

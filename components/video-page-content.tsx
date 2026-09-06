@@ -23,7 +23,6 @@ import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progre
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
 import { useCommentEdits } from '@/components/video-page/hooks/use-comment-edits';
-import type { CommentEditAction } from '@/lib/comment-edit/types';
 import type { Comment } from '@/components/video-page/types';
 import { useVideoPageData } from '@/components/video-page/hooks/use-video-page-data';
 import { useRoughCutReview } from '@/components/video-page/hooks/use-rough-cut-review';
@@ -1285,15 +1284,17 @@ export function VideoPageContent({
 
         <CommentsPane
           editTasks={commentEdits.tasks}
-          editTaskBusyIds={commentEdits.busyIds}
-          editTaskError={commentEdits.error}
-          onEditTaskAction={
+          editLibrary={commentEdits.library}
+          onRunEditBatch={
             canResolveComments && !isGuest
-              ? (id: string, action: CommentEditAction) => {
-                  void commentEdits.act(id, action);
+              ? () => {
+                  void commentEdits.runBatch();
                 }
               : undefined
           }
+          editTaskBusyIds={commentEdits.busyIds}
+          editTaskError={commentEdits.error}
+          onEditTaskAction={canResolveComments && !isGuest ? commentEdits.act : undefined}
           isMobileCommentsOpen={isMobileCommentsOpen}
           setIsMobileCommentsOpen={setIsMobileCommentsOpen}
           isFullscreenMode={isFullscreenMode}

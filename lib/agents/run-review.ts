@@ -16,7 +16,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   const run = await db.agentRun.findUnique({
     where: { id: runId },
     include: {
-      commentEditTask: { select: { id: true } },
+      commentEditTasks: { select: { id: true } },
       version: {
         select: {
           id: true,
@@ -65,7 +65,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   const brief = payload.brief ?? null;
 
   try {
-    if (run.commentEditTask) {
+    if (run.commentEditTasks.length) {
       await executeCommentEdit(run.id);
       return;
     }

@@ -1,4 +1,18 @@
 /* global require */
+const importAiDraft = require('./import-draft.cjs');
+
+document.getElementById('importDraft').addEventListener('click', async () => {
+  const button = document.getElementById('importDraft');
+  if (button.disabled) return;
+  button.disabled = true;
+  setStatus('Preparing AI draft…');
+  try {
+    const message = await importAiDraft({ ppro: require('premierepro'), storage: require('uxp').storage,
+      baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim(), progress: setStatus });
+    setStatus(message);
+  } catch (error) { setStatus(error.message); }
+  finally { button.disabled = false; }
+});
 
 function nle() {
   return window.OpenFrameNle;
