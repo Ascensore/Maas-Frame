@@ -51,6 +51,7 @@ describe('RoughCut Prisma column names', () => {
       'overrides',
       'rendered_overrides',
       'rendered_decisions',
+      'rendered_version_id',
       'error',
       'output_video_id',
       'created_at',

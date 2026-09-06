@@ -46,6 +46,8 @@ import {
 import type { ImageAttachTarget } from '@/components/video-page/hooks/use-comment-actions';
 import { MAX_COMMENT_IMAGES } from '@/lib/comment-images';
 import { agentDisplayName } from '@/lib/agents/catalog';
+import { CommentEditControls } from '@/components/video-page/comment-edit-controls';
+import type { CommentEditAction, CommentEditView } from '@/lib/comment-edit/types';
 import type {
   Comment,
   CommentReply,
@@ -55,6 +57,10 @@ import type {
 } from '@/components/video-page/types';
 
 interface CommentsPaneProps {
+  editTasks?: CommentEditView[];
+  editTaskBusyIds?: string[];
+  editTaskError?: string | null;
+  onEditTaskAction?: (commentId: string, action: CommentEditAction) => void;
   isMobileCommentsOpen: boolean;
   setIsMobileCommentsOpen: (open: boolean) => void;
   isFullscreenMode: boolean;
@@ -154,6 +160,10 @@ interface CommentsPaneProps {
 }
 
 export const CommentsPane = memo(function CommentsPane({
+  editTasks = [],
+  editTaskBusyIds = [],
+  editTaskError,
+  onEditTaskAction,
   isMobileCommentsOpen,
   setIsMobileCommentsOpen,
   isFullscreenMode,
@@ -777,6 +787,25 @@ export const CommentsPane = memo(function CommentsPane({
                       </div>
                     )}
 
+                    {onEditTaskAction && !comment.id.startsWith('temp-') && (
+                      <>
+                        {editTaskError && (
+                          <p className="text-xs text-destructive">{editTaskError}</p>
+                        )}
+                        <CommentEditControls
+                          task={editTasks.find((task) => task.commentId === comment.id)}
+                          busy={editTaskBusyIds.includes(comment.id)}
+                          eligible={Boolean(
+                            comment.content?.trim() &&
+                            comment.timestampEnd != null &&
+                            comment.timestampEnd > comment.timestamp
+                          )}
+                          resolved={comment.isResolved}
+                          agentsEnabled={agentsEnabled}
+                          onAction={(action) => onEditTaskAction(comment.id, action)}
+                        />
+                      </>
+                    )}
                     {comment.voiceUrl && (
                       <div className="flex items-center gap-2 p-2 bg-muted rounded mb-2">
                         <Button

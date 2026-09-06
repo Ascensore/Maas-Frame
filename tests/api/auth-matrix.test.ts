@@ -61,6 +61,8 @@ import * as c2cR2CompleteRoute from '@/app/api/c2c/r2-complete/route';
 import * as c2cR2InitRoute from '@/app/api/c2c/r2-init/route';
 import * as c2cVideosRoute from '@/app/api/c2c/videos/route';
 import * as commentRoute from '@/app/api/comments/[commentId]/route';
+import * as commentEditTaskRoute from '@/app/api/comments/[commentId]/edit-task/route';
+import * as versionEditTasksRoute from '@/app/api/versions/[versionId]/edit-tasks/route';
 import * as feedbackRoute from '@/app/api/feedback/route';
 import * as feedbackUploadRoute from '@/app/api/feedback/upload/route';
 import * as onboardingCompleteRoute from '@/app/api/onboarding/complete/route';
@@ -196,7 +198,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 110;
+const EXPECTED_ROUTE_MODULE_COUNT = 112;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -971,6 +973,19 @@ const ROUTE_CASES: readonly RouteCase[] = [
     url: (f) => `/api/versions/${f.versionId}/approvals`,
     params: (f) => ({ versionId: f.versionId }),
     body: { approverIds: ['someone'] },
+  },
+  {
+    file: 'comments/[commentId]/edit-task/route.ts',
+    module: commentEditTaskRoute,
+    url: (f) => `/api/comments/${f.commentId}/edit-task`,
+    params: (f) => ({ commentId: f.commentId }),
+    body: { action: 'human' },
+  },
+  {
+    file: 'versions/[versionId]/edit-tasks/route.ts',
+    module: versionEditTasksRoute,
+    url: (f) => `/api/versions/${f.versionId}/edit-tasks`,
+    params: (f) => ({ versionId: f.versionId }),
   },
   {
     file: 'versions/[versionId]/agent-runs/route.ts',
