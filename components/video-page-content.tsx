@@ -22,6 +22,9 @@ import { useVersionActions } from '@/components/video-page/hooks/use-version-act
 import { useWatchProgress } from '@/components/video-page/hooks/use-watch-progress';
 import { useVideoPlayer } from '@/components/video-page/hooks/use-video-player';
 import { useCommentActions } from '@/components/video-page/hooks/use-comment-actions';
+import { useCommentEdits } from '@/components/video-page/hooks/use-comment-edits';
+import type { CommentEditAction } from '@/lib/comment-edit/types';
+import type { Comment } from '@/components/video-page/types';
 import { useVideoPageData } from '@/components/video-page/hooks/use-video-page-data';
 import { useRoughCutReview } from '@/components/video-page/hooks/use-rough-cut-review';
 import { useCommentExport } from '@/components/video-page/hooks/use-comment-export';
@@ -284,6 +287,27 @@ export function VideoPageContent({
   const canShareVideo = !!video?.canShareVideo;
   const agentsEnabled = !!video?.agentsEnabled;
   const canManageAgentComments = !!video?.canManageAgentComments;
+  const [editDestination, setEditDestination] = useState<'human' | 'queue' | 'run'>('human');
+  const refreshEditedComments = useCallback(
+    async (versionId: string) => {
+      await fetchVersionComments(versionId, false);
+    },
+    [fetchVersionComments]
+  );
+  const commentEdits = useCommentEdits(
+    activeVersionId,
+    canResolveComments && !isGuest,
+    refreshEditedComments
+  );
+  const actOnCommentEdit = commentEdits.act;
+  const onCommentCreatedForEdit = useCallback(
+    async (comment: Comment) => {
+      if (editDestination !== 'human' && agentsEnabled && canResolveComments && !isGuest) {
+        await actOnCommentEdit(comment.id, editDestination);
+      }
+    },
+    [editDestination, agentsEnabled, canResolveComments, isGuest, actOnCommentEdit]
+  );
   const [agentRunBusy, setAgentRunBusy] = useState(false);
   const [agentRunError, setAgentRunError] = useState<string | null>(null);
 
@@ -704,6 +728,7 @@ export function VideoPageContent({
     previewImage,
     setPreviewImage,
   } = useCommentActions({
+    onCommentCreated: onCommentCreatedForEdit,
     videoId,
     setVideo,
     activeVersionId,
@@ -1259,6 +1284,16 @@ export function VideoPageContent({
         </div>
 
         <CommentsPane
+          editTasks={commentEdits.tasks}
+          editTaskBusyIds={commentEdits.busyIds}
+          editTaskError={commentEdits.error}
+          onEditTaskAction={
+            canResolveComments && !isGuest
+              ? (id: string, action: CommentEditAction) => {
+                  void commentEdits.act(id, action);
+                }
+              : undefined
+          }
           isMobileCommentsOpen={isMobileCommentsOpen}
           setIsMobileCommentsOpen={setIsMobileCommentsOpen}
           isFullscreenMode={isFullscreenMode}
@@ -1378,6 +1413,32 @@ export function VideoPageContent({
           onRunAgentReview={handleRunAgentReview}
           composer={
             <CommentComposer
+              editingDestination={
+                agentsEnabled && canResolveComments && !isGuest ? (
+                  <div className="mb-3 space-y-1">
+                    <label className="flex items-center justify-between gap-2 text-xs font-medium">
+                      Editing feedback
+                      <select
+                        aria-label="Editing feedback destination"
+                        className="rounded-md border bg-background p-1.5"
+                        value={editDestination}
+                        disabled={isSubmittingComment}
+                        onChange={(event) =>
+                          setEditDestination(event.target.value as 'human' | 'queue' | 'run')
+                        }
+                      >
+                        <option value="human">Leave for human editor</option>
+                        <option value="run">Run with AI after posting</option>
+                        <option value="queue">Queue for AI later</option>
+                      </select>
+                    </label>
+                    <p className="text-[11px] text-muted-foreground">
+                      AI cuts and trims marked ranges on rendered OpenFrame rough cuts. Each edit
+                      creates a separate draft.
+                    </p>
+                  </div>
+                ) : undefined
+              }
               isRecording={isRecording}
               recordingTime={recordingTime}
               stopRecording={stopRecording}

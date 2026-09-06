@@ -54,6 +54,7 @@ interface UseCommentActionsParams extends CommentActionsConfig {
   editAnnotationCanvasRef: RefObject<AnnotationCanvasHandle | null>;
   fetchVersionComments: (versionId: string, useEtag: boolean) => Promise<void>;
   fetchAssets: () => Promise<void>;
+  onCommentCreated?: (comment: Comment) => Promise<void>;
 }
 
 /** Which of the three editors an attachment is being staged for. */
@@ -90,6 +91,7 @@ export function useCommentActions({
   editAnnotationCanvasRef,
   fetchVersionComments,
   fetchAssets,
+  onCommentCreated,
 }: UseCommentActionsParams) {
   const [commentText, setCommentText] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
@@ -425,6 +427,16 @@ export function useCommentActions({
           setIsAnnotating(false);
           clearCommentRangeSelection();
           setViewingAnnotation(effectiveStrokes || null);
+          // Saving the comment succeeded even if its follow-up task cannot be queued.
+          if (onCommentCreated) {
+            try {
+              await onCommentCreated(newComment);
+            } catch {
+              toast.error(
+                'Comment saved, but its editing task could not be started. Use the comment’s AI controls to retry.'
+              );
+            }
+          }
         } else {
           setVideo((prev) => {
             if (!prev) return prev;
@@ -488,6 +500,7 @@ export function useCommentActions({
       setViewingAnnotation,
       setVideo,
       fetchAssets,
+      onCommentCreated,
     ]
   );
 

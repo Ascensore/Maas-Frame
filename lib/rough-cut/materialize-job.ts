@@ -47,7 +47,7 @@ export async function materializeRoughCut(
   roughCutId: string
 ): Promise<void> {
   const cutRes = await deps.pool.query(
-    `SELECT id, project_id, folder_id, decisions, overrides, output_video_id
+    `SELECT id, project_id, folder_id, decisions, overrides, output_video_id, profile_snapshot
      FROM rough_cuts WHERE id = $1`,
     [roughCutId]
   );
@@ -130,18 +130,31 @@ export async function materializeRoughCut(
       objectKey,
       originalUrl,
       sizeBytes: body.byteLength,
+      title:
+        typeof cut.profile_snapshot?.outputTitle === 'string'
+          ? cut.profile_snapshot.outputTitle
+          : undefined,
     });
 
     await deps.pool.query(
       `UPDATE rough_cuts
-       SET output_video_id = $2, rendered_overrides = $3::jsonb, rendered_decisions = $4::jsonb, updated_at = NOW()
+       SET output_video_id = $2, rendered_overrides = $3::jsonb, rendered_decisions = $4::jsonb, rendered_version_id = $5, updated_at = NOW()
        WHERE id = $1`,
       [
         roughCutId,
         output.videoId,
         overrides ? JSON.stringify(overrides) : null,
         JSON.stringify(effective),
+        output.versionId,
       ]
+    );
+
+    // Pin the reviewed draft to this exact output, even if someone re-renders
+    // its rough cut later. Ordinary rough cuts have no comment task to update.
+    await deps.pool.query(
+      `UPDATE comment_edit_tasks SET output_version_id = $2, updated_at = NOW()
+       WHERE rough_cut_id = $1 AND output_version_id IS NULL`,
+      [roughCutId, output.versionId]
     );
 
     // The render is what the operator asked for; a transcript that could not
@@ -174,6 +187,7 @@ type OutputOptions = {
   objectKey: string;
   originalUrl: string;
   sizeBytes: number;
+  title?: string;
 };
 
 async function createOutputVersion(
@@ -204,6 +218,7 @@ async function createOutputVersion(
     if (added) return added;
   }
   return createOutputVideo(deps, {
+    title: options.title,
     projectId: options.projectId,
     folderId: options.folderId,
     objectKey: options.objectKey,

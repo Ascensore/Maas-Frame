@@ -10,11 +10,13 @@ import type { ReviewFindings, EditPlan } from '@/lib/agents/types';
 import { SHORT_FORM_AI_SYSTEM } from '@/lib/short-form/ai';
 import { transcriptTextForRange } from '@/lib/short-form';
 import { loadSourceTranscript } from '@/lib/short-form/store';
+import { executeCommentEdit } from '@/lib/comment-edit/execute';
 
 export async function executeAgentRun(runId: string): Promise<void> {
   const run = await db.agentRun.findUnique({
     where: { id: runId },
     include: {
+      commentEditTask: { select: { id: true } },
       version: {
         select: {
           id: true,
@@ -63,6 +65,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
   const brief = payload.brief ?? null;
 
   try {
+    if (run.commentEditTask) {
+      await executeCommentEdit(run.id);
+      return;
+    }
     const context = await loadAgentContext(run.versionId, brief);
     const model = getAgentModel(run.model);
 

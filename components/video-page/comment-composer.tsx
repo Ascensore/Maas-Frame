@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, type RefObject } from 'react';
+import { memo, type RefObject, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Image as ImageIcon, Loader2, Mic, Pause, Pencil, Play, Send, Tag, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,7 @@ import { CommentInOutControls } from '@/components/video-page/comment-in-out-con
 import type { CommentTag, VideoAsset } from '@/components/video-page/types';
 
 interface CommentComposerProps {
+  editingDestination?: ReactNode;
   isRecording: boolean;
   recordingTime: number;
   stopRecording: () => void;
@@ -66,6 +67,7 @@ interface CommentComposerProps {
 }
 
 export const CommentComposer = memo(function CommentComposer({
+  editingDestination,
   isRecording,
   recordingTime,
   stopRecording,
@@ -135,6 +137,7 @@ export const CommentComposer = memo(function CommentComposer({
 
   return (
     <div className="shrink-0 p-4 border-t bg-background">
+      {editingDestination}
       {isRecording ? (
         <div className="flex items-center gap-3 p-3 bg-destructive/10 border border-destructive/30 rounded-lg">
           <div className="h-3 w-3 rounded-full bg-destructive animate-pulse" />

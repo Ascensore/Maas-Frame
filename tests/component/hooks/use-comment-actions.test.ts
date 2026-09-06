@@ -232,6 +232,36 @@ afterEach(() => {
 });
 
 describe('useCommentActions adding a comment', () => {
+  it('starts the selected editing workflow only after the server saves the real comment', async () => {
+    const pendingRequest = deferred<unknown>();
+    fetchMock.mockReturnValue(pendingRequest.promise);
+    const onCommentCreated = vi.fn(async () => {});
+    const harness = renderActions({ onCommentCreated });
+    act(() => harness.result.current.actions.setCommentText('Remove the pause'));
+    let submitted: Promise<void> | undefined;
+    act(() => {
+      submitted = harness.result.current.actions.handleAddComment();
+    });
+    expect(onCommentCreated).not.toHaveBeenCalled();
+    await act(async () => {
+      pendingRequest.resolve(ok({ data: serverComment }));
+      await submitted;
+    });
+    expect(onCommentCreated).toHaveBeenCalledExactlyOnceWith(serverComment);
+    expect(commentIds(harness)).toEqual(['c1', 'c2', 'c-server']);
+  });
+  it('keeps the saved comment if its follow-up editing task fails', async () => {
+    const harness = renderActions({
+      onCommentCreated: vi.fn().mockRejectedValue(new Error('Offline')),
+    });
+    act(() => harness.result.current.actions.setCommentText('Remove the pause'));
+    await act(async () => {
+      await harness.result.current.actions.handleAddComment();
+    });
+    expect(commentIds(harness)).toEqual(['c1', 'c2', 'c-server']);
+    expect(harness.result.current.actions.commentText).toBe('');
+    expect(toastError).toHaveBeenCalledWith(expect.stringContaining('Comment saved'));
+  });
   it('shows the comment before the server answers, then swaps in the saved row', async () => {
     const pendingRequest = deferred<unknown>();
     fetchMock.mockReturnValue(pendingRequest.promise);

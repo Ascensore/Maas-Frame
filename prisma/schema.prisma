@@ -455,14 +455,16 @@ model VideoVersion {
   createdAt DateTime @default(now())
 
   // Relations
-  comments         Comment[]
-  watchProgress    WatchProgress[]
-  approvalRequests ApprovalRequest[]
-  subtitles        VideoSubtitle[]
-  transcripts      Transcript[]
-  mediaJobs        MediaJob[]
-  agentRuns        AgentRun[]
-  shortFormBatches ShortFormBatch[]  @relation("ShortFormSourceVersion")
+  comments           Comment[]
+  watchProgress      WatchProgress[]
+  approvalRequests   ApprovalRequest[]
+  subtitles          VideoSubtitle[]
+  transcripts        Transcript[]
+  mediaJobs          MediaJob[]
+  agentRuns          AgentRun[]
+  commentEditOutputs CommentEditTask[]
+  renderedRoughCuts  RoughCut[]        @relation("RoughCutRenderedVersion")
+  shortFormBatches   ShortFormBatch[]  @relation("ShortFormSourceVersion")
 
   @@unique([videoParentId, versionNumber])
   @@index([videoParentId])
@@ -552,8 +554,9 @@ model Comment {
 
   // Threading
   parentId String?
-  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies  Comment[] @relation("CommentReplies")
+  parent   Comment?         @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[]        @relation("CommentReplies")
+  editTask CommentEditTask?
 
   // Status
   isResolved Boolean   @default(false)
@@ -1130,10 +1133,13 @@ model RoughCut {
   overrides         Json?
   renderedOverrides Json?            @map("rendered_overrides")
   renderedDecisions Json?            @map("rendered_decisions")
+  renderedVersionId String?          @map("rendered_version_id")
+  renderedVersion   VideoVersion?    @relation("RoughCutRenderedVersion", fields: [renderedVersionId], references: [id], onDelete: SetNull)
   error             String?          @db.Text
   outputVideoId     String?          @map("output_video_id")
   outputVideo       Video?           @relation("RoughCutOutput", fields: [outputVideoId], references: [id], onDelete: SetNull)
   shortFormBatches  ShortFormBatch[] @relation("RoughCutShortFormBatches")
+  commentEditTask   CommentEditTask? @relation("CommentEditRoughCut")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
 
@@ -1311,29 +1317,59 @@ model MediaJob {
 }
 
 model AgentRun {
-  id             String          @id @default(cuid())
-  versionId      String          @map("version_id")
-  version        VideoVersion    @relation(fields: [versionId], references: [id], onDelete: Cascade)
-  kind           AgentRunKind
-  agentSlug      String          @map("agent_slug")
-  status         AgentRunStatus  @default(PENDING)
-  model          String
-  triggeredById  String?         @map("triggered_by_id")
-  triggeredBy    User?           @relation("AgentRunsTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
-  payload        Json?
-  result         Json?
-  error          String?         @db.Text
-  attempts       Int             @default(0)
-  startedAt      DateTime?       @map("started_at")
-  finishedAt     DateTime?       @map("finished_at")
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @updatedAt @map("updated_at")
-  comments       Comment[]
-  shortFormBatch ShortFormBatch?
+  id              String           @id @default(cuid())
+  versionId       String           @map("version_id")
+  version         VideoVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  kind            AgentRunKind
+  agentSlug       String           @map("agent_slug")
+  status          AgentRunStatus   @default(PENDING)
+  model           String
+  triggeredById   String?          @map("triggered_by_id")
+  triggeredBy     User?            @relation("AgentRunsTriggeredBy", fields: [triggeredById], references: [id], onDelete: SetNull)
+  payload         Json?
+  result          Json?
+  error           String?          @db.Text
+  attempts        Int              @default(0)
+  startedAt       DateTime?        @map("started_at")
+  finishedAt      DateTime?        @map("finished_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  comments        Comment[]
+  shortFormBatch  ShortFormBatch?
+  commentEditTask CommentEditTask?
 
   @@index([status, createdAt])
   @@index([versionId, status])
   @@map("agent_runs")
+}
+
+enum CommentEditStatus {
+  HUMAN
+  QUEUED
+  PLANNING
+  RENDERING
+  ACCEPTED
+  FAILED
+}
+
+model CommentEditTask {
+  id              String            @id @default(cuid())
+  commentId       String            @unique @map("comment_id")
+  comment         Comment           @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  status          CommentEditStatus @default(HUMAN)
+  snapshot        Json?
+  agentRunId      String?           @unique @map("agent_run_id")
+  agentRun        AgentRun?         @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  roughCutId      String?           @unique @map("rough_cut_id")
+  roughCut        RoughCut?         @relation("CommentEditRoughCut", fields: [roughCutId], references: [id], onDelete: SetNull)
+  renderJobId     String?           @map("render_job_id")
+  outputVersionId String?           @map("output_version_id")
+  outputVersion   VideoVersion?     @relation(fields: [outputVersionId], references: [id], onDelete: SetNull)
+  error           String?           @db.Text
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  @@map("comment_edit_tasks")
 }
 
 model Transcript {
