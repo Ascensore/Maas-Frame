@@ -1,5 +1,8 @@
 'use client';
 
+import { EditPresetLibrary } from '@/components/video-page/edit-preset-library';
+import { BrollAnalysis } from '@/components/video-page/broll-analysis';
+import { CommentDraftReview } from '@/components/video-page/comment-draft-review';
 import { useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -35,8 +38,14 @@ export function CommentEditControls({
 }) {
   const [preview, setPreview] = useState(false);
   const [assetVersionId, setAssetVersionId] = useState('');
-  const [accent, setAccent] = useState('#D7FF3F');
-  const options = { ...(assetVersionId ? { assetVersionId } : {}), accent };
+  const [accent, setAccent] = useState<string | undefined>();
+  const selectedAsset = library?.assets.find((asset) => asset.versionId === assetVersionId);
+  const [presetId, setPresetId] = useState('');
+  const options = {
+    ...(assetVersionId ? { assetVersionId } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(accent ? { accent } : {}),
+  };
   const status = task?.status ?? 'HUMAN';
   const running = status === 'PLANNING' || status === 'RENDERING';
   return (
@@ -55,6 +64,15 @@ export function CommentEditControls({
       {task?.instruction && status !== 'HUMAN' && (
         <p className="text-xs text-muted-foreground">Requested: {task.instruction}</p>
       )}
+      {task && (
+        <CommentDraftReview
+          key={task.runId ?? task.commentId}
+          task={task}
+          busy={busy}
+          agentsEnabled={agentsEnabled}
+          onAction={onAction}
+        />
+      )}
       {task?.batchSize && task.batchSize > 1 && (
         <p className="text-xs text-muted-foreground">
           Shared draft for {task.batchSize} comments. Accepting or handing off applies to the whole
@@ -69,13 +87,21 @@ export function CommentEditControls({
           <details className="text-xs">
             <summary className="cursor-pointer">Graphics & B-roll presets</summary>
             <div className="mt-2 space-y-2">
-              <p>Ask for a lower third or callout in your feedback, including the exact text.</p>
+              <p>Describe the graphic in your feedback, including the exact title and subtitle.</p>
+              <EditPresetLibrary
+                library={library}
+                selected={presetId}
+                onSelect={(p) => {
+                  setPresetId(p?.id ?? '');
+                  setAccent(p?.accent);
+                }}
+              />
               <label className="flex items-center gap-2">
                 Accent color{' '}
                 <input
                   type="color"
                   aria-label="Graphic accent color"
-                  value={accent}
+                  value={accent ?? '#D7FF3F'}
                   onChange={(e) => setAccent(e.target.value)}
                 />
               </label>
@@ -90,13 +116,18 @@ export function CommentEditControls({
                   {library.assets.map((asset) => (
                     <option key={asset.versionId} value={asset.versionId}>
                       {asset.title} ({asset.duration.toFixed(1)}s)
+                      {asset.visualEvidence ? ' · visual samples ready' : ''}
                     </option>
                   ))}
                 </select>
               </label>
+              {selectedAsset && (
+                <BrollAnalysis key={selectedAsset.versionId} asset={selectedAsset} />
+              )}
               <p className="text-muted-foreground">
-                For automatic selection, add metadata “usage” = “broll” to uploaded videos and give
-                them descriptive titles. B-roll covers the picture and keeps speech audio.
+                Analyzed assets supply three sampled frames to the AI. For automatic selection, add
+                metadata “usage” = “broll” to uploaded videos and give them descriptive titles.
+                B-roll covers the picture and keeps speech audio.
               </p>
             </div>
           </details>
@@ -135,7 +166,13 @@ export function CommentEditControls({
           </Button>
         )}
         {status === 'READY' && (
-          <Button size="sm" disabled={busy} onClick={() => onAction('accept')}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() =>
+              onAction('accept', task?.runId ? { expectedRunId: task.runId } : undefined)
+            }
+          >
             Accept & resolve
           </Button>
         )}

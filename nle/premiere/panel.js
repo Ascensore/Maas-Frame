@@ -8,7 +8,7 @@ document.getElementById('importDraft').addEventListener('click', async () => {
   setStatus('Preparing AI draft…');
   try {
     const message = await importAiDraft({ ppro: require('premierepro'), storage: require('uxp').storage,
-      baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim(), progress: setStatus });
+      baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim(), progress: setStatus, nativeTitles: el('nativeTitles').checked });
     setStatus(message);
   } catch (error) { setStatus(error.message); }
   finally { button.disabled = false; }
@@ -643,3 +643,14 @@ try {
 } catch {
   // No event surface on this host; the poll still rebinds each tick.
 }
+
+for (const action of ['runFeedback','feedbackStatus']) el(action).addEventListener('click',async()=>{
+  const button=el(action);if(button.disabled) return;button.disabled=true;
+  try {
+    const core=require('./native-edit.cjs');const ppro=require('premierepro');
+    const sequence=await (await ppro.Project.getActiveProject())?.getActiveSequence();
+    const args=[el('baseUrl').value.trim(),el('token').value.trim(),el('draftCommentId').value.trim()];
+    const task=action==='runFeedback' ? await core.runFeedback(...args,'premiere',String(sequence?.guid ?? '')) : await core.feedbackStatus(...args);
+    setStatus(task.error || (task.status==='READY' || task.status==='ACCEPTED' ? 'Draft ready. Choose Import AI draft.' : 'AI draft: '+task.status));
+  } catch(error) {setStatus(error.message);} finally {button.disabled=false;}
+});

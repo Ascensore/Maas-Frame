@@ -81,3 +81,35 @@ what delivers. Nothing is lost either way.
 If the timeline start timecode cannot be parsed, auto-sync pauses rather than
 placing every marker an hour from its comment; a manual sync still proceeds and
 says the offset was assumed.
+
+## Execute feedback and editable titles (experimental)
+
+**Run feedback with AI** starts a selected comment from the panel after the current timeline
+has been synced. The server verifies your own linked timeline id. **Refresh draft status** shows
+progress/errors; import the separate draft when ready. This does not cut the existing timeline
+in place or resolve the review comment.
+
+Enable **Editable Fusion titles** before import to replace each rendered graphic carrier with
+editable Fusion Background, RectangleMask, TextPlus and Merge nodes. Title text, brand colors,
+font and sizing come from the frozen preset. The current Fusion counterparts are static; the
+canonical rendered version includes entrance/exit motion. Failed conversion removes the newly
+created compositions and restores the carriers. Compare native appearance with the web preview.
+
+Resolve must have the preset's Bold font style and, when a subtitle is present, Regular style
+installed. All titles are checked before any conversion; a missing font retains the rendered
+graphics and reports the font to install. Fusion can otherwise accept an unavailable font but
+render a black frame. Editable text uses a fixed 1920×1080 canvas and top-left anchors.
+
+B-roll clips use **Scaling → Fill** to match the reviewed cover crop, including portrait and
+4:3 footage. If Resolve refuses that setting, the importer reports the incomplete setup and
+asks you to set Fill on the newly imported timeline's B-roll clips.
+
+Live validation on Resolve Studio 18.6 (macOS) confirmed editable lower-third text, subtitle,
+color and transparency in the isolated `OpenFrame native validation 2026-09-06` project.
+An exported 1080p frame verified visible text and B-roll coverage at both picture edges.
+Missing-font preflight preserved the existing compositions. Other Resolve versions and the
+complete Workflow Integration panel still require acceptance testing in the editor's setup.
+The full importer replay through the external Python API returned a timeline, then stalled on
+the first item-list query. A process sample showed the Resolve main thread waiting in Fusion
+project-settings synchronization. This does not establish the cause; full import acceptance
+remains incomplete despite the successful title-conversion and frame checks above.

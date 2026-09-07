@@ -287,7 +287,8 @@ describe('native editor import execution', () => {
   it('imports a new Resolve timeline from downloaded media and leaves the existing timeline intact', async () => {
     stubDownloads();
     const directory = mkdtempSync(join(tmpdir(), 'of-native-test-'));
-    const timeline = {};
+    const broll = [{ SetProperty: vi.fn(() => true) }, { SetProperty: vi.fn(() => true) }];
+    const timeline = { GetItemListInTrack: vi.fn(() => broll) };
     const importTimeline = vi
       .fn<(path: string, options: unknown) => object>()
       .mockReturnValue(timeline);
@@ -313,6 +314,8 @@ describe('native editor import execution', () => {
       expect(xml).toContain('<in>50</in><out>125</out>');
       expect(xml).not.toContain('OPENFRAME_MEDIA');
       expect(setCurrent).toHaveBeenCalledWith(timeline);
+      expect(timeline.GetItemListInTrack).toHaveBeenCalledWith('video', 2);
+      for (const item of broll) expect(item.SetProperty).toHaveBeenCalledWith('Scaling', 3);
       expect(original.GetName()).toBe('Original');
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -336,6 +339,111 @@ describe('native editor import execution', () => {
     expect(result.message).toContain('already imported');
     expect(choose).not.toHaveBeenCalled();
   });
+  it('reports an imported timeline that refuses B-roll fill instead of claiming success', async () => {
+    stubDownloads();
+    const directory = mkdtempSync(join(tmpdir(), 'of-native-scaling-'));
+    const item = { SetProperty: vi.fn(() => false) };
+    const timeline = { GetItemListInTrack: () => ({ 1: item }) };
+    const importTimeline = vi.fn(() => timeline);
+    const project = {
+      GetUniqueId: () => 'project',
+      GetTimelineCount: () => 0,
+      GetMediaPool: () => ({ ImportTimelineFromFile: importTimeline }),
+      SetCurrentTimeline: vi.fn(),
+    };
+    try {
+      await expect(
+        importResolve({
+          resolve: { GetProjectManager: () => ({ GetCurrentProject: () => project }) },
+          chooseDirectory: async () => directory,
+          baseUrl: 'https://review.test',
+          token: 'token',
+          commentId: 'comment',
+        })
+      ).rejects.toThrow('Set Scaling to Fill on its B-roll clips before use');
+      expect(importTimeline).toHaveBeenCalledOnce();
+      expect(item.SetProperty).toHaveBeenCalledWith('Scaling', 3);
+      expect(project.SetCurrentTimeline).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  it.each([false, true])(
+    'imports the reviewed timeline with native titles when fonts are available: %s',
+    async (fontsAvailable) => {
+      stubDownloads();
+      const directory = mkdtempSync(join(tmpdir(), 'of-native-fonts-'));
+      const names: string[] = [];
+      const textInputs: Record<string, unknown> = {};
+      const comp = {
+        GetToolList: () => ({}),
+        AddTool: (kind: string) => ({
+          SetInput: (key: string, value: unknown) => {
+            if (kind === 'TextPlus') textInputs[key] = value;
+            return true;
+          },
+          ConnectInput: () => true,
+        }),
+      };
+      const item = {
+        GetStart: () => 25,
+        GetEnd: () => 50,
+        GetFusionCompNameList: () => [...names],
+        AddFusionComp: vi.fn(() => {
+          names.push('editable');
+          return comp;
+        }),
+        LoadFusionCompByName: vi.fn(() => comp),
+        DeleteFusionCompByName: vi.fn(),
+      };
+      const timeline = {
+        GetStartFrame: () => 0,
+        GetItemListInTrack: (_kind: string, track: number) => (track === 3 ? [item] : []),
+      };
+      const project = {
+        GetUniqueId: () => 'project',
+        GetTimelineCount: () => 0,
+        GetMediaPool: () => ({ ImportTimelineFromFile: () => timeline }),
+        SetCurrentTimeline: vi.fn(),
+      };
+      const getFonts = vi.fn(() =>
+        fontsAvailable ? { 'DejaVu Sans': { Bold: '/fonts/bold.ttf' } } : {}
+      );
+      try {
+        const result = await importResolve({
+          resolve: {
+            GetProjectManager: () => ({ GetCurrentProject: () => project }),
+            Fusion: () => ({ FontManager: { GetFontList: getFonts } }),
+          },
+          chooseDirectory: async () => directory,
+          baseUrl: 'https://review.test',
+          token: 'token',
+          commentId: 'comment',
+          nativeTitles: true,
+        });
+        expect(getFonts).toHaveBeenCalledOnce();
+        expect(project.SetCurrentTimeline).toHaveBeenCalledWith(timeline);
+        if (fontsAvailable) {
+          expect(result.message).toContain('Graphics are editable Fusion nodes');
+          expect(names).toEqual(['editable']);
+          expect(item.LoadFusionCompByName).toHaveBeenCalledWith('editable');
+          expect(textInputs).toMatchObject({
+            StyledText: 'Hi',
+            Font: 'DejaVu Sans',
+            Style: 'Bold',
+          });
+        } else {
+          expect(result.message).toContain('Editable titles failed; rendered graphics retained');
+          expect(result.message).toContain('Install the DejaVu Sans Bold font');
+          expect(item.AddFusionComp).not.toHaveBeenCalled();
+          expect(item.LoadFusionCompByName).not.toHaveBeenCalled();
+          expect(names).toEqual([]);
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
   it('does not import into a different Resolve project if the editor switches while downloading', async () => {
     stubDownloads();
     const directory = mkdtempSync(join(tmpdir(), 'of-native-switch-'));

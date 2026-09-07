@@ -24,28 +24,38 @@ export function graphicsAss(effects: TimelineEffect[]): string {
     effects
       .filter((e) => e.kind === 'graphic')
       .flatMap((e) => {
-        const y = e.preset.id === 'lower-third' ? 820 : 400;
+        const template = e.preset.template ?? e.preset.id;
+        const y = template === 'lower-third' ? 820 : 400;
+        const font = e.preset.font ?? 'DejaVu Sans';
         const anim = `\\an7\\move(64,${y},96,${y},0,240)\\fad(180,180)`;
         const line = (layer: number, body: string) =>
           `Dialogue: ${layer},${assTime(e.start)},${assTime(e.end)},Default,,0,0,0,,${body}\n`;
         // Font shrinks for longer text; fixed limits bound the template's safe text box.
-        const titleSize = Math.min(48, Math.floor(1600 / Math.max(1, e.title.length) / 0.7));
-        const subtitleSize = Math.min(32, Math.floor(1600 / Math.max(1, e.subtitle.length) / 0.7));
+        const titleSize = Math.min(
+          e.preset.titleSize ?? 48,
+          Math.floor(1600 / Math.max(1, e.title.length) / 0.7)
+        );
+        const subtitleSize = Math.min(
+          e.preset.subtitleSize ?? 32,
+          Math.floor(1600 / Math.max(1, e.subtitle.length) / 0.7)
+        );
         return [
           line(
             0,
-            `{${anim}\\1c${color(e.preset.background)}\\1a&H20&\\p1}m 0 0 l 1728 0 1728 170 0 170{\\p0}`
+            template === 'title-card'
+              ? `{\\an7\\pos(0,0)\\fad(180,180)\\1c${color(e.preset.background)}\\p1}m 0 0 l 1920 0 1920 1080 0 1080{\\p0}`
+              : `{${anim}\\1c${color(e.preset.background)}\\1a&H20&\\p1}m 0 0 l 1728 0 1728 170 0 170{\\p0}`
           ),
           line(1, `{${anim}\\1c${color(e.preset.accent)}\\p1}m 0 0 l 10 0 10 170 0 170{\\p0}`),
           line(
             2,
-            `{\\an7\\move(96,${y + 24},128,${y + 24},0,240)\\fad(180,180)\\fs${titleSize}\\1c${color(e.preset.foreground)}}${plain(e.title)}`
+            `{\\an7\\move(96,${y + 24},128,${y + 24},0,240)\\fad(180,180)\\fn${font}\\fs${titleSize}\\1c${color(e.preset.foreground)}}${plain(e.title)}`
           ),
           ...(e.subtitle
             ? [
                 line(
                   2,
-                  `{\\an7\\move(96,${y + 94},128,${y + 94},0,240)\\fad(180,180)\\b0\\fs${subtitleSize}\\1c${color(e.preset.foreground)}}${plain(e.subtitle)}`
+                  `{\\an7\\move(96,${y + 94},128,${y + 94},0,240)\\fad(180,180)\\b0\\fn${font}\\fs${subtitleSize}\\1c${color(e.preset.foreground)}}${plain(e.subtitle)}`
                 ),
               ]
             : []),

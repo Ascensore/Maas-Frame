@@ -2,8 +2,12 @@ import { z } from 'zod';
 
 /** Versioned, code-owned templates. Stored with every draft so later changes cannot restyle it. */
 export const graphicPresetSchema = z.object({
-  id: z.enum(['lower-third', 'callout']),
-  version: z.literal(1),
+  id: z.string().min(1).max(128),
+  template: z.enum(['lower-third', 'callout', 'title-card']).optional(),
+  font: z.enum(['DejaVu Sans', 'Liberation Sans', 'Roboto', 'Open Sans']).optional(),
+  titleSize: z.number().int().min(20).max(72).optional(),
+  subtitleSize: z.number().int().min(14).max(40).optional(),
+  version: z.number().int().positive(),
   name: z.string(),
   accent: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   foreground: z.string().regex(/^#[0-9a-fA-F]{6}$/),

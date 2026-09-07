@@ -1,3 +1,4 @@
+import type { TimelineEffect } from '@/lib/rough-cut/effects';
 import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
 import { fcp7Rate } from '@/lib/rough-cut/fcp7-xml';
 
@@ -17,6 +18,10 @@ export type NativeEditPackage = {
   xml: string;
   media: NativeMedia[];
   notes: string[];
+  graphics: Array<
+    Extract<TimelineEffect, { kind: 'graphic' }> & { startFrame: number; endFrame: number }
+  >;
+  frameRate: { num: number; den: number };
 };
 function xml(value: string): string {
   return value
@@ -96,6 +101,10 @@ export function buildNativeEditPackage(options: {
     name: options.name,
     xml: body,
     media,
+    frameRate: { num: decisions.rate.num, den: decisions.rate.den },
+    graphics: (decisions.effects ?? [])
+      .filter((e) => e.kind === 'graphic')
+      .map((e) => ({ ...e, startFrame: frames(e.start), endFrame: frames(e.end) })),
     notes: [
       'Imports as a new 1080p timeline. Original sequences are preserved.',
       'Speech uses the exact reviewed audio. Cuts and B-roll remain editable. Graphics are rendered composites of the reviewed draft; change their text/colors in OpenFrame and render again.',

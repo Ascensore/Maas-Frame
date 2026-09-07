@@ -1,3 +1,5 @@
+import { readVideoObjectBytes } from '@/lib/r2';
+import { actOnCommentEdit } from '@/lib/comment-edit/store';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import pg from 'pg';
 import { db } from '@/lib/db';
@@ -5,7 +7,11 @@ import { POST } from '@/app/api/comments/[commentId]/edit-task/route';
 import { GET, POST as batchPost } from '@/app/api/versions/[versionId]/edit-tasks/route';
 import { executeAgentRun } from '@/lib/agents/run-review';
 import { materializeRoughCut } from '@/lib/rough-cut/materialize-job';
-import { GET as nativeDraftGet } from '@/app/api/v1/comments/[commentId]/edit-draft/route';
+import {
+  GET as nativeDraftGet,
+  POST as nativeDraftPost,
+} from '@/app/api/v1/comments/[commentId]/edit-draft/route';
+import { snapshotComment } from '@/lib/comment-edit/store';
 import { generateApiToken } from '@/lib/api-token';
 import {
   addProjectMember,
@@ -195,7 +201,7 @@ describe('comment editing tasks', () => {
     expect(await db.comment.count({ where: { isResolved: true } })).toBe(0);
     expect(await db.commentEditTask.count({ where: { status: 'ACCEPTED' } })).toBe(0);
   });
-  it('rejects overlapping batches and concurrent duplicate starts', async () => {
+  it('allows overlapping ranges but rejects concurrent duplicate starts', async () => {
     const s = await seed();
     const second = await createComment({
       versionId: s.version.id,
@@ -205,10 +211,6 @@ describe('comment editing tasks', () => {
       timestampEnd: 5,
     });
     await action(s.comment.id, 'queue');
-    await action(second.id, 'queue');
-    expect((await batch(s.version.id, [s.comment.id, second.id])).status).toBe(409);
-    expect(await db.agentRun.count()).toBe(0);
-    await db.comment.update({ where: { id: second.id }, data: { timestamp: 6, timestampEnd: 7 } });
     await action(second.id, 'queue');
     const responses = await Promise.all([
       batch(s.version.id, [s.comment.id, second.id]),
@@ -762,5 +764,137 @@ describe('comment editing tasks', () => {
     expect(
       (await readData<{ tasks: CommentEditView[] }>(await list(s.version.id))).tasks[0].previewUrl
     ).toBe(first.outputVersion?.originalUrl);
+  });
+});
+
+describe('workspace preset snapshots', () => {
+  it('pins a selected revision and rejects presets from another workspace', async () => {
+    const s = await seed();
+    const definition = {
+      name: 'Brand',
+      template: 'callout',
+      accent: '#123456',
+      foreground: '#FFFFFF',
+      background: '#000000',
+    };
+    const preset = await db.editPreset.create({
+      data: { workspaceId: s.workspace.id, name: 'Brand', definition },
+    });
+    const snapshot = await db.$transaction((tx) =>
+      snapshotComment(tx, s.comment, { presetId: preset.id })
+    );
+    await db.editPreset.update({ where: { id: preset.id }, data: { archived: true, revision: 2 } });
+    expect(snapshot.presets).toEqual([
+      expect.objectContaining({ id: preset.id, version: 1, accent: '#123456' }),
+    ]);
+    await expect(
+      db.$transaction((tx) => snapshotComment(tx, s.comment, { presetId: preset.id }))
+    ).rejects.toThrow('no longer available');
+    const other = await seedVersion();
+    const foreign = await db.editPreset.create({
+      data: { workspaceId: other.workspace.id, name: 'Foreign', definition },
+    });
+    await expect(
+      db.$transaction((tx) => snapshotComment(tx, s.comment, { presetId: foreign.id }))
+    ).rejects.toThrow('no longer available');
+  });
+});
+
+describe('native panel execution', () => {
+  it('requires editing access and the caller’s linked sequence before writing a run', async () => {
+    const s = await seed();
+    const url = '/api/v1/comments/' + s.comment.id + '/edit-draft';
+    const invoke = () =>
+      callRoute(
+        nativeDraftPost,
+        apiRequest(url, { method: 'POST', body: { nle: 'resolve', sequenceId: 'timeline-one' } }),
+        { commentId: s.comment.id }
+      );
+    signedOut();
+    expect((await invoke()).status).toBe(401);
+    signedInAs(await createUser());
+    expect((await invoke()).status).toBe(403);
+    expect(await db.agentRun.count()).toBe(0);
+    const otherEditor = await createUser();
+    await addProjectMember({ projectId: s.project.id, userId: otherEditor.id, role: 'ADMIN' });
+    await db.sequenceLink.create({
+      data: {
+        userId: otherEditor.id,
+        versionId: s.version.id,
+        nle: 'resolve',
+        sequenceId: 'timeline-one',
+        sequenceName: 'Other editor',
+        startTimecode: '00:00:00:00',
+        frameRateNum: 25,
+        frameRateDen: 1,
+      },
+    });
+    signedInAs(s.owner);
+    expect((await invoke()).status).toBe(409);
+    expect(await db.agentRun.count()).toBe(0);
+    await db.sequenceLink.create({
+      data: {
+        userId: s.owner.id,
+        versionId: s.version.id,
+        nle: 'resolve',
+        sequenceId: 'wrong',
+        sequenceName: 'Test',
+        startTimecode: '00:00:00:00',
+        frameRateNum: 25,
+        frameRateDen: 1,
+      },
+    });
+    expect((await invoke()).status).toBe(409);
+    expect(await db.agentRun.count()).toBe(0);
+    await db.sequenceLink.updateMany({
+      where: { versionId: s.version.id },
+      data: { sequenceId: 'timeline-one' },
+    });
+    expect((await invoke()).status).toBe(200);
+    expect(
+      await db.commentEditTask.findUnique({ where: { commentId: s.comment.id } })
+    ).toMatchObject({ status: 'PLANNING' });
+    const status = await readData<{ task: CommentEditView }>(
+      await callRoute(nativeDraftGet, apiRequest(url + '?status=1'), { commentId: s.comment.id })
+    );
+    expect(status.task.status).toBe('PLANNING');
+    expect(await db.comment.findUnique({ where: { id: s.comment.id } })).toMatchObject({
+      isResolved: false,
+    });
+  });
+});
+
+describe('visual feedback orchestration', () => {
+  it('freezes sampled asset frames and passes them to the actual planning call', async () => {
+    const s = await seed();
+    const evidence = {
+      version: 1,
+      frames: [0, 1, 2].map((i) => ({
+        key: 'videos/broll-evidence/' + s.source.id + '/generation/' + i + '.jpg',
+        seconds: i + 1,
+      })),
+    };
+    await db.videoVersion.update({
+      where: { id: s.source.id },
+      data: { visualEvidence: evidence },
+    });
+    await actOnCommentEdit(s.comment.id, s.owner.id, 'run', { assetVersionId: s.source.id });
+    const task = await db.commentEditTask.findUniqueOrThrow({ where: { commentId: s.comment.id } });
+    await db.videoVersion.update({ where: { id: s.source.id }, data: { visualEvidence: {} } });
+    for (let i = 0; i < 3; i++)
+      vi.mocked(readVideoObjectBytes).mockResolvedValueOnce(new Uint8Array([255, 216, 255, 217]));
+    await executeAgentRun(task.agentRunId!);
+    expect(generateEditPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        images: [1, 2, 3].map((seconds) => ({
+          versionId: s.source.id,
+          seconds,
+          image: new Uint8Array([255, 216, 255, 217]),
+        })),
+      })
+    );
+    expect(
+      (await db.commentEditTask.findUnique({ where: { commentId: s.comment.id } }))?.status
+    ).toBe('RENDERING');
   });
 });

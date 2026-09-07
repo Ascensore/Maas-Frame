@@ -11,9 +11,9 @@ import {
   type CommentEditSnapshot,
   type EditOptions,
 } from './plan';
-import { GRAPHIC_PRESETS } from '@/lib/rough-cut/effects';
-import { listEditAssets } from './library';
+import { listEditAssets, listEditPresets } from './library';
 import type { CommentEditAction, CommentEditView } from './types';
+import { previousCommentPlan, describeCommentPlan } from './revisions';
 
 export class CommentEditError extends Error {
   constructor(
@@ -24,10 +24,17 @@ export class CommentEditError extends Error {
   }
 }
 
-const taskInclude = {
+export const commentEditTaskInclude = {
   agentRun: true,
+  comment: { include: { version: { select: { video: { select: { projectId: true } } } } } },
   outputVersion: { include: { video: true } },
+  revisions: {
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+    include: { outputVersion: { include: { video: true } } },
+  },
 } satisfies Prisma.CommentEditTaskInclude;
+const taskInclude = commentEditTaskInclude;
 type Task = Prisma.CommentEditTaskGetPayload<{ include: typeof taskInclude }>;
 
 export async function loadCommentEditAccess(versionId: string, userId: string) {
@@ -75,11 +82,38 @@ export async function serializeCommentEdit(
     typeof result.removedSeconds === 'number'
       ? result.removedSeconds
       : null;
-  const preview = task.outputVersion;
+  const projectId = task.comment.version.video.projectId;
+  const preview = task.outputVersion?.video.projectId === projectId ? task.outputVersion : null;
   const output = preview?.video;
   return {
     commentId: task.commentId,
     status,
+    runId: task.agentRunId,
+    adjustment: snapshot.success ? (snapshot.data.revision?.feedback.at(-1) ?? null) : null,
+    changes: describeCommentPlan(
+      previousCommentPlan(result, task.commentId),
+      snapshot.success ? snapshot.data : null
+    ),
+    revisions: task.revisions
+      .filter(
+        (revision) =>
+          revision.agentRunId !== task.agentRunId || !['READY', 'ACCEPTED'].includes(status)
+      )
+      .map((revision) => {
+        const output =
+          revision.outputVersion?.video.projectId === projectId ? revision.outputVersion : null;
+        return {
+          id: revision.id,
+          status: revision.status,
+          createdAt: revision.createdAt.toISOString(),
+          adjustment: revision.adjustment,
+          error: revision.error,
+          previewUrl: output?.originalUrl ?? null,
+          outputHref: output
+            ? `/projects/${output.video.projectId}/videos/${output.video.id}`
+            : null,
+        };
+      }),
     error,
     instruction: snapshot.success ? snapshot.data.content : null,
     removedSeconds,
@@ -89,6 +123,41 @@ export async function serializeCommentEdit(
         ? `/projects/${output.projectId}/videos/${output.id}`
         : null,
   };
+}
+
+async function archiveCommentEdit(tx: Prisma.TransactionClient, task: Task, view: CommentEditView) {
+  if (!task.agentRunId || !['READY', 'ACCEPTED', 'FAILED'].includes(view.status)) return;
+  const data = {
+    status: view.status as 'READY' | 'ACCEPTED' | 'FAILED',
+    instruction: view.instruction,
+    adjustment: view.adjustment ?? null,
+    changes: (view.changes ?? []) as unknown as Prisma.InputJsonValue,
+    removedSeconds: view.removedSeconds,
+    outputVersionId: task.outputVersionId,
+    error: view.error,
+  };
+  await tx.commentEditRevision.upsert({
+    where: { taskId_agentRunId: { taskId: task.id, agentRunId: task.agentRunId } },
+    create: { taskId: task.id, agentRunId: task.agentRunId, ...data },
+    update: data,
+  });
+}
+
+function requireUnchangedComment(
+  comment: { content: string | null; timestamp: number; timestampEnd: number | null },
+  snapshot: CommentEditSnapshot
+) {
+  const fps = snapshot.decisions.rate.num / snapshot.decisions.rate.den;
+  if (
+    comment.content?.trim() !== snapshot.content ||
+    Math.abs(comment.timestamp - snapshot.start) > 1 / fps ||
+    comment.timestampEnd === null ||
+    Math.abs(comment.timestampEnd - snapshot.end) > 1 / fps
+  )
+    throw new CommentEditError(
+      'The comment changed after this draft was requested. Review the new feedback before running it again.',
+      409
+    );
 }
 
 export async function listCommentEdits(versionId: string) {
@@ -236,16 +305,21 @@ export async function snapshotComment(
     throw new CommentEditError(
       'The selected B-roll must be an active uploaded video in this project.'
     );
+  const presets = await listEditPresets(version.video.projectId, tx);
+  if (options.presetId && !presets.some((p) => p.id === options.presetId))
+    throw new CommentEditError('The selected preset is no longer available in this workspace.');
   return {
     versionId: comment.versionId,
     content: comment.content.trim(),
     start,
     end,
     decisions,
-    presets: GRAPHIC_PRESETS.map((p) => ({
-      ...p,
-      ...(options.accent ? { accent: options.accent } : {}),
-    })),
+    presets: presets
+      .filter((p) => !options.presetId || p.id === options.presetId)
+      .map((p) => ({
+        ...p,
+        ...(options.accent ? { accent: options.accent } : {}),
+      })),
     assets,
   };
 }
@@ -259,14 +333,19 @@ export async function actOnCommentEdit(
   const original = await db.comment.findUnique({ where: { id: commentId } });
   if (!original) throw new CommentEditError('Comment not found', 404);
   await loadCommentEditAccess(original.versionId, userId);
-  if (['queue', 'run'].includes(action) && !isAgentsFeatureEnabled())
+  if (['queue', 'run', 'revise'].includes(action) && !isAgentsFeatureEnabled())
     throw new CommentEditError('AI agents are disabled', 403);
   return db.$transaction(
     async (tx) => {
       // Batch acceptance/handoff locks the complete group in the same order as execution.
       const before = await tx.commentEditTask.findUnique({ where: { commentId } });
+      const retryingRevision =
+        action === 'run' &&
+        Boolean(commentEditSnapshotSchema.safeParse(before?.snapshot).data?.revision) &&
+        ['PLANNING', 'RENDERING', 'FAILED'].includes(before?.status ?? '');
       const group =
-        before?.agentRunId && ['accept', 'human'].includes(action)
+        before?.agentRunId &&
+        (['accept', 'human', 'revise', 'undo'].includes(action) || retryingRevision)
           ? await tx.commentEditTask.findMany({
               where: { agentRunId: before.agentRunId },
               orderBy: { commentId: 'asc' },
@@ -296,7 +375,146 @@ export async function actOnCommentEdit(
           'This edit is still running. Wait for its result before changing assignment.',
           409
         );
+      if (
+        ['revise', 'undo'].includes(action) &&
+        (!options.expectedRunId || options.expectedRunId !== existing?.agentRunId)
+      )
+        throw new CommentEditError('The draft changed. Refresh and review it again.', 409);
+      if (action === 'undo') {
+        const members = await tx.commentEditTask.findMany({
+          where: { commentId: { in: groupIds } },
+        });
+        if (
+          !existing ||
+          members.some(
+            (member) =>
+              member.status !== 'ACCEPTED' || member.outputVersionId !== existing.outputVersionId
+          )
+        )
+          throw new CommentEditError('Only an accepted draft can have its acceptance undone.', 409);
+        await tx.comment.updateMany({
+          where: { id: { in: groupIds } },
+          data: { isResolved: false, resolvedAt: null },
+        });
+        await tx.commentEditTask.updateMany({
+          where: { commentId: { in: groupIds } },
+          data: { status: 'RENDERING' },
+        });
+        return serializeCommentEdit(
+          await tx.commentEditTask.findUniqueOrThrow({
+            where: { commentId },
+            include: taskInclude,
+          }),
+          tx
+        );
+      }
+      if (action === 'revise' || retryingRevision) {
+        const adjustment = options.adjustment?.trim();
+        if (!retryingRevision && (!adjustment || adjustment.length > 2000))
+          throw new CommentEditError('Describe the adjustment in 1–2000 characters.');
+        if (
+          !existing ||
+          !(retryingRevision
+            ? view?.status === 'FAILED'
+            : ['READY', 'ACCEPTED'].includes(view?.status ?? ''))
+        )
+          throw new CommentEditError('Review a rendered draft before adjusting it.', 409);
+        const members = await tx.commentEditTask.findMany({
+          where: { commentId: { in: groupIds } },
+          include: taskInclude,
+          orderBy: { commentId: 'asc' },
+        });
+        const snapshots = [];
+        const views = [];
+        for (const member of members) {
+          const memberView = await serializeCommentEdit(member, tx);
+          if (
+            retryingRevision
+              ? memberView.status !== 'FAILED'
+              : !['READY', 'ACCEPTED'].includes(memberView.status) ||
+                member.outputVersionId !== existing.outputVersionId ||
+                !memberView.previewUrl
+          )
+            throw new CommentEditError(
+              'Every shared draft must be available before adjusting it.',
+              409
+            );
+          const snapshot = commentEditSnapshotSchema.parse(member.snapshot);
+          requireUnchangedComment(member.comment, snapshot);
+          if (retryingRevision) {
+            snapshots.push(snapshot);
+            views.push(memberView);
+            continue;
+          }
+          const previousPlan = previousCommentPlan(
+            member.agentRun?.result,
+            member.commentId,
+            groupIds
+          );
+          if (!previousPlan)
+            throw new CommentEditError(
+              'The previous edit plan is unavailable. Hand this feedback to an editor and run it again.',
+              409
+            );
+          const feedback = [...(snapshot.revision?.feedback ?? [])];
+          if (member.commentId === commentId) feedback.push(adjustment!);
+          if (feedback.length > 10)
+            throw new CommentEditError(
+              'This draft has reached ten adjustments. Open the draft to start fresh feedback.',
+              409
+            );
+          snapshots.push(
+            commentEditSnapshotSchema.parse({
+              ...snapshot,
+              revision: { feedback, previousPlan, reusePlan: member.commentId !== commentId },
+            })
+          );
+          views.push(memberView);
+        }
+        const run = await tx.agentRun.create({
+          data: {
+            versionId: comment.versionId,
+            kind: 'EDIT',
+            agentSlug: 'edit',
+            model: getAgentModelId(),
+            triggeredById: userId,
+            payload: {
+              commentIds: groupIds,
+              revisedCommentId: commentId,
+              previousRunId: existing.agentRunId,
+            },
+          },
+        });
+        for (let i = 0; i < members.length; i++) {
+          await archiveCommentEdit(tx, members[i], views[i]);
+          await tx.commentEditTask.update({
+            where: { id: members[i].id },
+            data: {
+              status: 'PLANNING',
+              agentRunId: run.id,
+              snapshot: snapshots[i] as unknown as Prisma.InputJsonValue,
+              roughCutId: null,
+              renderJobId: null,
+              outputVersionId: null,
+              error: null,
+            },
+          });
+        }
+        await tx.comment.updateMany({
+          where: { id: { in: groupIds } },
+          data: { isResolved: false, resolvedAt: null },
+        });
+        return serializeCommentEdit(
+          await tx.commentEditTask.findUniqueOrThrow({
+            where: { commentId },
+            include: taskInclude,
+          }),
+          tx
+        );
+      }
       if (action === 'accept') {
+        if (options.expectedRunId && options.expectedRunId !== existing?.agentRunId)
+          throw new CommentEditError('The draft changed. Refresh and review it again.', 409);
         if (view?.status !== 'READY' || !existing)
           throw new CommentEditError('A rendered draft is required before accepting.', 409);
         const members = await tx.commentEditTask.findMany({
@@ -315,18 +533,7 @@ export async function actOnCommentEdit(
             );
           const comment = member.comment;
           const snapshot = commentEditSnapshotSchema.parse(member.snapshot);
-          const fps = snapshot.decisions.rate.num / snapshot.decisions.rate.den;
-          if (
-            comment.content?.trim() !== snapshot.content ||
-            Math.abs(comment.timestamp - snapshot.start) > 1 / fps ||
-            comment.timestampEnd === null ||
-            Math.abs(comment.timestampEnd - snapshot.end) > 1 / fps
-          ) {
-            throw new CommentEditError(
-              'The comment changed after this draft was requested. Review the new feedback before running it again.',
-              409
-            );
-          }
+          requireUnchangedComment(comment, snapshot);
         }
         await tx.comment.updateMany({
           where: { id: { in: groupIds } },
@@ -346,6 +553,12 @@ export async function actOnCommentEdit(
         );
       }
       if (action === 'human') {
+        const members = await tx.commentEditTask.findMany({
+          where: { commentId: { in: groupIds } },
+          include: taskInclude,
+        });
+        for (const member of members)
+          await archiveCommentEdit(tx, member, await serializeCommentEdit(member, tx));
         await tx.comment.updateMany({
           where: { id: { in: groupIds } },
           data: { isResolved: false, resolvedAt: null },
@@ -370,9 +583,14 @@ export async function actOnCommentEdit(
           409
         );
       const snapshot =
-        action === 'run' && existing?.status === 'QUEUED'
+        action === 'run' &&
+        existing &&
+        (existing.status === 'QUEUED' ||
+          (view?.status === 'FAILED' &&
+            commentEditSnapshotSchema.safeParse(existing.snapshot).data?.revision))
           ? commentEditSnapshotSchema.parse(existing.snapshot)
           : await snapshotComment(tx, comment, options);
+      if (existing && view) await archiveCommentEdit(tx, existing, view);
       const run =
         action === 'run'
           ? await tx.agentRun.create({

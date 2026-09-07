@@ -1,3 +1,5 @@
+import * as brollEvidenceRoute from '@/app/api/versions/[versionId]/broll-evidence/route';
+import * as editPresetsRoute from '@/app/api/workspaces/[workspaceId]/edit-presets/route';
 import * as videoProbeRoute from '@/app/api/projects/[projectId]/videos/probe/route';
 // A sweep over every route module under app/api asserting that an
 // unauthenticated caller can never reach a 2xx.
@@ -199,7 +201,7 @@ vi.mock('@/lib/r2', async (importOriginal) => {
 // The count guard
 // ---------------------------------------------------------------------------
 // Bump this only together with a new entry in ROUTE_CASES or in PUBLIC_ROUTES.
-const EXPECTED_ROUTE_MODULE_COUNT = 113;
+const EXPECTED_ROUTE_MODULE_COUNT = 115;
 
 /**
  * Routes that are public by design, and why. Everything else must reject an
@@ -989,6 +991,12 @@ const ROUTE_CASES: readonly RouteCase[] = [
     body: { action: 'human' },
   },
   {
+    file: 'versions/[versionId]/broll-evidence/route.ts',
+    module: brollEvidenceRoute,
+    url: (f) => `/api/versions/${f.versionId}/broll-evidence?frame=0&generation=sample`,
+    params: (f) => ({ versionId: f.versionId }),
+  },
+  {
     file: 'versions/[versionId]/edit-tasks/route.ts',
     module: versionEditTasksRoute,
     url: (f) => `/api/versions/${f.versionId}/edit-tasks`,
@@ -1133,6 +1141,13 @@ const ROUTE_CASES: readonly RouteCase[] = [
     module: workspacesRoute,
     url: () => '/api/workspaces',
     body: { name: 'anon workspace' },
+  },
+  {
+    file: 'workspaces/[workspaceId]/edit-presets/route.ts',
+    module: editPresetsRoute,
+    url: (f) => `/api/workspaces/${f.workspaceId}/edit-presets`,
+    params: (f) => ({ workspaceId: f.workspaceId }),
+    body: { name: 'Preset' },
   },
   {
     file: 'workspaces/[workspaceId]/rough-cut-profiles/route.ts',
