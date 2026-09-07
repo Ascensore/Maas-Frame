@@ -28,7 +28,10 @@
     <div class="status" id="status"></div>
     <label>AI draft comment ID</label>
     <input id="draftCommentId" placeholder="Copy from the draft's native editor controls" />
-    <button id="importDraft">Import AI draft</button>
+    <label><input type="checkbox" id="nativeTitles" /> Editable Fusion titles (experimental)</label>
+  <button id="runFeedback">Run feedback with AI</button>
+  <button id="feedbackStatus">Refresh draft status</button>
+  <button id="importDraft">Import AI draft</button>
     <p class="hint">Creates a new timeline with editable cuts and B-roll. Graphics are rendered overlays. Keep the downloaded media folder.</p>
     <script src="nle-core.cjs"></script>
     <script>
@@ -39,11 +42,20 @@
       const setStatus = (message) => {
         el('status').textContent = message;
       };
+      for (const action of ['runFeedback','feedbackStatus']) el(action).addEventListener('click',async()=>{
+        el(action).disabled=true;
+        try {
+          const core=require('./native-edit.cjs');const identity=await ipcRenderer.invoke('timeline-identity');
+          const args=[el('baseUrl').value.trim(),el('token').value.trim(),el('draftCommentId').value.trim()];
+          const task=action==='runFeedback' ? await core.runFeedback(...args,'resolve',identity?.sequenceId) : await core.feedbackStatus(...args);
+          el('status').textContent=task.error || (['READY','ACCEPTED'].includes(task.status) ? 'Draft ready. Choose Import AI draft.' : 'AI draft: '+task.status);
+        }catch(error){el('status').textContent=error.message;}finally{el(action).disabled=false;}
+      });
       el('importDraft').addEventListener('click', async () => {
         el('importDraft').disabled = true;
         setStatus('Downloading draft media…');
         try {
-          const result = await ipcRenderer.invoke('import-ai-draft', { baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim() });
+          const result = await ipcRenderer.invoke('import-ai-draft', { baseUrl: el('baseUrl').value.trim(), token: el('token').value.trim(), commentId: el('draftCommentId').value.trim(), nativeTitles: el('nativeTitles').checked });
           setStatus(result.message);
         } catch (error) { setStatus(error.message); }
         finally { el('importDraft').disabled = false; }

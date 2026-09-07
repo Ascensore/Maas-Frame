@@ -1,3 +1,4 @@
+import { brollEvidenceSchema } from '@/lib/rough-cut/broll-evidence-schema';
 import { z } from 'zod';
 import { editPlanSchema } from '@/lib/agents/edit-plan';
 import { roughCutDecisionListSchema } from '@/lib/rough-cut/decision-list';
@@ -5,6 +6,9 @@ import type { RoughCutDecisionList } from '@/lib/rough-cut/types';
 import { graphicPresetSchema, remapEffects, type TimelineEffect } from '@/lib/rough-cut/effects';
 
 export const editOptionsSchema = z.object({
+  adjustment: z.string().trim().min(1).max(2000).optional(),
+  expectedRunId: z.string().min(1).max(128).optional(),
+  presetId: z.string().min(1).max(128).optional(),
   assetVersionId: z.string().min(1).max(128).optional(),
   accent: z
     .string()
@@ -19,6 +23,13 @@ export const commentEditSnapshotSchema = z.object({
   start: z.number().finite().nonnegative(),
   end: z.number().finite().positive(),
   decisions: roughCutDecisionListSchema,
+  revision: z
+    .object({
+      feedback: z.array(z.string().trim().min(1).max(2000)).max(10),
+      previousPlan: editPlanSchema,
+      reusePlan: z.boolean(),
+    })
+    .optional(),
   presets: z.array(graphicPresetSchema).default([]),
   assets: z
     .array(
@@ -27,6 +38,7 @@ export const commentEditSnapshotSchema = z.object({
         title: z.string(),
         duration: z.number().finite().positive(),
         description: z.string().optional(),
+        visualEvidence: brollEvidenceSchema.optional(),
         clip: roughCutDecisionListSchema.shape.clips.element,
       })
     )
@@ -220,7 +232,6 @@ export function validateBatchSnapshots(snapshots: CommentEditSnapshot[]): void {
   if (snapshots.length < 2 || snapshots.length > 20)
     throw new Error('Choose between 2 and 20 queued comments.');
   const first = snapshots[0];
-  const ordered = [...snapshots].sort((a, b) => a.start - b.start);
   snapshots.forEach((snapshot) => {
     if (
       snapshot.versionId !== first.versionId ||
@@ -229,38 +240,96 @@ export function validateBatchSnapshots(snapshots: CommentEditSnapshot[]): void {
       throw new Error(
         'Batch comments must review the same source map. Queue them again on the same version.'
       );
-    if (JSON.stringify(snapshot.presets) !== JSON.stringify(first.presets))
-      throw new Error('Batch comments must use the same graphic colors.');
   });
-  for (let i = 1; i < ordered.length; i++) {
-    if (ordered[i].start < ordered[i - 1].end - 1e-6)
-      throw new Error(
-        'These comment ranges overlap. Run them separately or narrow the ranges before batching.'
-      );
-  }
 }
 
-/** Validate each request in isolation, then apply all changes once in reviewed coordinates. */
+/** Resolve compatible overlaps in original coordinates; never choose between conflicting feedback. */
 export function applyCommentEditBatch(snapshots: CommentEditSnapshot[], plans: unknown[]) {
   validateBatchSnapshots(snapshots);
   if (plans.length !== snapshots.length)
     throw new Error('A plan is required for every batch comment.');
-  const operations: z.infer<typeof editPlanSchema>['operations'] = [];
+  type Op = z.infer<typeof editPlanSchema>['operations'][number];
+  const requests: { operations: Op[]; keeps: Range[] }[] = [];
+  const presets: NonNullable<CommentEditSnapshot['presets']> = [];
   for (let i = 0; i < snapshots.length; i++) {
     const snapshot = snapshots[i];
     applyCommentEditPlan(snapshot, plans[i]);
     const plan = editPlanSchema.parse(plans[i]);
-    const keeps = plan.operations.filter((op) => op.op === 'keep');
-    operations.push(...plan.operations.filter((op) => op.op !== 'keep'));
+    const keeps = mergeRanges(plan.operations.filter((op) => op.op === 'keep'));
+    // Every comment retains its own frozen styles, even when two revisions share an id.
+    const presetIds = new Map(
+      (snapshot.presets ?? []).map((p) => [p.id, 'batch-' + i + '-' + p.id])
+    );
+    presets.push(
+      ...(snapshot.presets ?? []).map((p) => ({
+        ...p,
+        template: p.template ?? (p.id === 'callout' ? 'callout' : 'lower-third'),
+        id: presetIds.get(p.id)!,
+      }))
+    );
+    const operations: Op[] = plan.operations
+      .filter((op) => op.op !== 'keep')
+      .map((op) => (op.op === 'graphic' ? { ...op, presetId: presetIds.get(op.presetId)! } : op));
     if (keeps.length) {
       let cursor = snapshot.start;
-      for (const range of mergeRanges(keeps)) {
+      for (const range of keeps) {
         if (range.start > cursor) operations.push({ op: 'cut', start: cursor, end: range.start });
         cursor = range.end;
       }
       if (cursor < snapshot.end) operations.push({ op: 'cut', start: cursor, end: snapshot.end });
     }
+    requests.push({ operations, keeps });
   }
+  const overlaps = (a: Range, b: Range) => a.start < b.end - 1e-6 && b.start < a.end - 1e-6;
+  const visualKey = (op: Op) =>
+    JSON.stringify(
+      op.op === 'graphic'
+        ? {
+            ...op,
+            presetId: undefined,
+            preset: presets.find((p) => p.id === op.presetId) && {
+              ...presets.find((p) => p.id === op.presetId),
+              id: undefined,
+            },
+          }
+        : op
+    );
+  for (let i = 0; i < requests.length; i++)
+    for (let j = i + 1; j < requests.length; j++) {
+      for (const [a, b] of [
+        [requests[i], requests[j]],
+        [requests[j], requests[i]],
+      ]) {
+        for (const cut of a.operations.filter((op) => op.op === 'cut')) {
+          if (
+            [...b.keeps, ...b.operations.filter((op) => op.op !== 'cut')].some((op) =>
+              overlaps(cut, op)
+            )
+          )
+            throw new Error(
+              'Conflicting feedback in comments ' +
+                (i + 1) +
+                ' and ' +
+                (j + 1) +
+                ': one removes footage the other keeps or decorates. Run them separately or revise the feedback.'
+            );
+        }
+      }
+      for (const a of requests[i].operations)
+        for (const b of requests[j].operations) {
+          if (a.op !== 'cut' && a.op === b.op && overlaps(a, b) && visualKey(a) !== visualKey(b))
+            throw new Error(
+              'Conflicting visual instructions in comments ' +
+                (i + 1) +
+                ' and ' +
+                (j + 1) +
+                '. Choose one instruction for that layer.'
+            );
+        }
+    }
+  const operations = [
+    ...new Map(requests.flatMap((r) => r.operations).map((op) => [visualKey(op), op])).values(),
+  ];
   const first = snapshots[0];
   const assets = [
     ...new Map(snapshots.flatMap((s) => s.assets ?? []).map((a) => [a.versionId, a])).values(),
@@ -268,6 +337,7 @@ export function applyCommentEditBatch(snapshots: CommentEditSnapshot[], plans: u
   return applyCommentEditPlan(
     {
       ...first,
+      presets,
       assets,
       start: 0,
       end: first.decisions.edits.at(-1)!.timelineEndSeconds,

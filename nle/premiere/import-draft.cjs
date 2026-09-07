@@ -1,6 +1,7 @@
 const native = require('./native-edit.cjs');
+const editableGraphics = require('./editable-graphics.cjs');
 
-module.exports = async function importDraft({ ppro, storage, baseUrl, token, commentId, progress }) {
+module.exports = async function importDraft({ ppro, storage, baseUrl, token, commentId, progress, nativeTitles = false }) {
   if (!commentId || !token) throw new Error('Enter a comment ID and API token.');
   const project = await ppro.Project.getActiveProject();
   if (!project) throw new Error('Open a Premiere project first.');
@@ -29,5 +30,13 @@ module.exports = async function importDraft({ ppro, storage, baseUrl, token, com
   if (!imported) throw new Error(`Premiere could not import the timeline. The package is saved at ${file.nativePath}.`);
   const after = await project.getSequences();
   if (!after.some(s => s.name === draft.name)) throw new Error('Premiere imported the XML but did not create the expected sequence. Check its import report.');
-  return `Imported a new AI draft sequence. Keep the media folder at ${directory.nativePath}.`;
+  let titleNote='';
+  if(nativeTitles && draft.graphics?.length) {
+    try {
+      progress('Choose a folder containing OpenFrame MOGRT templates…');
+      const folder=await storage.localFileSystem.getFolder();
+      if(folder) { await editableGraphics({ppro,project,sequence:after.find(s=>s.name===draft.name),draft,folder}); titleNote=' Editable MOGRT titles added; compare with the reviewed draft.'; }
+    } catch(error) { titleNote=' Editable titles failed; rendered graphics retained. '+error.message; }
+  }
+  return `Imported a new AI draft sequence. Keep the media folder at ${directory.nativePath}.${titleNote}`;
 };

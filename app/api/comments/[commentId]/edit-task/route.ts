@@ -10,7 +10,7 @@ import { logError } from '@/lib/logger';
 import { editOptionsSchema } from '@/lib/comment-edit/plan';
 
 const bodySchema = z.object({
-  action: z.enum(['human', 'queue', 'run', 'accept']),
+  action: z.enum(['human', 'queue', 'run', 'accept', 'revise', 'undo']),
   options: editOptionsSchema.optional(),
 });
 
@@ -25,8 +25,8 @@ export async function POST(
     if (limited) return limited;
     const { commentId } = await params;
     const body = bodySchema.safeParse(await request.json().catch(() => null));
-    if (!body.success) return apiErrors.badRequest('Choose human, queue, run, or accept.');
-    if (body.data.action === 'run') {
+    if (!body.success) return apiErrors.badRequest('Choose a valid editing action and options.');
+    if (body.data.action === 'run' || body.data.action === 'revise') {
       const comment = await db.comment.findUnique({
         where: { id: commentId },
         select: { versionId: true },

@@ -1,3 +1,6 @@
+import { z } from 'zod';
+import { refuseIfAgentRunLimited } from '@/lib/agents/limit';
+import { actOnCommentEdit } from '@/lib/comment-edit/store';
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { isAuthError, withApiAuth } from '@/lib/v1-auth';
@@ -7,6 +10,7 @@ import {
   CommentEditError,
   loadCommentEditAccess,
   serializeCommentEdit,
+  commentEditTaskInclude,
 } from '@/lib/comment-edit/store';
 import { parseRoughCutDecisionList } from '@/lib/rough-cut/decision-list';
 import { applyCommentEditPlan, commentEditSnapshotSchema } from '@/lib/comment-edit/plan';
@@ -27,11 +31,13 @@ export async function GET(
     const { commentId } = await params;
     const task = await db.commentEditTask.findUnique({
       where: { commentId },
-      include: { comment: true, agentRun: true, outputVersion: { include: { video: true } } },
+      include: commentEditTaskInclude,
     });
     if (!task) return apiErrors.notFound('Editing task');
     const original = await loadCommentEditAccess(task.comment.versionId, caller.userId);
     const view = await serializeCommentEdit(task);
+    if (request.nextUrl.searchParams.get('status') === '1')
+      return withCacheControl(successResponse({ task: view }), 'private, no-store');
     if (!['READY', 'ACCEPTED'].includes(view.status) || !task.outputVersion || !task.agentRun)
       return apiErrors.conflict('Render and review the draft before importing it into an editor.');
     const result = task.agentRun.result as Record<string, unknown> | null;
@@ -115,5 +121,56 @@ export async function GET(
         : apiErrors.notFound('Version');
     logError('Native draft export failed', error);
     return apiErrors.internalError('Could not prepare the native editing draft');
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ commentId: string }> }
+) {
+  try {
+    const caller = await withApiAuth(request);
+    if (isAuthError(caller)) return caller;
+    const { commentId } = await params;
+    const comment = await db.comment.findUnique({ where: { id: commentId } });
+    if (!comment) return apiErrors.notFound('Comment');
+    await loadCommentEditAccess(comment.versionId, caller.userId);
+    const body = z
+      .object({
+        nle: z.enum(['resolve', 'premiere']),
+        sequenceId: z.string().trim().min(1).max(200),
+      })
+      .safeParse(await request.json().catch(() => null));
+    if (!body.success) return apiErrors.badRequest('A linked native sequence is required.');
+    const link = await db.sequenceLink.findUnique({
+      where: {
+        userId_versionId_nle: {
+          userId: caller.userId,
+          versionId: comment.versionId,
+          nle: body.data.nle,
+        },
+      },
+    });
+    if (!link?.sequenceId || link.sequenceId !== body.data.sequenceId)
+      return apiErrors.conflict(
+        'Sync this timeline to the reviewed version before running feedback.'
+      );
+    const limited =
+      (await rateLimit(request, 'mutate')) ??
+      (await refuseIfAgentRunLimited(caller.userId, comment.versionId));
+    if (limited) return limited;
+    return withCacheControl(
+      successResponse({ task: await actOnCommentEdit(commentId, caller.userId, 'run') }),
+      'private, no-store'
+    );
+  } catch (error) {
+    if (error instanceof CommentEditError) {
+      if (error.status === 403) return apiErrors.forbidden(error.message);
+      if (error.status === 404) return apiErrors.notFound('Comment');
+      if (error.status === 409) return apiErrors.conflict(error.message);
+      return apiErrors.badRequest(error.message);
+    }
+    logError('Native feedback execution failed', error);
+    return apiErrors.internalError('Could not run the feedback');
   }
 }

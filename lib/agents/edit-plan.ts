@@ -21,7 +21,7 @@ export const editPlanSchema = z.object({
           op: z.literal('graphic'),
           start: z.number().finite().nonnegative(),
           end: z.number().finite().positive(),
-          presetId: z.enum(['lower-third', 'callout']),
+          presetId: z.string().min(1).max(128),
           title: z.string().trim().min(1).max(90),
           subtitle: z.string().trim().max(140),
         }),

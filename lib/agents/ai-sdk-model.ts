@@ -29,11 +29,34 @@ export function createAiSdkAgentModel(modelId: string): AgentModel {
       });
       return parseReviewFindings(result.output);
     },
-    async generateEditPlan({ system, context }): Promise<EditPlan> {
+    async generateEditPlan({ system, context, images }): Promise<EditPlan> {
       const result = await generateText({
         model: modelId,
         system,
-        prompt: contextPrompt(context),
+        ...(images?.length
+          ? {
+              messages: [
+                {
+                  role: 'user' as const,
+                  content: [
+                    { type: 'text' as const, text: contextPrompt(context) },
+                    ...images.flatMap((image) => [
+                      {
+                        type: 'text' as const,
+                        text:
+                          'Sampled source frame: ' +
+                          image.versionId +
+                          ' at ' +
+                          image.seconds +
+                          ' seconds',
+                      },
+                      { type: 'image' as const, image: image.image, mediaType: 'image/jpeg' },
+                    ]),
+                  ],
+                },
+              ],
+            }
+          : { prompt: contextPrompt(context) }),
         output: Output.object({ schema: editPlanSchema }),
       });
       if (!result.output) return emptyEditPlan();

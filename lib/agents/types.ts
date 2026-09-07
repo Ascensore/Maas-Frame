@@ -55,7 +55,7 @@ export type EditPlanOperation =
       op: 'graphic';
       start: number;
       end: number;
-      presetId: 'lower-third' | 'callout';
+      presetId: string;
       title: string;
       subtitle: string;
     }
@@ -66,9 +66,15 @@ export type EditPlan = {
   operations: EditPlanOperation[];
 };
 
+export type AgentImage = { versionId: string; seconds: number; image: Uint8Array };
+
 export interface AgentModel {
   name: string;
   generateFindings(input: { system: string; context: AgentContext }): Promise<ReviewFindings>;
-  generateEditPlan(input: { system: string; context: AgentContext }): Promise<EditPlan>;
+  generateEditPlan(input: {
+    system: string;
+    context: AgentContext;
+    images?: AgentImage[];
+  }): Promise<EditPlan>;
   rankShorts(input: { system: string; context: ShortFormAiInput }): Promise<ShortFormAiResult>;
 }

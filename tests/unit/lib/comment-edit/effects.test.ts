@@ -182,10 +182,11 @@ describe('AI graphic and B-roll plans', () => {
       [19, 20],
     ]);
   });
-  it('refuses overlapping comments, different provenance, and one unsafe member without a partial result', () => {
-    expect(() =>
-      applyCommentEditBatch([snapshot(), snapshot()], [plan(graphic), plan(broll)])
-    ).toThrow('overlap');
+  it('combines compatible overlapping comments but refuses different provenance and unsafe members', () => {
+    expect(
+      applyCommentEditBatch([snapshot(), snapshot()], [plan(graphic), plan(broll)]).decisions
+        .effects
+    ).toHaveLength(2);
     expect(() =>
       applyCommentEditBatch([snapshot(), { ...snapshot(), versionId: 'other' }], [])
     ).toThrow('same source');
@@ -250,5 +251,80 @@ describe('effect rendering', () => {
     expect(ass).toContain('｛＼pos(0,0)｝Title Break');
     expect(ass).not.toContain('{\\pos(1,2)}');
     expect(ass).toContain('｛＼pos(1,2)｝More Text');
+  });
+});
+
+describe('batch conflict resolution', () => {
+  it('unions overlapping cuts once and deduplicates identical graphics', () => {
+    const cuts = applyCommentEditBatch(
+      [snapshot(), snapshot()],
+      [plan({ op: 'cut', start: 2, end: 4 }), plan({ op: 'cut', start: 3, end: 5 })]
+    );
+    expect(cuts.removedSeconds).toBe(3);
+    expect(cuts.decisions.edits.map((e) => [e.inSeconds, e.outSeconds])).toEqual([
+      [10, 12],
+      [15, 20],
+    ]);
+    const graphics = applyCommentEditBatch(
+      [snapshot(), snapshot()],
+      [plan(graphic), plan(graphic)]
+    );
+    expect(graphics.decisions.effects).toHaveLength(1);
+    expect(graphicsAss(graphics.decisions.effects!)).toContain('\\move(64,820,96,820,0,240)');
+  });
+  it('refuses cut-versus-keep and cut-versus-graphic conflicts in either order', () => {
+    for (const other of [plan({ op: 'keep', start: 2, end: 5 }), plan(graphic)]) {
+      const cut = plan({ op: 'cut', start: 3, end: 4 });
+      for (const pair of [
+        [cut, other],
+        [other, cut],
+      ])
+        expect(() => applyCommentEditBatch([snapshot(), snapshot()], pair)).toThrow(
+          'Conflicting feedback'
+        );
+    }
+    expect(() =>
+      applyCommentEditBatch(
+        [snapshot(), snapshot()],
+        [plan(graphic), plan({ ...graphic, title: 'Different' })]
+      )
+    ).toThrow('Conflicting visual');
+  });
+  it('preserves independently frozen preset revisions for disjoint graphics', () => {
+    const other = { ...snapshot(), presets: [{ ...preset, version: 2, accent: '#ABCDEF' }] };
+    const result = applyCommentEditBatch(
+      [snapshot(), other],
+      [plan({ ...graphic, end: 3 }), plan({ ...graphic, start: 4, end: 5 })]
+    );
+    expect(
+      result.decisions.effects?.map(
+        (e) => e.kind === 'graphic' && [e.preset.version, e.preset.accent]
+      )
+    ).toEqual([
+      [1, '#123456'],
+      [2, '#ABCDEF'],
+    ]);
+  });
+  it('renders workspace typography and a full-frame title card', () => {
+    const effect: TimelineEffect = {
+      kind: 'graphic',
+      start: 2,
+      end: 5,
+      title: 'Hello',
+      subtitle: 'World',
+      preset: {
+        ...preset,
+        id: 'custom',
+        version: 3,
+        template: 'title-card',
+        font: 'Roboto',
+        titleSize: 60,
+        subtitleSize: 24,
+      },
+    };
+    const ass = graphicsAss([effect]);
+    expect(ass).toContain('1920 1080');
+    expect(ass).toContain('\\fnRoboto\\fs60');
+    expect(ass).toContain('\\fs24');
   });
 });

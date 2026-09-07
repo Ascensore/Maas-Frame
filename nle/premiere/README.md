@@ -81,3 +81,37 @@ draft; graphic text/style changes currently require a new render in OpenFrame. K
 folder with your project. Updating the panel requires reloading it in the UXP Developer Tool;
 the manifest now requests access to a folder chosen by the user. Automated adapter tests do
 not replace a live import check in your Premiere installation.
+
+## Execute feedback and editable titles (experimental)
+
+**Run feedback with AI** starts the selected comment from the panel. Sync the current sequence
+first; the server checks its id against your own sequence link. **Refresh draft status** reports
+planning/rendering/errors, then **Import AI draft** opens the separate result. Existing sequences
+and comment resolution are preserved.
+
+For editable graphics, enable **Editable MOGRT titles** before import. After media downloads,
+choose a folder containing `lower-third.mogrt`, `callout.mogrt` and/or `title-card.mogrt` for the
+layouts used by the draft. Only explicitly chosen local files are used. Templates must be
+video-only and expose these exact controls:
+
+| Control | Value type |
+| --- | --- |
+| OpenFrame Title | string |
+| OpenFrame Subtitle | string |
+| OpenFrame Accent | color |
+| OpenFrame Foreground | color |
+| OpenFrame Background | color |
+| OpenFrame Font | string |
+| OpenFrame TitleSize | number |
+| OpenFrame SubtitleSize | number |
+
+The adapter inserts titles on V4, sets text/styles and duration, then disables the rendered V3
+plates only once all titles succeeded. An incomplete title set is disabled and the plates remain
+enabled. Inspect the imported sequence if the host reports an error during cleanup. Templates
+are not generated or bundled; provide compatible MOGRTs from your design workflow. Native
+appearance can differ from the reviewed FFmpeg render. Premiere is not installed in the local
+development environment, so live host acceptance remains required.
+
+API references: [SequenceEditor](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequenceeditor),
+[ComponentParam](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/componentparam),
+[Project transactions](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/project).

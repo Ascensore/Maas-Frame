@@ -1,3 +1,4 @@
+import { retainedBrollUrls } from '@/lib/comment-edit/broll-retention';
 import {
   DeleteObjectCommand,
   ListObjectsV2Command,
@@ -146,6 +147,7 @@ async function findReferencedUrls(urls: string[]): Promise<Set<string>> {
   ).userFeedbackScreenshot;
 
   for (const group of chunk(urls, CHUNK_SIZE)) {
+    for (const url of await retainedBrollUrls(group)) referenced.add(url);
     const [
       commentRows,
       commentImageRows,

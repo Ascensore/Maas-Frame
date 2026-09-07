@@ -51,5 +51,17 @@
       await new Promise(resolve => setTimeout(resolve, (Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 60) : 10) * 1000));
     }
   }
-  return { validateDraft, relocateXml, downloadChunks, authorizedFetch };
+  async function runFeedback(baseUrl,token,commentId,nle,sequenceId) {
+    if(!commentId || !sequenceId || !token) throw new Error('Enter a comment ID and sync the open timeline first.');
+    const response=await fetch(baseUrl.replace(/\/$/,'')+'/api/v1/comments/'+encodeURIComponent(commentId)+'/edit-draft',{
+      method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({nle,sequenceId})
+    });
+    const payload=await response.json(); if(!response.ok) throw new Error(payload.error || 'Could not execute feedback');
+    return payload.data.task;
+  }
+  async function feedbackStatus(baseUrl,token,commentId) {
+    const response=await authorizedFetch(baseUrl.replace(/\/$/,'')+'/api/v1/comments/'+encodeURIComponent(commentId)+'/edit-draft?status=1',token);
+    const payload=await response.json();if(!response.ok) throw new Error(payload.error || 'Could not read draft status');return payload.data.task;
+  }
+  return { validateDraft, relocateXml, downloadChunks, authorizedFetch, runFeedback, feedbackStatus };
 });

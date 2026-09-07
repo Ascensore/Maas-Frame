@@ -197,6 +197,7 @@ model Workspace {
   invitations      Invitation[]
   roughCutProfiles RoughCutProfile[]
   editorialBriefs  EditorialBrief[]
+  editPresets      EditPreset[]
 
   @@index([ownerId])
   @@index([slug])
@@ -431,6 +432,7 @@ model VideoVersion {
   // Cached metadata
   title          String?
   thumbnailUrl   String?
+  visualEvidence Json?            @map("visual_evidence")
   duration       Int? // Duration in seconds
   sizeBytes      BigInt           @default(0) @map("size_bytes") // R2-hosted video file size
   // Rational frame rate as returned by ffprobe (e.g. 30000/1001). Null until probed.
@@ -463,6 +465,7 @@ model VideoVersion {
   mediaJobs          MediaJob[]
   agentRuns          AgentRun[]
   commentEditOutputs CommentEditTask[]
+  commentEditRevisions CommentEditRevision[]
   renderedRoughCuts  RoughCut[]        @relation("RoughCutRenderedVersion")
   shortFormBatches   ShortFormBatch[]  @relation("ShortFormSourceVersion")
 
@@ -1026,6 +1029,7 @@ enum MediaJobKind {
   MATERIALIZE_ROUGH_CUT
   BURN_SUBTITLES
   ANALYZE_SHORT_FORM
+  ANALYZE_BROLL
   RENDER_SHORT_FORM
 }
 
@@ -1368,10 +1372,37 @@ model CommentEditTask {
   error           String?           @db.Text
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
+  revisions       CommentEditRevision[]
 
   @@index([agentRunId])
   @@index([roughCutId])
   @@map("comment_edit_tasks")
+}
+
+enum CommentEditRevisionStatus {
+  READY
+  ACCEPTED
+  FAILED
+}
+
+model CommentEditRevision {
+  id              String                    @id @default(cuid())
+  taskId          String                    @map("task_id")
+  task            CommentEditTask           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  agentRunId      String                    @map("agent_run_id")
+  status          CommentEditRevisionStatus
+  instruction     String?                   @db.Text
+  adjustment      String?                   @db.Text
+  changes         Json?
+  removedSeconds  Float?                    @map("removed_seconds")
+  outputVersionId String?                   @map("output_version_id")
+  outputVersion   VideoVersion?             @relation(fields: [outputVersionId], references: [id], onDelete: SetNull)
+  error           String?                   @db.Text
+  createdAt       DateTime                  @default(now()) @map("created_at")
+
+  @@unique([taskId, agentRunId])
+  @@index([taskId, createdAt])
+  @@map("comment_edit_revisions")
 }
 
 model Transcript {
@@ -1452,4 +1483,19 @@ model RateLimit {
   @@index([key, action])
   @@index([windowStart])
   @@map("rate_limits")
+}
+
+model EditPreset {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("workspace_id")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  revision    Int       @default(1)
+  definition  Json
+  archived    Boolean   @default(false)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([workspaceId, archived])
+  @@map("edit_presets")
 }

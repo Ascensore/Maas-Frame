@@ -60,7 +60,7 @@ export async function GET(
     return withCacheControl(
       successResponse({
         tasks: await listCommentEdits(versionId),
-        library: await editLibrary(version.video.projectId),
+        library: await editLibrary(version.video.projectId, session.user.id),
       }),
       'private, no-store'
     );

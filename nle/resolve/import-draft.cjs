@@ -1,8 +1,9 @@
 const path = require('path');
 const fs = require('fs/promises');
 const native = require('./native-edit.cjs');
+const editableGraphics = require('./editable-graphics.cjs');
 
-module.exports = async function importDraft({ resolve, chooseDirectory, baseUrl, token, commentId }) {
+module.exports = async function importDraft({ resolve, chooseDirectory, baseUrl, token, commentId, nativeTitles = false }) {
   if (!resolve) throw new Error('Resolve scripting is unavailable. Install the WorkflowIntegration module supplied with Resolve Studio.');
   if (!commentId || !token) throw new Error('Enter a comment ID and API token.');
   const manager = resolve.GetProjectManager();
@@ -31,6 +32,19 @@ module.exports = async function importDraft({ resolve, chooseDirectory, baseUrl,
   if (manager.GetCurrentProject()?.GetUniqueId() !== projectId) throw new Error('The open project changed during download. Select the original project and import again.');
   const timeline = project.GetMediaPool().ImportTimelineFromFile(filename, { timelineName: draft.name, importSourceClips: true, sourceClipsPath: directory });
   if (!timeline) throw new Error(`Resolve could not import the timeline. The package is saved at ${filename}.`);
+  // Track 2 contains cover-muted B-roll. Resolve's project default fits 4:3/portrait
+  // sources with bars; SCALE_FILL (3) matches the reviewed renderer's cover crop.
+  const broll = timeline.GetItemListInTrack('video', 2) || [];
+  for (const item of Object.values(broll)) {
+    if (!item.SetProperty('Scaling', 3)) {
+      throw new Error('The new timeline was imported, but Resolve could not apply B-roll cover scaling. Set Scaling to Fill on its B-roll clips before use.');
+    }
+  }
+  let titleNote='Graphics are rendered overlays; cuts and B-roll remain editable.';
+  if (nativeTitles) {
+    try { editableGraphics(timeline,draft,resolve.Fusion().FontManager.GetFontList()); titleNote='Graphics are editable Fusion nodes. Compare their appearance with the reviewed draft.'; }
+    catch(error) { titleNote='Editable titles failed; rendered graphics retained. ' + error.message; }
+  }
   project.SetCurrentTimeline(timeline);
-  return { message: `Imported a new AI draft timeline. Media: ${directory}\nGraphics are rendered overlays; cuts and B-roll remain editable.` };
+  return { message: `Imported a new AI draft timeline. Media: ${directory}\n${titleNote}` };
 };

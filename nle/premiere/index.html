@@ -35,7 +35,10 @@
     <div class="status" id="status"></div>
     <label>AI draft comment ID</label>
     <input id="draftCommentId" placeholder="Copy from the draft's native editor controls" />
-    <button id="importDraft">Import AI draft</button>
+    <label><input type="checkbox" id="nativeTitles" /> Editable MOGRT titles (experimental)</label>
+  <button id="runFeedback">Run feedback with AI</button>
+  <button id="feedbackStatus">Refresh draft status</button>
+  <button id="importDraft">Import AI draft</button>
     <p class="hint">Creates a new timeline. Choose a permanent folder for its downloaded media. Graphics are rendered overlays; cuts and B-roll stay editable.</p>
     <script src="nle-core.cjs"></script>
     <script src="native-edit.cjs"></script>

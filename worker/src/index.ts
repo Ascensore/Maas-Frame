@@ -1,3 +1,4 @@
+import { analyzeBroll } from '../lib/rough-cut/broll-evidence';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -670,6 +671,7 @@ const QUEUE = {
   MATERIALIZE_ROUGH_CUT: 'materialize-rough-cut',
   BURN_SUBTITLES: 'burn-subtitles',
   ANALYZE_SHORT_FORM: 'analyze-short-form',
+  ANALYZE_BROLL: 'analyze-broll',
   RENDER_SHORT_FORM: 'render-short-form',
 } as const;
 
@@ -689,6 +691,7 @@ function queueForKind(kind: string): string {
   if (kind === 'IMPORT_DRIVE') return QUEUE.IMPORT_DRIVE;
   if (kind === 'MATERIALIZE_ROUGH_CUT') return QUEUE.MATERIALIZE_ROUGH_CUT;
   if (kind === 'BURN_SUBTITLES') return QUEUE.BURN_SUBTITLES;
+  if (kind === 'ANALYZE_BROLL') return QUEUE.ANALYZE_BROLL;
   if (kind === 'ANALYZE_SHORT_FORM') return QUEUE.ANALYZE_SHORT_FORM;
   if (kind === 'RENDER_SHORT_FORM') return QUEUE.RENDER_SHORT_FORM;
   // Typed, so publishClaimedJobs can skip this one job instead of abandoning
@@ -791,6 +794,8 @@ async function runMediaJob(data: MediaJobData, kind: string): Promise<void> {
         data.versionId,
         payload
       );
+    } else if (kind === 'ANALYZE_BROLL') {
+      await analyzeBroll({pool,run,downloadVersionMedia:downloadVersionFile,uploadObject},data.versionId);
     } else if (kind === 'ANALYZE_SHORT_FORM') {
       const batchId =
         data.payload && typeof data.payload === 'object' && 'batchId' in data.payload
@@ -930,6 +935,9 @@ async function start(): Promise<void> {
     for (const job of jobs) {
       await runMediaJob(job.data as MediaJobData, 'BURN_SUBTITLES');
     }
+  });
+  await boss.work(QUEUE.ANALYZE_BROLL, async (jobs) => {
+    for (const job of jobs) await runMediaJob(job.data as MediaJobData, 'ANALYZE_BROLL');
   });
   await boss.work(QUEUE.ANALYZE_SHORT_FORM, async (jobs) => {
     for (const job of jobs) {

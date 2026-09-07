@@ -91,7 +91,7 @@ export function useCommentEdits(
               payload.data.task,
             ],
           }));
-        if (action === 'accept' || action === 'human') await onResolved(versionId);
+        if (['accept', 'human', 'undo', 'revise'].includes(action)) await onResolved(versionId);
         return true;
       } catch (error) {
         toast.error(error instanceof Error ? error.message : 'Could not update editing task');
